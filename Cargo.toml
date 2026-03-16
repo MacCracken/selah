@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/selah-core",
+    "crates/selah-capture",
+    "crates/selah-annotate",
+    "crates/selah-ai",
+]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
+reqwest = { version = "0.12", features = ["json"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+image = "0.25"
+base64 = "0.22"
+
+[package]
+name = "selah"
+version = "2026.3.16"
+edition = "2024"
+description = "AI-native screenshot and annotation tool for AGNOS"
+license = "GPL-3.0"
+
+[dependencies]
+selah-core = { path = "crates/selah-core" }
+selah-capture = { path = "crates/selah-capture" }
+selah-annotate = { path = "crates/selah-annotate" }
+selah-ai = { path = "crates/selah-ai" }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+
+[[bin]]
+name = "selah"
+path = "src/main.rs"

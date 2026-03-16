@@ -1,0 +1,14 @@
+[package]
+name = "selah-annotate"
+version = "2026.3.16"
+edition = "2024"
+description = "Annotation engine for Selah — drawing tools, redaction, SVG rendering"
+license = "GPL-3.0"
+
+[dependencies]
+selah-core = { path = "../selah-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
