@@ -1,18 +1,19 @@
 [package]
-name = "selah-capture"
+name = "selah-mcp"
 version = "2026.3.16"
 edition = "2024"
-description = "Screen capture API client for Selah — connects to daimon"
+description = "MCP (Model Context Protocol) server for Selah — exposes screenshot tools to AI agents"
 license = "GPL-3.0"
 
 [dependencies]
 selah-core = { path = "../selah-core" }
+selah-capture = { path = "../selah-capture" }
+selah-annotate = { path = "../selah-annotate" }
+selah-ai = { path = "../selah-ai" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-reqwest = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 base64 = { workspace = true }

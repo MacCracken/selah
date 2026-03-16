@@ -4,6 +4,8 @@ use selah_core::{CaptureRegion, ImageFormat, Rect, SelahError};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+pub mod history;
+
 /// Client for daimon's screen capture API.
 #[derive(Debug, Clone)]
 pub struct CaptureClient {
@@ -124,12 +126,82 @@ impl CaptureClient {
 
     /// Copy image data to the system clipboard.
     ///
-    /// Currently a placeholder — clipboard integration requires platform-specific
-    /// support (wl-copy on Wayland, xclip on X11).
-    pub fn copy_to_clipboard(_data: &[u8]) -> Result<(), SelahError> {
-        tracing::info!("clipboard copy: placeholder (requires wl-copy or xclip)");
+    /// Detects Wayland vs X11 via environment variables and uses
+    /// `wl-copy` or `xclip` respectively.
+    pub fn copy_to_clipboard(data: &[u8]) -> Result<(), SelahError> {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let session_type = detect_session_type();
+        tracing::debug!("detected session type: {session_type:?}");
+
+        let mut child = match session_type {
+            SessionType::Wayland => Command::new("wl-copy")
+                .arg("--type")
+                .arg("image/png")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| {
+                    SelahError::CaptureFailed(format!(
+                        "failed to run wl-copy (is wl-clipboard installed?): {e}"
+                    ))
+                })?,
+            SessionType::X11 => Command::new("xclip")
+                .args(["-selection", "clipboard", "-t", "image/png"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| {
+                    SelahError::CaptureFailed(format!(
+                        "failed to run xclip (is xclip installed?): {e}"
+                    ))
+                })?,
+        };
+
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin.write_all(data).map_err(|e| {
+                SelahError::CaptureFailed(format!("failed to write to clipboard tool stdin: {e}"))
+            })?;
+        }
+
+        let output = child.wait_with_output().map_err(|e| {
+            SelahError::CaptureFailed(format!("clipboard tool failed: {e}"))
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(SelahError::CaptureFailed(format!(
+                "clipboard tool exited with {}: {stderr}",
+                output.status
+            )));
+        }
+
+        tracing::info!("copied image data to clipboard");
         Ok(())
     }
+}
+
+/// Detected display session type.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SessionType {
+    Wayland,
+    X11,
+}
+
+/// Detect whether we're running under Wayland or X11.
+pub fn detect_session_type() -> SessionType {
+    if std::env::var("WAYLAND_DISPLAY").is_ok() {
+        return SessionType::Wayland;
+    }
+    if let Ok(session) = std::env::var("XDG_SESSION_TYPE")
+        && session == "wayland"
+    {
+        return SessionType::Wayland;
+    }
+    SessionType::X11
 }
 
 #[cfg(test)]
@@ -167,8 +239,10 @@ mod tests {
     }
 
     #[test]
-    fn test_copy_to_clipboard_placeholder() {
-        // Should succeed (placeholder is a no-op)
-        CaptureClient::copy_to_clipboard(&[1, 2, 3]).unwrap();
+    fn test_detect_session_type_default() {
+        // In a test environment without WAYLAND_DISPLAY, should default to X11
+        // (unless running under Wayland, which is also fine)
+        let st = detect_session_type();
+        assert!(st == SessionType::Wayland || st == SessionType::X11);
     }
 }

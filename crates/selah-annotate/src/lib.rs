@@ -1,5 +1,6 @@
 //! selah-annotate — Annotation engine for Selah.
 
+use image::{ImageFormat, RgbaImage};
 use selah_core::{Annotation, AnnotationKind, Color, Rect};
 use uuid::Uuid;
 
@@ -57,6 +58,188 @@ impl AnnotationCanvas {
     pub fn apply_redaction(&mut self, rect: Rect) -> Uuid {
         let annotation = Annotation::new(AnnotationKind::Redaction, rect, Color::BLACK);
         self.add_annotation(annotation)
+    }
+
+    /// Render annotations onto a source image, returning the modified image as encoded bytes.
+    ///
+    /// Supports redaction (black fill), highlight (semi-transparent overlay),
+    /// rectangles, circles, arrows, and text placeholders drawn with pixel ops.
+    pub fn render_to_image(
+        source: &[u8],
+        annotations: &[Annotation],
+        format: selah_core::ImageFormat,
+    ) -> Result<Vec<u8>, selah_core::SelahError> {
+        let img = image::load_from_memory(source)
+            .map_err(|e| selah_core::SelahError::AnnotationError(format!("failed to load image: {e}")))?;
+        let mut rgba = img.to_rgba8();
+
+        for ann in annotations {
+            let pos = &ann.position;
+            let color = &ann.color;
+
+            match ann.kind {
+                AnnotationKind::Redaction => {
+                    Self::fill_rect(&mut rgba, pos, &Color::BLACK);
+                }
+                AnnotationKind::Highlight => {
+                    Self::blend_rect(&mut rgba, pos, color, 0.3);
+                }
+                AnnotationKind::Rectangle => {
+                    Self::stroke_rect(&mut rgba, pos, color, 2);
+                }
+                AnnotationKind::Circle => {
+                    Self::stroke_ellipse(&mut rgba, pos, color, 2);
+                }
+                AnnotationKind::Arrow => {
+                    Self::draw_line(
+                        &mut rgba,
+                        pos.x as i32,
+                        pos.y as i32,
+                        (pos.x + pos.width) as i32,
+                        (pos.y + pos.height) as i32,
+                        color,
+                        2,
+                    );
+                }
+                AnnotationKind::Text | AnnotationKind::FreeForm => {
+                    // Text rendering without a font rasterizer: draw a colored underline bar
+                    Self::fill_rect(
+                        &mut rgba,
+                        &Rect::new(pos.x, pos.y + pos.height - 2.0, pos.width, 2.0),
+                        color,
+                    );
+                }
+            }
+        }
+
+        let image_format = match format {
+            selah_core::ImageFormat::Png => ImageFormat::Png,
+            selah_core::ImageFormat::Jpeg => ImageFormat::Jpeg,
+            selah_core::ImageFormat::Bmp => ImageFormat::Bmp,
+            selah_core::ImageFormat::WebP => ImageFormat::WebP,
+        };
+
+        let mut buf = std::io::Cursor::new(Vec::new());
+        rgba.write_to(&mut buf, image_format)
+            .map_err(|e| selah_core::SelahError::AnnotationError(format!("failed to encode image: {e}")))?;
+        Ok(buf.into_inner())
+    }
+
+    /// Fill a rectangle with a solid color.
+    fn fill_rect(img: &mut RgbaImage, rect: &Rect, color: &Color) {
+        let (iw, ih) = (img.width() as i32, img.height() as i32);
+        let x0 = (rect.x as i32).max(0);
+        let y0 = (rect.y as i32).max(0);
+        let x1 = ((rect.x + rect.width) as i32).min(iw);
+        let y1 = ((rect.y + rect.height) as i32).min(ih);
+        let pixel = image::Rgba([color.r, color.g, color.b, color.a]);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                img.put_pixel(x as u32, y as u32, pixel);
+            }
+        }
+    }
+
+    /// Blend a semi-transparent rectangle over existing pixels.
+    fn blend_rect(img: &mut RgbaImage, rect: &Rect, color: &Color, opacity: f32) {
+        let (iw, ih) = (img.width() as i32, img.height() as i32);
+        let x0 = (rect.x as i32).max(0);
+        let y0 = (rect.y as i32).max(0);
+        let x1 = ((rect.x + rect.width) as i32).min(iw);
+        let y1 = ((rect.y + rect.height) as i32).min(ih);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let existing = img.get_pixel(x as u32, y as u32);
+                let blended = image::Rgba([
+                    ((1.0 - opacity) * existing[0] as f32 + opacity * color.r as f32) as u8,
+                    ((1.0 - opacity) * existing[1] as f32 + opacity * color.g as f32) as u8,
+                    ((1.0 - opacity) * existing[2] as f32 + opacity * color.b as f32) as u8,
+                    255,
+                ]);
+                img.put_pixel(x as u32, y as u32, blended);
+            }
+        }
+    }
+
+    /// Draw a rectangle outline.
+    fn stroke_rect(img: &mut RgbaImage, rect: &Rect, color: &Color, thickness: u32) {
+        let t = thickness as f64;
+        // Top edge
+        Self::fill_rect(img, &Rect::new(rect.x, rect.y, rect.width, t), color);
+        // Bottom edge
+        Self::fill_rect(img, &Rect::new(rect.x, rect.y + rect.height - t, rect.width, t), color);
+        // Left edge
+        Self::fill_rect(img, &Rect::new(rect.x, rect.y, t, rect.height), color);
+        // Right edge
+        Self::fill_rect(img, &Rect::new(rect.x + rect.width - t, rect.y, t, rect.height), color);
+    }
+
+    /// Draw an ellipse outline inscribed in the given rect.
+    fn stroke_ellipse(img: &mut RgbaImage, rect: &Rect, color: &Color, thickness: u32) {
+        let cx = rect.x + rect.width / 2.0;
+        let cy = rect.y + rect.height / 2.0;
+        let rx = rect.width / 2.0;
+        let ry = rect.height / 2.0;
+        let pixel = image::Rgba([color.r, color.g, color.b, color.a]);
+        let (iw, ih) = (img.width() as i32, img.height() as i32);
+
+        // Sample the ellipse outline with enough points
+        let steps = ((rx + ry) * 4.0) as i32;
+        for i in 0..steps {
+            let angle = 2.0 * std::f64::consts::PI * (i as f64) / (steps as f64);
+            let ex = cx + rx * angle.cos();
+            let ey = cy + ry * angle.sin();
+            // Draw a small filled square for thickness
+            for dy in 0..thickness as i32 {
+                for dx in 0..thickness as i32 {
+                    let px = ex as i32 + dx - thickness as i32 / 2;
+                    let py = ey as i32 + dy - thickness as i32 / 2;
+                    if px >= 0 && px < iw && py >= 0 && py < ih {
+                        img.put_pixel(px as u32, py as u32, pixel);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Draw a line using Bresenham's algorithm with thickness.
+    fn draw_line(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, color: &Color, thickness: u32) {
+        let pixel = image::Rgba([color.r, color.g, color.b, color.a]);
+        let (iw, ih) = (img.width() as i32, img.height() as i32);
+        let half_t = thickness as i32 / 2;
+
+        let dx = (x1 - x0).abs();
+        let dy = -(y1 - y0).abs();
+        let sx = if x0 < x1 { 1 } else { -1 };
+        let sy = if y0 < y1 { 1 } else { -1 };
+        let mut err = dx + dy;
+        let mut cx = x0;
+        let mut cy = y0;
+
+        loop {
+            for ty in -half_t..=half_t {
+                for tx in -half_t..=half_t {
+                    let px = cx + tx;
+                    let py = cy + ty;
+                    if px >= 0 && px < iw && py >= 0 && py < ih {
+                        img.put_pixel(px as u32, py as u32, pixel);
+                    }
+                }
+            }
+
+            if cx == x1 && cy == y1 {
+                break;
+            }
+            let e2 = 2 * err;
+            if e2 >= dy {
+                err += dy;
+                cx += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                cy += sy;
+            }
+        }
     }
 
     /// Render all annotations as an SVG overlay string.

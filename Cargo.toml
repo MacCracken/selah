@@ -5,6 +5,7 @@ members = [
     "crates/selah-capture",
     "crates/selah-annotate",
     "crates/selah-ai",
+    "crates/selah-mcp",
 ]
 
 [workspace.dependencies]
@@ -34,12 +35,16 @@ selah-core = { path = "crates/selah-core" }
 selah-capture = { path = "crates/selah-capture" }
 selah-annotate = { path = "crates/selah-annotate" }
 selah-ai = { path = "crates/selah-ai" }
+selah-mcp = { path = "crates/selah-mcp" }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
 
 [[bin]]
 name = "selah"
