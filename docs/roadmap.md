@@ -12,10 +12,10 @@
 
 ## Phase 2 — Full GUI & Integration
 
-- [ ] Interactive annotation GUI (egui or Flutter)
+- [x] Interactive annotation GUI (egui + eframe)
 - [x] Clipboard integration (wl-copy on Wayland, xclip on X11)
-- [ ] Multi-monitor support
-- [ ] Keyboard shortcuts and global hotkey capture
+- [x] Multi-monitor support
+- [x] Keyboard shortcuts and global hotkey capture
 - [x] Annotation persistence (save/load annotation layers)
 - [x] Image format conversion
 - [x] History viewer for past captures

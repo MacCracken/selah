@@ -22,6 +22,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 image = "0.25"
 base64 = "0.22"
+eframe = "0.31"
+egui = "0.31"
 
 [package]
 name = "selah"
@@ -46,6 +48,9 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 image = { workspace = true }
+eframe = { workspace = true }
+egui = { workspace = true }
+serde = { workspace = true }
 
 [[bin]]
 name = "selah"

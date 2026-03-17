@@ -18,6 +18,8 @@ pub struct CaptureClient {
 struct CaptureRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     region: Option<RegionSpec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    monitor: Option<String>,
     format: String,
     agent_id: String,
 }
@@ -91,6 +93,67 @@ impl CaptureClient {
 
         let body = CaptureRequest {
             region: region_spec,
+            monitor: None,
+            format: format.extension().to_string(),
+            agent_id: "selah".to_string(),
+        };
+
+        let url = format!("{}/v1/screen/capture", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| SelahError::Api(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown error".to_string());
+            return Err(SelahError::Api(format!("{status}: {text}")));
+        }
+
+        resp.json::<CaptureResponse>()
+            .await
+            .map_err(|e| SelahError::Api(e.to_string()))
+    }
+
+    /// List available monitors via daimon.
+    pub async fn list_monitors(&self) -> Result<Vec<selah_core::Monitor>, SelahError> {
+        let url = format!("{}/v1/screen/monitors", self.base_url);
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| SelahError::Api(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown error".to_string());
+            return Err(SelahError::Api(format!("{status}: {text}")));
+        }
+
+        resp.json::<Vec<selah_core::Monitor>>()
+            .await
+            .map_err(|e| SelahError::Api(e.to_string()))
+    }
+
+    /// Capture a specific monitor by ID.
+    pub async fn capture_monitor(
+        &self,
+        monitor_id: &str,
+        format: ImageFormat,
+    ) -> Result<CaptureResponse, SelahError> {
+        let body = CaptureRequest {
+            region: None,
+            monitor: Some(monitor_id.to_string()),
             format: format.extension().to_string(),
             agent_id: "selah".to_string(),
         };

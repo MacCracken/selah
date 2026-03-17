@@ -21,4 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Annotation persistence**: Save/load annotation layers as JSON files (`--save`/`--load` flags on `selah annotate`)
 - **Enhanced history viewer**: `--json` output, `--info <uuid>` detail view, `--delete <uuid>` entry removal
 - **Clipboard integration**: Marked complete (Wayland/X11 detection via `wl-copy`/`xclip`)
-- **68 tests** across all crates, 0 warnings
+- **`selah gui`**: Interactive annotation GUI built on egui + eframe with tool palette, drag-to-annotate, zoom/pan, save/export
+- **Multi-monitor support**: `--list-monitors` and `--monitor <id>` flags on `selah capture` via daimon API
+- **Keyboard shortcuts**: In-app shortcuts for annotation tools (R/C/A/H/T/D/V), zoom (+/-/0), undo (Ctrl+Z), save (Ctrl+S)
+- **72 tests** across all crates, 0 warnings

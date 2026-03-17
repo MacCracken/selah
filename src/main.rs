@@ -1,5 +1,7 @@
 //! Selah — AI-native screenshot and annotation tool for AGNOS.
 
+mod gui;
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -36,6 +38,14 @@ enum Commands {
         /// Copy to system clipboard
         #[arg(long)]
         copy: bool,
+
+        /// List available monitors
+        #[arg(long)]
+        list_monitors: bool,
+
+        /// Capture a specific monitor by ID
+        #[arg(long)]
+        monitor: Option<String>,
     },
     /// Annotate an image (batch/headless mode)
     Annotate {
@@ -68,6 +78,15 @@ enum Commands {
         format: String,
 
         /// Output file path (default: input stem with new extension)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Open the interactive annotation GUI
+    Gui {
+        /// Path to the image file
+        path: String,
+
+        /// Output file path
         #[arg(short, long)]
         output: Option<String>,
     },
@@ -128,8 +147,34 @@ async fn main() -> anyhow::Result<()> {
             output,
             format,
             copy,
+            list_monitors,
+            monitor,
         } => {
             let client = selah_capture::CaptureClient::new(&cli.api_url);
+
+            // Handle --list-monitors
+            if list_monitors {
+                let monitors = client.list_monitors().await?;
+                if monitors.is_empty() {
+                    println!("No monitors detected");
+                } else {
+                    println!("Available monitors:");
+                    for m in &monitors {
+                        println!(
+                            "  {} | {} | {}x{} at ({},{}){}",
+                            m.id,
+                            m.name,
+                            m.width,
+                            m.height,
+                            m.x,
+                            m.y,
+                            if m.primary { " [primary]" } else { "" }
+                        );
+                    }
+                }
+                return Ok(());
+            }
+
             let img_format = match format.as_str() {
                 "jpg" | "jpeg" => selah_core::ImageFormat::Jpeg,
                 "bmp" => selah_core::ImageFormat::Bmp,
@@ -138,7 +183,10 @@ async fn main() -> anyhow::Result<()> {
             };
 
             let capture_source;
-            let response = if let Some(region_str) = region {
+            let response = if let Some(monitor_id) = &monitor {
+                capture_source = format!("monitor {monitor_id}");
+                client.capture_monitor(monitor_id, img_format).await?
+            } else if let Some(region_str) = region {
                 let parts: Vec<f64> = region_str
                     .split(',')
                     .map(|s| s.trim().parse::<f64>())
@@ -296,6 +344,13 @@ async fn main() -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("failed to write {out}: {e}"))?;
 
             println!("Converted {input} → {out} ({})", img_format);
+        }
+        Commands::Gui { path, output } => {
+            if !std::path::Path::new(&path).exists() {
+                anyhow::bail!("file not found: {path}");
+            }
+            gui::run_gui(std::path::PathBuf::from(path), output)
+                .map_err(|e| anyhow::anyhow!("GUI error: {e}"))?;
         }
         Commands::Ocr { path } => {
             let data =

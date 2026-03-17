@@ -320,6 +320,25 @@ impl Default for Rect {
     }
 }
 
+/// A connected display monitor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Monitor {
+    /// Unique identifier (e.g. "HDMI-A-1").
+    pub id: String,
+    /// Human-readable name.
+    pub name: String,
+    /// Resolution width in pixels.
+    pub width: u32,
+    /// Resolution height in pixels.
+    pub height: u32,
+    /// X offset in the virtual display layout.
+    pub x: i32,
+    /// Y offset in the virtual display layout.
+    pub y: i32,
+    /// Whether this is the primary display.
+    pub primary: bool,
+}
+
 /// Types of sensitive data that can be redacted.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum RedactionTarget {
