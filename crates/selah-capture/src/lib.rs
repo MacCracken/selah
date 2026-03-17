@@ -167,9 +167,9 @@ impl CaptureClient {
             })?;
         }
 
-        let output = child.wait_with_output().map_err(|e| {
-            SelahError::CaptureFailed(format!("clipboard tool failed: {e}"))
-        })?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| SelahError::CaptureFailed(format!("clipboard tool failed: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

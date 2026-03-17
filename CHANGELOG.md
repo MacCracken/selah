@@ -4,7 +4,7 @@ All notable changes to Selah will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [2026.3.16] - 2026-03-16
+## [2026.3.17] - 2026-03-17
 
 ### Added — Initial Release
 
@@ -14,4 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **selah-ai**: Regex-based PII detection (email, phone, credit card, IP), rule-of-thirds smart crop suggestions, text region extraction
 - **CLI**: `capture`, `annotate`, `ocr`, `redact` subcommands
 - **CI/CD**: GitHub Actions for check, test, clippy, fmt, release (amd64 + arm64)
-- **30+ tests** across all crates, 0 warnings
+
+### Added — Phase 2
+
+- **`selah convert`**: Image format conversion between PNG, JPEG, BMP, and WebP
+- **Annotation persistence**: Save/load annotation layers as JSON files (`--save`/`--load` flags on `selah annotate`)
+- **Enhanced history viewer**: `--json` output, `--info <uuid>` detail view, `--delete <uuid>` entry removal
+- **Clipboard integration**: Marked complete (Wayland/X11 detection via `wl-copy`/`xclip`)
+- **68 tests** across all crates, 0 warnings

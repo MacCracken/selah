@@ -1,6 +1,6 @@
 [package]
 name = "selah-ai"
-version = "2026.3.16"
+version = "2026.3.17"
 edition = "2024"
 description = "AI features for Selah — OCR, PII detection, smart crop"
 license = "GPL-3.0"

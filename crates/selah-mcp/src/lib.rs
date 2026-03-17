@@ -274,7 +274,10 @@ async fn handle_tools_call(params: &Value, api_url: &str) -> Result<Value, Strin
         .get("name")
         .and_then(|v| v.as_str())
         .ok_or("missing tool name")?;
-    let arguments = params.get("arguments").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
+    let arguments = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or(Value::Object(serde_json::Map::new()));
 
     match name {
         "selah_capture" => tool_capture(&arguments, api_url).await,
@@ -322,18 +325,16 @@ async fn tool_capture(args: &Value, api_url: &str) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("screenshot.png");
 
-    selah_capture::CaptureClient::save_to_file(
-        &data,
-        std::path::Path::new(output),
-        format,
-    )
-    .map_err(|e| e.to_string())?;
+    selah_capture::CaptureClient::save_to_file(&data, std::path::Path::new(output), format)
+        .map_err(|e| e.to_string())?;
 
     // Record in history
     if let Ok(store) = selah_capture::history::HistoryStore::open_default() {
         let source = match &region {
             selah_core::CaptureRegion::FullScreen => "full screen".to_string(),
-            selah_core::CaptureRegion::Rect(r) => format!("region {}x{} at {},{}", r.width, r.height, r.x, r.y),
+            selah_core::CaptureRegion::Rect(r) => {
+                format!("region {}x{} at {},{}", r.width, r.height, r.x, r.y)
+            }
             selah_core::CaptureRegion::Window(w) => format!("window {w}"),
         };
         let _ = store.record(selah_capture::history::HistoryEntry {
@@ -367,15 +368,13 @@ fn tool_annotate(args: &Value) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .ok_or("missing image_path")?;
 
-    let source = std::fs::read(image_path).map_err(|e| format!("failed to read {image_path}: {e}"))?;
+    let source =
+        std::fs::read(image_path).map_err(|e| format!("failed to read {image_path}: {e}"))?;
 
-    let annotations_json = args
-        .get("annotations")
-        .ok_or("missing annotations")?;
+    let annotations_json = args.get("annotations").ok_or("missing annotations")?;
 
-    let annotations: Vec<selah_core::Annotation> =
-        serde_json::from_value(annotations_json.clone())
-            .map_err(|e| format!("invalid annotations: {e}"))?;
+    let annotations: Vec<selah_core::Annotation> = serde_json::from_value(annotations_json.clone())
+        .map_err(|e| format!("invalid annotations: {e}"))?;
 
     let output = args
         .get("output")
@@ -411,7 +410,8 @@ fn tool_ocr(args: &Value) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .ok_or("missing image_path")?;
 
-    let data = std::fs::read(image_path).map_err(|e| format!("failed to read {image_path}: {e}"))?;
+    let data =
+        std::fs::read(image_path).map_err(|e| format!("failed to read {image_path}: {e}"))?;
     let result = selah_ai::extract_text_regions(&data);
 
     Ok(serde_json::json!({
@@ -432,7 +432,8 @@ fn tool_redact(args: &Value) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .ok_or("missing image_path")?;
 
-    let data = std::fs::read(image_path).map_err(|e| format!("failed to read {image_path}: {e}"))?;
+    let data =
+        std::fs::read(image_path).map_err(|e| format!("failed to read {image_path}: {e}"))?;
     let ocr = selah_ai::extract_text_regions(&data);
     let suggestions = selah_ai::suggest_redactions(&ocr.text);
 
@@ -471,15 +472,21 @@ fn tool_redact(args: &Value) -> Result<Value, String> {
     // Build redaction annotations from suggestions
     let annotations: Vec<selah_core::Annotation> = filtered
         .iter()
-        .map(|s| selah_core::Annotation::new(
-            selah_core::AnnotationKind::Redaction,
-            s.region,
-            selah_core::Color::BLACK,
-        ))
+        .map(|s| {
+            selah_core::Annotation::new(
+                selah_core::AnnotationKind::Redaction,
+                s.region,
+                selah_core::Color::BLACK,
+            )
+        })
         .collect();
 
-    let result = selah_annotate::AnnotationCanvas::render_to_image(&data, &annotations, selah_core::ImageFormat::Png)
-        .map_err(|e| e.to_string())?;
+    let result = selah_annotate::AnnotationCanvas::render_to_image(
+        &data,
+        &annotations,
+        selah_core::ImageFormat::Png,
+    )
+    .map_err(|e| e.to_string())?;
     std::fs::write(&output, &result).map_err(|e| format!("failed to write {output}: {e}"))?;
 
     let redaction_info: Vec<Value> = filtered
@@ -505,10 +512,7 @@ fn tool_redact(args: &Value) -> Result<Value, String> {
 }
 
 fn tool_history(args: &Value) -> Result<Value, String> {
-    let limit = args
-        .get("limit")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(20) as usize;
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
 
     let since = args
         .get("since")

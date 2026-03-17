@@ -1,6 +1,6 @@
 [package]
 name = "selah-mcp"
-version = "2026.3.16"
+version = "2026.3.17"
 edition = "2024"
 description = "MCP (Model Context Protocol) server for Selah — exposes screenshot tools to AI agents"
 license = "GPL-3.0"

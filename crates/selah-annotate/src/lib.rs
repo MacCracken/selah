@@ -2,7 +2,43 @@
 
 use image::{ImageFormat, RgbaImage};
 use selah_core::{Annotation, AnnotationKind, Color, Rect};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 use uuid::Uuid;
+
+/// Convert image data from one format to another.
+pub fn convert_format(
+    source: &[u8],
+    target: selah_core::ImageFormat,
+) -> Result<Vec<u8>, selah_core::SelahError> {
+    let img = image::load_from_memory(source).map_err(|e| {
+        selah_core::SelahError::AnnotationError(format!("failed to load image: {e}"))
+    })?;
+    let rgba = img.to_rgba8();
+
+    let image_format = match target {
+        selah_core::ImageFormat::Png => ImageFormat::Png,
+        selah_core::ImageFormat::Jpeg => ImageFormat::Jpeg,
+        selah_core::ImageFormat::Bmp => ImageFormat::Bmp,
+        selah_core::ImageFormat::WebP => ImageFormat::WebP,
+    };
+
+    let mut buf = std::io::Cursor::new(Vec::new());
+    rgba.write_to(&mut buf, image_format).map_err(|e| {
+        selah_core::SelahError::AnnotationError(format!("failed to encode image: {e}"))
+    })?;
+    Ok(buf.into_inner())
+}
+
+/// Serializable annotation layer for persistence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnnotationLayer {
+    pub version: u32,
+    pub width: u32,
+    pub height: u32,
+    pub created: chrono::DateTime<chrono::Utc>,
+    pub annotations: Vec<Annotation>,
+}
 
 /// Canvas that holds annotations on a screenshot.
 #[derive(Debug, Clone)]
@@ -60,6 +96,37 @@ impl AnnotationCanvas {
         self.add_annotation(annotation)
     }
 
+    /// Save the canvas annotations to a JSON file.
+    pub fn save_to_file(&self, path: &Path) -> Result<(), selah_core::SelahError> {
+        let layer = AnnotationLayer {
+            version: 1,
+            width: self.width,
+            height: self.height,
+            created: chrono::Utc::now(),
+            annotations: self.annotations.clone(),
+        };
+        let json = serde_json::to_string_pretty(&layer).map_err(|e| {
+            selah_core::SelahError::AnnotationError(format!("failed to serialize annotations: {e}"))
+        })?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Load a canvas from a previously saved JSON file.
+    pub fn load_from_file(path: &Path) -> Result<Self, selah_core::SelahError> {
+        let json = std::fs::read_to_string(path)?;
+        let layer: AnnotationLayer = serde_json::from_str(&json).map_err(|e| {
+            selah_core::SelahError::AnnotationError(format!(
+                "failed to deserialize annotations: {e}"
+            ))
+        })?;
+        Ok(Self {
+            width: layer.width,
+            height: layer.height,
+            annotations: layer.annotations,
+        })
+    }
+
     /// Render annotations onto a source image, returning the modified image as encoded bytes.
     ///
     /// Supports redaction (black fill), highlight (semi-transparent overlay),
@@ -69,8 +136,9 @@ impl AnnotationCanvas {
         annotations: &[Annotation],
         format: selah_core::ImageFormat,
     ) -> Result<Vec<u8>, selah_core::SelahError> {
-        let img = image::load_from_memory(source)
-            .map_err(|e| selah_core::SelahError::AnnotationError(format!("failed to load image: {e}")))?;
+        let img = image::load_from_memory(source).map_err(|e| {
+            selah_core::SelahError::AnnotationError(format!("failed to load image: {e}"))
+        })?;
         let mut rgba = img.to_rgba8();
 
         for ann in annotations {
@@ -120,8 +188,9 @@ impl AnnotationCanvas {
         };
 
         let mut buf = std::io::Cursor::new(Vec::new());
-        rgba.write_to(&mut buf, image_format)
-            .map_err(|e| selah_core::SelahError::AnnotationError(format!("failed to encode image: {e}")))?;
+        rgba.write_to(&mut buf, image_format).map_err(|e| {
+            selah_core::SelahError::AnnotationError(format!("failed to encode image: {e}"))
+        })?;
         Ok(buf.into_inner())
     }
 
@@ -167,11 +236,19 @@ impl AnnotationCanvas {
         // Top edge
         Self::fill_rect(img, &Rect::new(rect.x, rect.y, rect.width, t), color);
         // Bottom edge
-        Self::fill_rect(img, &Rect::new(rect.x, rect.y + rect.height - t, rect.width, t), color);
+        Self::fill_rect(
+            img,
+            &Rect::new(rect.x, rect.y + rect.height - t, rect.width, t),
+            color,
+        );
         // Left edge
         Self::fill_rect(img, &Rect::new(rect.x, rect.y, t, rect.height), color);
         // Right edge
-        Self::fill_rect(img, &Rect::new(rect.x + rect.width - t, rect.y, t, rect.height), color);
+        Self::fill_rect(
+            img,
+            &Rect::new(rect.x + rect.width - t, rect.y, t, rect.height),
+            color,
+        );
     }
 
     /// Draw an ellipse outline inscribed in the given rect.
@@ -203,7 +280,15 @@ impl AnnotationCanvas {
     }
 
     /// Draw a line using Bresenham's algorithm with thickness.
-    fn draw_line(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, color: &Color, thickness: u32) {
+    fn draw_line(
+        img: &mut RgbaImage,
+        x0: i32,
+        y0: i32,
+        x1: i32,
+        y1: i32,
+        color: &Color,
+        thickness: u32,
+    ) {
         let pixel = image::Rgba([color.r, color.g, color.b, color.a]);
         let (iw, ih) = (img.width() as i32, img.height() as i32);
         let half_t = thickness as i32 / 2;
@@ -445,5 +530,69 @@ mod tests {
         let svg = canvas.to_svg();
         assert!(svg.contains("<text"));
         assert!(svg.contains("Hello World"));
+    }
+
+    #[test]
+    fn test_save_and_load_annotations() {
+        let mut canvas = make_canvas();
+        canvas.add_annotation(Annotation::new(
+            AnnotationKind::Rectangle,
+            Rect::new(10.0, 20.0, 100.0, 50.0),
+            Color::RED,
+        ));
+        canvas.add_annotation(Annotation::with_text(
+            AnnotationKind::Text,
+            Rect::new(50.0, 50.0, 200.0, 30.0),
+            Color::WHITE,
+            "Test".into(),
+        ));
+
+        let path = std::env::temp_dir().join(format!("selah_test_layer_{}.json", Uuid::new_v4()));
+        canvas.save_to_file(&path).unwrap();
+
+        let loaded = AnnotationCanvas::load_from_file(&path).unwrap();
+        assert_eq!(loaded.width, 1920);
+        assert_eq!(loaded.height, 1080);
+        assert_eq!(loaded.count(), 2);
+
+        let anns = loaded.get_annotations();
+        assert_eq!(anns[0].kind, AnnotationKind::Rectangle);
+        assert_eq!(anns[1].kind, AnnotationKind::Text);
+        assert_eq!(anns[1].text.as_deref(), Some("Test"));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_save_format_version() {
+        let canvas = make_canvas();
+        let path =
+            std::env::temp_dir().join(format!("selah_test_layer_ver_{}.json", Uuid::new_v4()));
+        canvas.save_to_file(&path).unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(json["version"], 1);
+        assert_eq!(json["width"], 1920);
+        assert_eq!(json["height"], 1080);
+        assert!(json["created"].is_string());
+        assert!(json["annotations"].is_array());
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_convert_format_png_to_bmp() {
+        // Create a minimal 1x1 PNG in memory
+        let mut img = RgbaImage::new(1, 1);
+        img.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, ImageFormat::Png).unwrap();
+        let png_bytes = buf.into_inner();
+
+        let bmp_bytes = convert_format(&png_bytes, selah_core::ImageFormat::Bmp).unwrap();
+        assert!(!bmp_bytes.is_empty());
+        // BMP files start with "BM"
+        assert_eq!(&bmp_bytes[0..2], b"BM");
     }
 }

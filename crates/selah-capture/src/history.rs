@@ -50,8 +50,9 @@ impl HistoryStore {
     /// Record a new capture in the history.
     pub fn record(&self, entry: HistoryEntry) -> Result<(), SelahError> {
         use std::io::Write;
-        let line = serde_json::to_string(&entry)
-            .map_err(|e| SelahError::CaptureFailed(format!("failed to serialize history entry: {e}")))?;
+        let line = serde_json::to_string(&entry).map_err(|e| {
+            SelahError::CaptureFailed(format!("failed to serialize history entry: {e}"))
+        })?;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -61,7 +62,11 @@ impl HistoryStore {
     }
 
     /// List recent captures, newest first.
-    pub fn list(&self, limit: usize, since: Option<DateTime<Utc>>) -> Result<Vec<HistoryEntry>, SelahError> {
+    pub fn list(
+        &self,
+        limit: usize,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<HistoryEntry>, SelahError> {
         let content = match std::fs::read_to_string(&self.path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -82,6 +87,42 @@ impl HistoryStore {
         entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
         entries.truncate(limit);
         Ok(entries)
+    }
+
+    /// Delete a history entry by ID. Returns true if the entry was found and removed.
+    pub fn delete(&self, id: Uuid) -> Result<bool, SelahError> {
+        let content = match std::fs::read_to_string(&self.path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(SelahError::Io(e)),
+        };
+
+        let mut found = false;
+        let remaining: Vec<&str> = content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter(|l| {
+                if let Ok(entry) = serde_json::from_str::<HistoryEntry>(l)
+                    && entry.id == id
+                {
+                    found = true;
+                    return false;
+                }
+                true
+            })
+            .collect();
+
+        if found {
+            let new_content = remaining.join("\n");
+            let new_content = if new_content.is_empty() {
+                String::new()
+            } else {
+                format!("{new_content}\n")
+            };
+            std::fs::write(&self.path, new_content)?;
+        }
+
+        Ok(found)
     }
 
     /// Get a specific entry by ID.
@@ -107,7 +148,8 @@ mod tests {
     use super::*;
 
     fn temp_store() -> HistoryStore {
-        let path = std::env::temp_dir().join(format!("selah_test_history_{}.jsonl", Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("selah_test_history_{}.jsonl", Uuid::new_v4()));
         HistoryStore::open(path)
     }
 
@@ -167,6 +209,39 @@ mod tests {
         let not_found = store.get(Uuid::new_v4()).unwrap();
         assert!(not_found.is_none());
         std::fs::remove_file(&store.path).ok();
+    }
+
+    #[test]
+    fn test_delete_entry() {
+        let store = temp_store();
+        let entry = make_entry("to-delete");
+        let id = entry.id;
+        store.record(make_entry("keep")).unwrap();
+        store.record(entry).unwrap();
+        store.record(make_entry("also-keep")).unwrap();
+
+        assert!(store.delete(id).unwrap());
+        let entries = store.list(10, None).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|e| e.id != id));
+
+        // Deleting again returns false
+        assert!(!store.delete(id).unwrap());
+        std::fs::remove_file(&store.path).ok();
+    }
+
+    #[test]
+    fn test_delete_nonexistent() {
+        let store = temp_store();
+        store.record(make_entry("test")).unwrap();
+        assert!(!store.delete(Uuid::new_v4()).unwrap());
+        std::fs::remove_file(&store.path).ok();
+    }
+
+    #[test]
+    fn test_delete_from_empty() {
+        let store = temp_store();
+        assert!(!store.delete(Uuid::new_v4()).unwrap());
     }
 
     #[test]

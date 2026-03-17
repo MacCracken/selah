@@ -49,6 +49,27 @@ enum Commands {
         /// Output file path
         #[arg(short, long)]
         output: Option<String>,
+
+        /// Save annotation layer to a JSON file
+        #[arg(long)]
+        save: Option<String>,
+
+        /// Load annotation layer from a previously saved JSON file
+        #[arg(long)]
+        load: Option<String>,
+    },
+    /// Convert an image to a different format
+    Convert {
+        /// Path to the input image file
+        input: String,
+
+        /// Target format (png, jpg, bmp, webp)
+        #[arg(long)]
+        format: String,
+
+        /// Output file path (default: input stem with new extension)
+        #[arg(short, long)]
+        output: Option<String>,
     },
     /// Extract text from an image
     Ocr {
@@ -73,6 +94,18 @@ enum Commands {
         /// Only show captures since this date (ISO 8601, e.g. 2026-03-01T00:00:00Z)
         #[arg(long)]
         since: Option<String>,
+
+        /// Show detailed info for a specific entry
+        #[arg(long)]
+        info: Option<String>,
+
+        /// Delete a specific entry by ID
+        #[arg(long)]
+        delete: Option<String>,
+
+        /// Output as JSON for scripting
+        #[arg(long)]
+        json: bool,
     },
     /// Start the MCP (Model Context Protocol) server over stdio
     Mcp,
@@ -163,26 +196,39 @@ async fn main() -> anyhow::Result<()> {
                 });
             }
         }
-        Commands::Annotate { path, json, output } => {
+        Commands::Annotate {
+            path,
+            json,
+            output,
+            save,
+            load,
+        } => {
             if !std::path::Path::new(&path).exists() {
                 anyhow::bail!("file not found: {path}");
             }
 
-            let json_str = match json {
-                Some(j) => j,
-                None => {
-                    anyhow::bail!(
-                        "batch mode requires --json <annotations>. Example:\n  \
-                         selah annotate image.png --json '[{{\"kind\":\"rectangle\",\"position\":{{\"x\":10,\"y\":10,\"width\":100,\"height\":50}},\"color\":{{\"r\":255,\"g\":0,\"b\":0,\"a\":255}}}}]' -o output.png"
-                    );
-                }
+            let annotations: Vec<selah_core::Annotation> = if let Some(load_path) = &load {
+                let canvas = selah_annotate::AnnotationCanvas::load_from_file(
+                    std::path::Path::new(load_path),
+                )
+                .map_err(|e| anyhow::anyhow!("failed to load annotations: {e}"))?;
+                canvas.get_annotations().to_vec()
+            } else {
+                let json_str = match &json {
+                    Some(j) => j.clone(),
+                    None => {
+                        anyhow::bail!(
+                            "batch mode requires --json <annotations> or --load <file>. Example:\n  \
+                             selah annotate image.png --json '[{{\"kind\":\"rectangle\",\"position\":{{\"x\":10,\"y\":10,\"width\":100,\"height\":50}},\"color\":{{\"r\":255,\"g\":0,\"b\":0,\"a\":255}}}}]' -o output.png"
+                        );
+                    }
+                };
+                serde_json::from_str(&json_str)
+                    .map_err(|e| anyhow::anyhow!("invalid annotation JSON: {e}"))?
             };
 
-            let annotations: Vec<selah_core::Annotation> = serde_json::from_str(&json_str)
-                .map_err(|e| anyhow::anyhow!("invalid annotation JSON: {e}"))?;
-
-            let source = std::fs::read(&path)
-                .map_err(|e| anyhow::anyhow!("failed to read {path}: {e}"))?;
+            let source =
+                std::fs::read(&path).map_err(|e| anyhow::anyhow!("failed to read {path}: {e}"))?;
 
             let result = selah_annotate::AnnotationCanvas::render_to_image(
                 &source,
@@ -204,6 +250,52 @@ async fn main() -> anyhow::Result<()> {
                 "Applied {} annotation(s) to {path} → {out}",
                 annotations.len()
             );
+
+            if let Some(save_path) = &save {
+                let img = image::load_from_memory(&source)
+                    .map_err(|e| anyhow::anyhow!("failed to read image dimensions: {e}"))?;
+                let mut canvas = selah_annotate::AnnotationCanvas::new(img.width(), img.height());
+                for ann in &annotations {
+                    canvas.add_annotation(ann.clone());
+                }
+                canvas
+                    .save_to_file(std::path::Path::new(save_path))
+                    .map_err(|e| anyhow::anyhow!("failed to save annotations: {e}"))?;
+                println!("Saved annotation layer to {save_path}");
+            }
+        }
+        Commands::Convert {
+            input,
+            format,
+            output,
+        } => {
+            if !std::path::Path::new(&input).exists() {
+                anyhow::bail!("file not found: {input}");
+            }
+
+            let img_format = match format.as_str() {
+                "png" => selah_core::ImageFormat::Png,
+                "jpg" | "jpeg" => selah_core::ImageFormat::Jpeg,
+                "bmp" => selah_core::ImageFormat::Bmp,
+                "webp" => selah_core::ImageFormat::WebP,
+                other => anyhow::bail!("unsupported format: {other} (use png, jpg, bmp, or webp)"),
+            };
+
+            let source = std::fs::read(&input)
+                .map_err(|e| anyhow::anyhow!("failed to read {input}: {e}"))?;
+
+            let result = selah_annotate::convert_format(&source, img_format)?;
+
+            let out = output.unwrap_or_else(|| {
+                let p = std::path::Path::new(&input);
+                let stem = p.file_stem().unwrap_or_default().to_string_lossy();
+                format!("{stem}.{}", img_format.extension())
+            });
+
+            std::fs::write(&out, &result)
+                .map_err(|e| anyhow::anyhow!("failed to write {out}: {e}"))?;
+
+            println!("Converted {input} → {out} ({})", img_format);
         }
         Commands::Ocr { path } => {
             let data =
@@ -270,7 +362,56 @@ async fn main() -> anyhow::Result<()> {
                 println!("Redacted output saved to {out}");
             }
         }
-        Commands::History { limit, since } => {
+        Commands::History {
+            limit,
+            since,
+            info,
+            delete,
+            json,
+        } => {
+            let store = selah_capture::history::HistoryStore::open_default()?;
+
+            if let Some(id_str) = delete {
+                let id: uuid::Uuid = id_str
+                    .parse()
+                    .map_err(|e| anyhow::anyhow!("invalid UUID: {e}"))?;
+                if store.delete(id)? {
+                    println!("Deleted history entry {id}");
+                } else {
+                    println!("No entry found with ID {id}");
+                }
+                return Ok(());
+            }
+
+            if let Some(id_str) = info {
+                let id: uuid::Uuid = id_str
+                    .parse()
+                    .map_err(|e| anyhow::anyhow!("invalid UUID: {e}"))?;
+                match store.get(id)? {
+                    Some(entry) => {
+                        if json {
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&entry)
+                                    .map_err(|e| anyhow::anyhow!("JSON error: {e}"))?
+                            );
+                        } else {
+                            println!("ID:        {}", entry.id);
+                            println!("Path:      {}", entry.path);
+                            println!(
+                                "Timestamp: {}",
+                                entry.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+                            );
+                            println!("Source:    {}", entry.source);
+                            println!("Size:      {}x{}", entry.width, entry.height);
+                            println!("Format:    {}", entry.format);
+                        }
+                    }
+                    None => println!("No entry found with ID {id}"),
+                }
+                return Ok(());
+            }
+
             let since_dt = if let Some(since_str) = since {
                 Some(
                     chrono::DateTime::parse_from_rfc3339(&since_str)
@@ -285,16 +426,22 @@ async fn main() -> anyhow::Result<()> {
                 None
             };
 
-            let store = selah_capture::history::HistoryStore::open_default()?;
             let entries = store.list(limit, since_dt)?;
 
-            if entries.is_empty() {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&entries)
+                        .map_err(|e| anyhow::anyhow!("JSON error: {e}"))?
+                );
+            } else if entries.is_empty() {
                 println!("No captures in history");
             } else {
                 println!("Recent captures ({} shown):", entries.len());
                 for entry in &entries {
                     println!(
-                        "  {} | {}x{} {} | {} | {}",
+                        "  {} | {} | {}x{} {} | {} | {}",
+                        entry.id,
                         entry.timestamp.format("%Y-%m-%d %H:%M:%S"),
                         entry.width,
                         entry.height,

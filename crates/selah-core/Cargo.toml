@@ -1,6 +1,6 @@
 [package]
 name = "selah-core"
-version = "2026.3.16"
+version = "2026.3.17"
 edition = "2024"
 description = "Core types and primitives for Selah screenshot tool"
 license = "GPL-3.0"

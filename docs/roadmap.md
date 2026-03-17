@@ -13,12 +13,12 @@
 ## Phase 2 — Full GUI & Integration
 
 - [ ] Interactive annotation GUI (egui or Flutter)
-- [ ] Clipboard integration (wl-copy on Wayland, xclip on X11)
+- [x] Clipboard integration (wl-copy on Wayland, xclip on X11)
 - [ ] Multi-monitor support
 - [ ] Keyboard shortcuts and global hotkey capture
-- [ ] Annotation persistence (save/load annotation layers)
-- [ ] Image format conversion
-- [ ] History viewer for past captures
+- [x] Annotation persistence (save/load annotation layers)
+- [x] Image format conversion
+- [x] History viewer for past captures
 
 ## Phase 3 — AI Features
 

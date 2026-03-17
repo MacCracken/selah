@@ -1,6 +1,6 @@
 [package]
 name = "selah-annotate"
-version = "2026.3.16"
+version = "2026.3.17"
 edition = "2024"
 description = "Annotation engine for Selah — drawing tools, redaction, SVG rendering"
 license = "GPL-3.0"
@@ -13,3 +13,4 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 image = { workspace = true }
+chrono = { workspace = true }

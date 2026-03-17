@@ -1,6 +1,6 @@
 [package]
 name = "selah-capture"
-version = "2026.3.16"
+version = "2026.3.17"
 edition = "2024"
 description = "Screen capture API client for Selah — connects to daimon"
 license = "GPL-3.0"
