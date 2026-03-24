@@ -1,5 +1,7 @@
-//! selah-core — Core types and primitives for the Selah screenshot tool.
+//! Core types and primitives for the Selah screenshot tool.
 
+use crate::error::SelahError;
+use crate::geometry::Rect;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -39,7 +41,14 @@ impl std::fmt::Display for CaptureSource {
         match self {
             CaptureSource::FullScreen => write!(f, "full screen"),
             CaptureSource::Region(r) => {
-                write!(f, "region ({}x{} at {},{})", r.width, r.height, r.x, r.y)
+                write!(
+                    f,
+                    "region ({}x{} at {},{})",
+                    r.width(),
+                    r.height(),
+                    r.x(),
+                    r.y()
+                )
             }
             CaptureSource::Window(id) => write!(f, "window {id}"),
         }
@@ -160,6 +169,52 @@ impl std::fmt::Display for ImageFormat {
     }
 }
 
+impl std::str::FromStr for ImageFormat {
+    type Err = SelahError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "png" => Ok(ImageFormat::Png),
+            "jpg" | "jpeg" => Ok(ImageFormat::Jpeg),
+            "bmp" => Ok(ImageFormat::Bmp),
+            "webp" => Ok(ImageFormat::WebP),
+            other => Err(SelahError::UnsupportedFormat(format!(
+                "{other} (use png, jpg, bmp, or webp)"
+            ))),
+        }
+    }
+}
+
+/// Escape a string for safe inclusion in XML/SVG content.
+pub fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#x27;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Generate a default output path by appending a suffix before the file extension.
+///
+/// e.g. `derive_output_path("photo.png", "annotated")` -> `"photo_annotated.png"`
+pub fn derive_output_path(input: &str, suffix: &str) -> String {
+    let p = std::path::Path::new(input);
+    let stem = p.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = p.extension().unwrap_or_default().to_string_lossy();
+    if ext.is_empty() {
+        format!("{stem}_{suffix}")
+    } else {
+        format!("{stem}_{suffix}.{ext}")
+    }
+}
+
 /// RGBA color.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct Color {
@@ -239,87 +294,6 @@ impl std::fmt::Display for Color {
     }
 }
 
-/// A 2D point.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub struct Point {
-    pub x: f64,
-    pub y: f64,
-}
-
-impl Point {
-    pub fn new(x: f64, y: f64) -> Self {
-        Self { x, y }
-    }
-
-    /// Euclidean distance to another point.
-    pub fn distance_to(&self, other: &Point) -> f64 {
-        ((self.x - other.x).powi(2) + (self.y - other.y).powi(2)).sqrt()
-    }
-}
-
-impl Default for Point {
-    fn default() -> Self {
-        Self { x: 0.0, y: 0.0 }
-    }
-}
-
-/// A rectangle defined by position and size.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub struct Rect {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
-
-impl Rect {
-    pub fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
-        Self {
-            x,
-            y,
-            width,
-            height,
-        }
-    }
-
-    /// Check if a point is inside this rectangle.
-    pub fn contains(&self, point: &Point) -> bool {
-        point.x >= self.x
-            && point.x <= self.x + self.width
-            && point.y >= self.y
-            && point.y <= self.y + self.height
-    }
-
-    /// Area of the rectangle.
-    pub fn area(&self) -> f64 {
-        self.width * self.height
-    }
-
-    /// Center point of the rectangle.
-    pub fn center(&self) -> Point {
-        Point::new(self.x + self.width / 2.0, self.y + self.height / 2.0)
-    }
-
-    /// Check if this rectangle intersects another.
-    pub fn intersects(&self, other: &Rect) -> bool {
-        self.x < other.x + other.width
-            && self.x + self.width > other.x
-            && self.y < other.y + other.height
-            && self.y + self.height > other.y
-    }
-}
-
-impl Default for Rect {
-    fn default() -> Self {
-        Self {
-            x: 0.0,
-            y: 0.0,
-            width: 0.0,
-            height: 0.0,
-        }
-    }
-}
-
 /// A connected display monitor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Monitor {
@@ -359,23 +333,6 @@ impl std::fmt::Display for RedactionTarget {
             RedactionTarget::Custom(s) => write!(f, "custom: {s}"),
         }
     }
-}
-
-/// Errors in selah-core.
-#[derive(Debug, thiserror::Error)]
-pub enum SelahError {
-    #[error("capture failed: {0}")]
-    CaptureFailed(String),
-    #[error("invalid region: {0}")]
-    InvalidRegion(String),
-    #[error("unsupported format: {0}")]
-    UnsupportedFormat(String),
-    #[error("annotation error: {0}")]
-    AnnotationError(String),
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("API error: {0}")]
-    Api(String),
 }
 
 #[cfg(test)]
@@ -428,11 +385,11 @@ mod tests {
     #[test]
     fn test_rect_contains_point() {
         let r = Rect::new(10.0, 10.0, 100.0, 50.0);
-        assert!(r.contains(&Point::new(50.0, 30.0)));
-        assert!(r.contains(&Point::new(10.0, 10.0))); // on edge
-        assert!(r.contains(&Point::new(110.0, 60.0))); // on far edge
-        assert!(!r.contains(&Point::new(5.0, 30.0))); // outside left
-        assert!(!r.contains(&Point::new(50.0, 65.0))); // outside bottom
+        assert!(r.contains_point(hisab::Vec2::new(50.0, 30.0)));
+        assert!(r.contains_point(hisab::Vec2::new(10.0, 10.0))); // on edge
+        assert!(r.contains_point(hisab::Vec2::new(110.0, 60.0))); // on far edge
+        assert!(!r.contains_point(hisab::Vec2::new(5.0, 30.0))); // outside left
+        assert!(!r.contains_point(hisab::Vec2::new(50.0, 65.0))); // outside bottom
     }
 
     #[test]
@@ -461,22 +418,8 @@ mod tests {
     #[test]
     fn test_rect_default_is_zero() {
         let r = Rect::default();
-        assert_eq!(r.x, 0.0);
+        assert_eq!(r.x(), 0.0);
         assert_eq!(r.area(), 0.0);
-    }
-
-    #[test]
-    fn test_point_distance() {
-        let a = Point::new(0.0, 0.0);
-        let b = Point::new(3.0, 4.0);
-        assert!((a.distance_to(&b) - 5.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_point_default() {
-        let p = Point::default();
-        assert_eq!(p.x, 0.0);
-        assert_eq!(p.y, 0.0);
     }
 
     #[test]
@@ -531,5 +474,151 @@ mod tests {
         );
         assert_eq!(ann.kind, AnnotationKind::Text);
         assert_eq!(ann.text.as_deref(), Some("Hello"));
+    }
+
+    #[test]
+    fn test_image_format_from_str() {
+        assert_eq!("png".parse::<ImageFormat>().unwrap(), ImageFormat::Png);
+        assert_eq!("jpg".parse::<ImageFormat>().unwrap(), ImageFormat::Jpeg);
+        assert_eq!("jpeg".parse::<ImageFormat>().unwrap(), ImageFormat::Jpeg);
+        assert_eq!("bmp".parse::<ImageFormat>().unwrap(), ImageFormat::Bmp);
+        assert_eq!("webp".parse::<ImageFormat>().unwrap(), ImageFormat::WebP);
+        assert_eq!("PNG".parse::<ImageFormat>().unwrap(), ImageFormat::Png);
+        assert!("tiff".parse::<ImageFormat>().is_err());
+    }
+
+    #[test]
+    fn test_xml_escape() {
+        assert_eq!(xml_escape("hello"), "hello");
+        assert_eq!(xml_escape("<script>"), "&lt;script&gt;");
+        assert_eq!(xml_escape("a&b"), "a&amp;b");
+        assert_eq!(xml_escape(r#"x"y'z"#), "x&quot;y&#x27;z");
+    }
+
+    #[test]
+    fn test_derive_output_path() {
+        assert_eq!(
+            derive_output_path("photo.png", "annotated"),
+            "photo_annotated.png"
+        );
+        assert_eq!(
+            derive_output_path("photo.png", "redacted"),
+            "photo_redacted.png"
+        );
+        assert_eq!(derive_output_path("noext", "out"), "noext_out");
+        assert_eq!(
+            derive_output_path("/tmp/img.jpg", "annotated"),
+            "img_annotated.jpg"
+        );
+    }
+
+    #[test]
+    fn test_image_format_from_str_invalid() {
+        let err = "tiff".parse::<ImageFormat>().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("tiff"));
+        assert!(msg.contains("png"));
+    }
+
+    #[test]
+    fn test_xml_escape_all_special_chars() {
+        assert_eq!(xml_escape(r#"<a href="x">&'test'</a>"#),
+            "&lt;a href=&quot;x&quot;&gt;&amp;&#x27;test&#x27;&lt;/a&gt;");
+    }
+
+    #[test]
+    fn test_xml_escape_empty() {
+        assert_eq!(xml_escape(""), "");
+    }
+
+    #[test]
+    fn test_xml_escape_no_special() {
+        assert_eq!(xml_escape("plain text 123"), "plain text 123");
+    }
+
+    #[test]
+    fn test_derive_output_path_dotfile() {
+        assert_eq!(derive_output_path(".hidden", "out"), ".hidden_out");
+    }
+
+    #[test]
+    fn test_derive_output_path_multiple_dots() {
+        assert_eq!(
+            derive_output_path("file.backup.png", "annotated"),
+            "file.backup_annotated.png"
+        );
+    }
+
+    #[test]
+    fn test_capture_source_display_all_variants() {
+        assert_eq!(CaptureSource::FullScreen.to_string(), "full screen");
+        assert_eq!(
+            CaptureSource::Window("firefox".into()).to_string(),
+            "window firefox"
+        );
+        let r = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let s = CaptureSource::Region(r).to_string();
+        assert!(s.contains("1920"));
+        assert!(s.contains("1080"));
+    }
+
+    #[test]
+    fn test_annotation_with_text_has_correct_fields() {
+        let ann = Annotation::with_text(
+            AnnotationKind::Text,
+            Rect::new(10.0, 20.0, 200.0, 30.0),
+            Color::BLUE,
+            "Hello <World>".into(),
+        );
+        assert_eq!(ann.kind, AnnotationKind::Text);
+        assert_eq!(ann.color, Color::BLUE);
+        assert_eq!(ann.text, Some("Hello <World>".into()));
+        assert_eq!(ann.position.x(), 10.0);
+    }
+
+    #[test]
+    fn test_annotation_new_generates_unique_ids() {
+        let a = Annotation::new(AnnotationKind::Arrow, Rect::default(), Color::RED);
+        let b = Annotation::new(AnnotationKind::Arrow, Rect::default(), Color::RED);
+        assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn test_color_new_and_constants() {
+        let c = Color::new(1, 2, 3, 4);
+        assert_eq!(c.r, 1);
+        assert_eq!(c.g, 2);
+        assert_eq!(c.b, 3);
+        assert_eq!(c.a, 4);
+        assert_eq!(Color::WHITE, Color::new(255, 255, 255, 255));
+        assert_eq!(Color::BLACK, Color::new(0, 0, 0, 255));
+    }
+
+    #[test]
+    fn test_color_to_css_semi_transparent() {
+        let c = Color::new(0, 128, 255, 128);
+        let css = c.to_css();
+        assert!(css.starts_with("rgba(0,128,255,"));
+        assert!(css.contains("0.50"));
+    }
+
+    #[test]
+    fn test_redaction_target_display_all_variants() {
+        assert_eq!(RedactionTarget::CreditCard.to_string(), "credit card");
+        assert_eq!(RedactionTarget::IpAddress.to_string(), "IP address");
+    }
+
+    #[test]
+    fn test_annotation_kind_display_all() {
+        assert_eq!(AnnotationKind::Rectangle.to_string(), "rectangle");
+        assert_eq!(AnnotationKind::Circle.to_string(), "circle");
+        assert_eq!(AnnotationKind::Text.to_string(), "text");
+        assert_eq!(AnnotationKind::Highlight.to_string(), "highlight");
+    }
+
+    #[test]
+    fn test_image_format_bmp_and_webp_mime() {
+        assert_eq!(ImageFormat::Bmp.mime_type(), "image/bmp");
+        assert_eq!(ImageFormat::WebP.mime_type(), "image/webp");
     }
 }

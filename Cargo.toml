@@ -1,57 +1,50 @@
-[workspace]
-resolver = "2"
-members = [
-    "crates/selah-core",
-    "crates/selah-capture",
-    "crates/selah-annotate",
-    "crates/selah-ai",
-    "crates/selah-mcp",
-]
+[package]
+name = "selah"
+version = "0.24.3"
+edition = "2024"
+rust-version = "1.89"
+license = "GPL-3.0-only"
+description = "AI-native screenshot capture, annotation, and redaction library for AGNOS"
+homepage = "https://github.com/MacCracken/selah"
+repository = "https://github.com/MacCracken/selah"
+readme = "README.md"
+documentation = "https://docs.rs/selah"
+keywords = ["screenshot", "annotation", "redaction", "mcp", "agnos"]
+categories = ["multimedia::images"]
+exclude = [".claude/", ".github/", "docs/", "scripts/", "crates/"]
 
-[workspace.dependencies]
+[lib]
+name = "selah"
+path = "src/lib.rs"
+
+[dependencies]
+hisab = { path = "../hisab" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "io-util", "io-std"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "2"
-anyhow = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-clap = { version = "4", features = ["derive"] }
 image = "0.25"
+ranga = { path = "../ranga" }
 base64 = "0.22"
-eframe = "0.31"
-egui = "0.31"
+bote = { path = "../bote", optional = true }
 
-[package]
-name = "selah"
-version = "2026.3.17"
-edition = "2024"
-description = "AI-native screenshot and annotation tool for AGNOS"
-license = "GPL-3.0"
+[features]
+default = []
+mcp = ["dep:bote"]
 
-[dependencies]
-selah-core = { path = "crates/selah-core" }
-selah-capture = { path = "crates/selah-capture" }
-selah-annotate = { path = "crates/selah-annotate" }
-selah-ai = { path = "crates/selah-ai" }
-selah-mcp = { path = "crates/selah-mcp" }
-clap = { workspace = true }
-tokio = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-anyhow = { workspace = true }
-base64 = { workspace = true }
-serde_json = { workspace = true }
-chrono = { workspace = true }
-uuid = { workspace = true }
-image = { workspace = true }
-eframe = { workspace = true }
-egui = { workspace = true }
-serde = { workspace = true }
+[dev-dependencies]
+serde_json = "1"
+bote = { path = "../bote" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+image = "0.25"
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
 
-[[bin]]
-name = "selah"
-path = "src/main.rs"
+[[bench]]
+name = "benchmarks"
+harness = false

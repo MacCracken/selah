@@ -1,10 +1,11 @@
-//! selah-capture — Daimon screen capture API client for Selah.
+//! Screen capture API client for Selah — connects to daimon.
 
-use selah_core::{CaptureRegion, ImageFormat, Rect, SelahError};
+use crate::core::{CaptureRegion, ImageFormat, Monitor};
+use crate::error::SelahError;
+use crate::geometry::Rect;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-
-pub mod history;
+use std::time::Duration;
 
 /// Client for daimon's screen capture API.
 #[derive(Debug, Clone)]
@@ -41,14 +42,18 @@ pub struct CaptureResponse {
     pub format: String,
 }
 
+/// Default request timeout (30 seconds).
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl CaptureClient {
-    /// Create a new capture client.
+    /// Create a new capture client with a 30-second timeout.
     pub fn new(base_url: &str) -> Self {
         let base_url = base_url.trim_end_matches('/').to_string();
-        Self {
-            base_url,
-            client: reqwest::Client::new(),
-        }
+        let client = reqwest::Client::builder()
+            .timeout(DEFAULT_TIMEOUT)
+            .build()
+            .unwrap_or_default();
+        Self { base_url, client }
     }
 
     /// Create a capture client with a custom reqwest client.
@@ -83,10 +88,10 @@ impl CaptureClient {
         let region_spec = match region {
             CaptureRegion::FullScreen => None,
             CaptureRegion::Rect(r) => Some(RegionSpec {
-                x: r.x as u32,
-                y: r.y as u32,
-                width: r.width as u32,
-                height: r.height as u32,
+                x: clamp_to_u32(r.x()),
+                y: clamp_to_u32(r.y()),
+                width: clamp_to_u32(r.width()),
+                height: clamp_to_u32(r.height()),
             }),
             CaptureRegion::Window(_) => None, // window capture uses full screen path
         };
@@ -106,23 +111,14 @@ impl CaptureClient {
             .send()
             .await
             .map_err(|e| SelahError::Api(e.to_string()))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".to_string());
-            return Err(SelahError::Api(format!("{status}: {text}")));
-        }
-
+        let resp = check_response(resp).await?;
         resp.json::<CaptureResponse>()
             .await
             .map_err(|e| SelahError::Api(e.to_string()))
     }
 
     /// List available monitors via daimon.
-    pub async fn list_monitors(&self) -> Result<Vec<selah_core::Monitor>, SelahError> {
+    pub async fn list_monitors(&self) -> Result<Vec<Monitor>, SelahError> {
         let url = format!("{}/v1/screen/monitors", self.base_url);
         let resp = self
             .client
@@ -130,17 +126,8 @@ impl CaptureClient {
             .send()
             .await
             .map_err(|e| SelahError::Api(e.to_string()))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".to_string());
-            return Err(SelahError::Api(format!("{status}: {text}")));
-        }
-
-        resp.json::<Vec<selah_core::Monitor>>()
+        let resp = check_response(resp).await?;
+        resp.json::<Vec<Monitor>>()
             .await
             .map_err(|e| SelahError::Api(e.to_string()))
     }
@@ -166,23 +153,14 @@ impl CaptureClient {
             .send()
             .await
             .map_err(|e| SelahError::Api(e.to_string()))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".to_string());
-            return Err(SelahError::Api(format!("{status}: {text}")));
-        }
-
+        let resp = check_response(resp).await?;
         resp.json::<CaptureResponse>()
             .await
             .map_err(|e| SelahError::Api(e.to_string()))
     }
 
     /// Save image data to a file.
-    pub fn save_to_file(data: &[u8], path: &Path, _format: ImageFormat) -> Result<(), SelahError> {
+    pub fn save_to_file(data: &[u8], path: &Path) -> Result<(), SelahError> {
         std::fs::write(path, data)?;
         Ok(())
     }
@@ -247,6 +225,30 @@ impl CaptureClient {
     }
 }
 
+/// Check an HTTP response status, returning a descriptive error on failure.
+async fn check_response(resp: reqwest::Response) -> Result<reqwest::Response, SelahError> {
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "unknown error".to_string());
+        return Err(SelahError::Api(format!("{status}: {text}")));
+    }
+    Ok(resp)
+}
+
+/// Clamp an f32 to a u32, treating negative values as 0.
+fn clamp_to_u32(val: f32) -> u32 {
+    if val < 0.0 {
+        0
+    } else if val > u32::MAX as f32 {
+        u32::MAX
+    } else {
+        val as u32
+    }
+}
+
 /// Detected display session type.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SessionType {
@@ -295,7 +297,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("selah_test_save.png");
         let data = vec![0x89, 0x50, 0x4E, 0x47]; // PNG magic bytes
-        CaptureClient::save_to_file(&data, &path, ImageFormat::Png).unwrap();
+        CaptureClient::save_to_file(&data, &path).unwrap();
         let read_back = std::fs::read(&path).unwrap();
         assert_eq!(read_back, data);
         std::fs::remove_file(&path).ok();
@@ -307,5 +309,33 @@ mod tests {
         // (unless running under Wayland, which is also fine)
         let st = detect_session_type();
         assert!(st == SessionType::Wayland || st == SessionType::X11);
+    }
+
+    #[test]
+    fn test_clamp_to_u32_negative() {
+        assert_eq!(clamp_to_u32(-1.0), 0);
+        assert_eq!(clamp_to_u32(-999.0), 0);
+        assert_eq!(clamp_to_u32(f32::NEG_INFINITY), 0);
+    }
+
+    #[test]
+    fn test_clamp_to_u32_overflow() {
+        assert_eq!(clamp_to_u32(f32::MAX), u32::MAX);
+        assert_eq!(clamp_to_u32(5_000_000_000.0), u32::MAX);
+        assert_eq!(clamp_to_u32(f32::INFINITY), u32::MAX);
+    }
+
+    #[test]
+    fn test_clamp_to_u32_normal() {
+        assert_eq!(clamp_to_u32(0.0), 0);
+        assert_eq!(clamp_to_u32(100.5), 100);
+        assert_eq!(clamp_to_u32(1920.0), 1920);
+    }
+
+    #[test]
+    fn test_client_base_url_multiple_trailing_slashes() {
+        let client = CaptureClient::new("http://localhost:8090///");
+        // Only one trailing slash is stripped per trim_end_matches
+        assert!(!client.base_url().ends_with('/'));
     }
 }

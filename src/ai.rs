@@ -1,6 +1,7 @@
-//! selah-ai — AI features for Selah: OCR, PII detection, smart crop suggestions.
+//! AI features for Selah: OCR, PII detection, smart crop suggestions.
 
-use selah_core::{Rect, RedactionTarget};
+use crate::core::RedactionTarget;
+use crate::geometry::Rect;
 use serde::{Deserialize, Serialize};
 
 /// Result of text extraction (OCR).
@@ -12,6 +13,11 @@ pub struct OcrResult {
     pub confidence: f64,
     /// Bounding boxes for detected text regions.
     pub bounding_boxes: Vec<Rect>,
+    /// Whether this result came from the stub (byte-scanning) implementation
+    /// rather than a real OCR engine. When true, bounding boxes will be empty
+    /// and the text is from embedded metadata, not visual content.
+    #[serde(default)]
+    pub is_stub: bool,
 }
 
 /// A suggested crop region.
@@ -40,8 +46,12 @@ pub struct RedactionSuggestion {
 
 /// Extract text regions from raw image bytes by scanning for ASCII-printable runs.
 ///
-/// This is a stub implementation. In production, this would call hoosh for
-/// actual OCR via an LLM vision model.
+/// **WARNING: This is a stub implementation.** It scans the raw (compressed)
+/// image bytes for ASCII-printable runs, which only finds embedded metadata
+/// strings — *not* text rendered visually in the image. Confidence is capped
+/// at 0.1 to reflect this limitation.
+///
+/// For real OCR, integrate with hoosh (LLM vision model on port 8088).
 pub fn extract_text_regions(data: &[u8]) -> OcrResult {
     let mut text = String::new();
     let mut current_run = String::new();
@@ -68,12 +78,14 @@ pub fn extract_text_regions(data: &[u8]) -> OcrResult {
         text.push_str(&current_run);
     }
 
-    let confidence = if text.is_empty() { 0.0 } else { 0.5 };
+    // Low confidence: this is a stub, not real OCR.
+    let confidence = if text.is_empty() { 0.0 } else { 0.1 };
 
     OcrResult {
         text,
         confidence,
         bounding_boxes: Vec::new(),
+        is_stub: true,
     }
 }
 
@@ -103,19 +115,28 @@ pub fn suggest_redactions(text: &str) -> Vec<RedactionSuggestion> {
         }
     }
 
-    // Phone detection: sequences of digits with optional separators
-    // Matches patterns like 555-123-4567, (555) 123-4567, +1-555-123-4567
-    let cleaned: String = text
-        .chars()
-        .map(|c| if c.is_ascii_digit() { c } else { ' ' })
-        .collect();
-    for group in cleaned.split_whitespace() {
-        if group.len() >= 10 && group.len() <= 15 && group.chars().all(|c| c.is_ascii_digit()) {
+    // Phone detection: look for digit sequences with phone-number separators.
+    // Requires at least one separator (dash, dot, space, parens) to distinguish
+    // from generic numeric IDs and timestamps.
+    for word in text.split_whitespace() {
+        // Only consider tokens that contain at least one phone separator
+        let has_separator = word.chars().any(|c| c == '-' || c == '.' || c == '(' || c == ')');
+        if !has_separator {
+            continue;
+        }
+        let digits: String = word.chars().filter(|c| c.is_ascii_digit()).collect();
+        let non_phone: bool = word
+            .chars()
+            .any(|c| !c.is_ascii_digit() && !"-.()+# ".contains(c));
+        if non_phone {
+            continue;
+        }
+        if digits.len() >= 10 && digits.len() <= 15 {
             suggestions.push(RedactionSuggestion {
                 region: Rect::default(),
                 target_type: RedactionTarget::Phone,
                 confidence: 0.7,
-                matched_text: group.to_string(),
+                matched_text: word.to_string(),
             });
         }
     }
@@ -166,7 +187,7 @@ pub fn suggest_redactions(text: &str) -> Vec<RedactionSuggestion> {
 }
 
 /// Luhn algorithm check for credit card validation.
-fn luhn_check(digits: &str) -> bool {
+pub fn luhn_check(digits: &str) -> bool {
     let mut sum = 0u32;
     let mut double = false;
 
@@ -174,7 +195,11 @@ fn luhn_check(digits: &str) -> bool {
         if let Some(d) = ch.to_digit(10) {
             let val = if double {
                 let doubled = d * 2;
-                if doubled > 9 { doubled - 9 } else { doubled }
+                if doubled > 9 {
+                    doubled - 9
+                } else {
+                    doubled
+                }
             } else {
                 d
             };
@@ -196,8 +221,8 @@ pub fn suggest_smart_crop(width: u32, height: u32) -> Vec<SmartCropSuggestion> {
         return Vec::new();
     }
 
-    let w = width as f64;
-    let h = height as f64;
+    let w = width as f32;
+    let h = height as f32;
 
     // Crop size: 50% of original dimensions
     let crop_w = w * 0.5;
@@ -253,6 +278,7 @@ mod tests {
         let result = extract_text_regions(data);
         assert!(result.text.contains("Hello World!"));
         assert!(result.confidence > 0.0);
+        assert!(result.is_stub);
     }
 
     #[test]
@@ -282,13 +308,25 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_phone() {
-        let suggestions = suggest_redactions("call 5551234567 now");
+    fn test_detect_phone_with_separator() {
+        let suggestions = suggest_redactions("call 555-123-4567 now");
         let phones: Vec<_> = suggestions
             .iter()
             .filter(|s| s.target_type == RedactionTarget::Phone)
             .collect();
         assert_eq!(phones.len(), 1);
+        assert_eq!(phones[0].matched_text, "555-123-4567");
+    }
+
+    #[test]
+    fn test_no_phone_without_separator() {
+        // Plain digit sequences should NOT match to avoid false positives on IDs/timestamps
+        let suggestions = suggest_redactions("id 5551234567 here");
+        let phones: Vec<_> = suggestions
+            .iter()
+            .filter(|s| s.target_type == RedactionTarget::Phone)
+            .collect();
+        assert_eq!(phones.len(), 0);
     }
 
     #[test]
@@ -358,10 +396,10 @@ mod tests {
         let h = 1080u32;
         let suggestions = suggest_smart_crop(w, h);
         for s in &suggestions {
-            assert!(s.region.x >= 0.0);
-            assert!(s.region.y >= 0.0);
-            assert!(s.region.x + s.region.width <= w as f64);
-            assert!(s.region.y + s.region.height <= h as f64);
+            assert!(s.region.x() >= 0.0);
+            assert!(s.region.y() >= 0.0);
+            assert!(s.region.x() + s.region.width() <= w as f32);
+            assert!(s.region.y() + s.region.height() <= h as f32);
         }
     }
 
@@ -375,5 +413,101 @@ mod tests {
     fn test_luhn_check_invalid() {
         assert!(!luhn_check("1234567890123"));
         assert!(!luhn_check("1111111111111"));
+    }
+
+    #[test]
+    fn test_email_no_tld() {
+        let suggestions = suggest_redactions("bad email: user@localhost");
+        let emails: Vec<_> = suggestions
+            .iter()
+            .filter(|s| s.target_type == RedactionTarget::Email)
+            .collect();
+        assert_eq!(emails.len(), 0);
+    }
+
+    #[test]
+    fn test_email_short_tld() {
+        // Single-char TLD should not match
+        let suggestions = suggest_redactions("test user@example.x");
+        let emails: Vec<_> = suggestions
+            .iter()
+            .filter(|s| s.target_type == RedactionTarget::Email)
+            .collect();
+        assert_eq!(emails.len(), 0);
+    }
+
+    #[test]
+    fn test_email_numeric_tld() {
+        // Numeric TLD should not match
+        let suggestions = suggest_redactions("test user@example.123");
+        let emails: Vec<_> = suggestions
+            .iter()
+            .filter(|s| s.target_type == RedactionTarget::Email)
+            .collect();
+        assert_eq!(emails.len(), 0);
+    }
+
+    #[test]
+    fn test_credit_card_with_dashes() {
+        let suggestions = suggest_redactions("card: 4111-1111-1111-1111");
+        let cards: Vec<_> = suggestions
+            .iter()
+            .filter(|s| s.target_type == RedactionTarget::CreditCard)
+            .collect();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].matched_text, "4111-1111-1111-1111");
+    }
+
+    #[test]
+    fn test_ip_zero() {
+        let suggestions = suggest_redactions("addr 0.0.0.0 here");
+        let ips: Vec<_> = suggestions
+            .iter()
+            .filter(|s| s.target_type == RedactionTarget::IpAddress)
+            .collect();
+        assert_eq!(ips.len(), 1);
+        assert_eq!(ips[0].matched_text, "0.0.0.0");
+    }
+
+    #[test]
+    fn test_ip_broadcast() {
+        let suggestions = suggest_redactions("addr 255.255.255.255 here");
+        let ips: Vec<_> = suggestions
+            .iter()
+            .filter(|s| s.target_type == RedactionTarget::IpAddress)
+            .collect();
+        assert_eq!(ips.len(), 1);
+    }
+
+    #[test]
+    fn test_ip_partial_invalid() {
+        // Three octets should not match
+        let suggestions = suggest_redactions("not ip: 192.168.1");
+        let ips: Vec<_> = suggestions
+            .iter()
+            .filter(|s| s.target_type == RedactionTarget::IpAddress)
+            .collect();
+        assert_eq!(ips.len(), 0);
+    }
+
+    #[test]
+    fn test_multiple_pii_types() {
+        let text = "email user@test.com phone 555-123-4567 ip 10.0.0.1";
+        let suggestions = suggest_redactions(text);
+        let types: Vec<_> = suggestions.iter().map(|s| &s.target_type).collect();
+        assert!(types.contains(&&RedactionTarget::Email));
+        assert!(types.contains(&&RedactionTarget::Phone));
+        assert!(types.contains(&&RedactionTarget::IpAddress));
+    }
+
+    #[test]
+    fn test_luhn_check_non_digit() {
+        assert!(!luhn_check("4111abcd11111111"));
+    }
+
+    #[test]
+    fn test_smart_crop_single_pixel() {
+        let suggestions = suggest_smart_crop(1, 1);
+        assert_eq!(suggestions.len(), 5);
     }
 }

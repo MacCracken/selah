@@ -1,7 +1,11 @@
-//! selah-annotate — Annotation engine for Selah.
+//! Annotation engine for Selah.
 
-use image::{ImageFormat, RgbaImage};
-use selah_core::{Annotation, AnnotationKind, Color, Rect};
+use image::ImageFormat;
+use image::RgbaImage;
+use ranga::pixel::{PixelBuffer, PixelFormat};
+use crate::core::{Annotation, AnnotationKind, Color, xml_escape};
+use crate::error::SelahError;
+use crate::geometry::Rect;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use uuid::Uuid;
@@ -9,23 +13,23 @@ use uuid::Uuid;
 /// Convert image data from one format to another.
 pub fn convert_format(
     source: &[u8],
-    target: selah_core::ImageFormat,
-) -> Result<Vec<u8>, selah_core::SelahError> {
+    target: crate::core::ImageFormat,
+) -> Result<Vec<u8>, SelahError> {
     let img = image::load_from_memory(source).map_err(|e| {
-        selah_core::SelahError::AnnotationError(format!("failed to load image: {e}"))
+        SelahError::AnnotationError(format!("failed to load image: {e}"))
     })?;
     let rgba = img.to_rgba8();
 
     let image_format = match target {
-        selah_core::ImageFormat::Png => ImageFormat::Png,
-        selah_core::ImageFormat::Jpeg => ImageFormat::Jpeg,
-        selah_core::ImageFormat::Bmp => ImageFormat::Bmp,
-        selah_core::ImageFormat::WebP => ImageFormat::WebP,
+        crate::core::ImageFormat::Png => ImageFormat::Png,
+        crate::core::ImageFormat::Jpeg => ImageFormat::Jpeg,
+        crate::core::ImageFormat::Bmp => ImageFormat::Bmp,
+        crate::core::ImageFormat::WebP => ImageFormat::WebP,
     };
 
     let mut buf = std::io::Cursor::new(Vec::new());
     rgba.write_to(&mut buf, image_format).map_err(|e| {
-        selah_core::SelahError::AnnotationError(format!("failed to encode image: {e}"))
+        SelahError::AnnotationError(format!("failed to encode image: {e}"))
     })?;
     Ok(buf.into_inner())
 }
@@ -97,7 +101,7 @@ impl AnnotationCanvas {
     }
 
     /// Save the canvas annotations to a JSON file.
-    pub fn save_to_file(&self, path: &Path) -> Result<(), selah_core::SelahError> {
+    pub fn save_to_file(&self, path: &Path) -> Result<(), SelahError> {
         let layer = AnnotationLayer {
             version: 1,
             width: self.width,
@@ -106,17 +110,17 @@ impl AnnotationCanvas {
             annotations: self.annotations.clone(),
         };
         let json = serde_json::to_string_pretty(&layer).map_err(|e| {
-            selah_core::SelahError::AnnotationError(format!("failed to serialize annotations: {e}"))
+            SelahError::AnnotationError(format!("failed to serialize annotations: {e}"))
         })?;
         std::fs::write(path, json)?;
         Ok(())
     }
 
     /// Load a canvas from a previously saved JSON file.
-    pub fn load_from_file(path: &Path) -> Result<Self, selah_core::SelahError> {
+    pub fn load_from_file(path: &Path) -> Result<Self, SelahError> {
         let json = std::fs::read_to_string(path)?;
         let layer: AnnotationLayer = serde_json::from_str(&json).map_err(|e| {
-            selah_core::SelahError::AnnotationError(format!(
+            SelahError::AnnotationError(format!(
                 "failed to deserialize annotations: {e}"
             ))
         })?;
@@ -134,12 +138,17 @@ impl AnnotationCanvas {
     pub fn render_to_image(
         source: &[u8],
         annotations: &[Annotation],
-        format: selah_core::ImageFormat,
-    ) -> Result<Vec<u8>, selah_core::SelahError> {
+        format: crate::core::ImageFormat,
+    ) -> Result<Vec<u8>, SelahError> {
         let img = image::load_from_memory(source).map_err(|e| {
-            selah_core::SelahError::AnnotationError(format!("failed to load image: {e}"))
+            SelahError::AnnotationError(format!("failed to load image: {e}"))
         })?;
-        let mut rgba = img.to_rgba8();
+        let rgba = img.to_rgba8();
+        let (w, h) = (rgba.width(), rgba.height());
+
+        // Convert image::RgbaImage to ranga::PixelBuffer for drawing
+        let mut buf = PixelBuffer::new(rgba.into_raw(), w, h, PixelFormat::Rgba8)
+            .map_err(|e| SelahError::AnnotationError(format!("pixel buffer error: {e}")))?;
 
         for ann in annotations {
             let pos = &ann.position;
@@ -147,24 +156,24 @@ impl AnnotationCanvas {
 
             match ann.kind {
                 AnnotationKind::Redaction => {
-                    Self::fill_rect(&mut rgba, pos, &Color::BLACK);
+                    Self::fill_rect(&mut buf, pos, &Color::BLACK);
                 }
                 AnnotationKind::Highlight => {
-                    Self::blend_rect(&mut rgba, pos, color, 0.3);
+                    Self::blend_rect(&mut buf, pos, color, 0.3);
                 }
                 AnnotationKind::Rectangle => {
-                    Self::stroke_rect(&mut rgba, pos, color, 2);
+                    Self::stroke_rect(&mut buf, pos, color, 2);
                 }
                 AnnotationKind::Circle => {
-                    Self::stroke_ellipse(&mut rgba, pos, color, 2);
+                    Self::stroke_ellipse(&mut buf, pos, color, 2);
                 }
                 AnnotationKind::Arrow => {
                     Self::draw_line(
-                        &mut rgba,
-                        pos.x as i32,
-                        pos.y as i32,
-                        (pos.x + pos.width) as i32,
-                        (pos.y + pos.height) as i32,
+                        &mut buf,
+                        pos.x() as i32,
+                        pos.y() as i32,
+                        (pos.x() + pos.width()) as i32,
+                        (pos.y() + pos.height()) as i32,
                         color,
                         2,
                     );
@@ -172,107 +181,114 @@ impl AnnotationCanvas {
                 AnnotationKind::Text | AnnotationKind::FreeForm => {
                     // Text rendering without a font rasterizer: draw a colored underline bar
                     Self::fill_rect(
-                        &mut rgba,
-                        &Rect::new(pos.x, pos.y + pos.height - 2.0, pos.width, 2.0),
+                        &mut buf,
+                        &Rect::new(pos.x(), pos.y() + pos.height() - 2.0, pos.width(), 2.0),
                         color,
                     );
                 }
             }
         }
 
+        // Convert ranga PixelBuffer back to image::RgbaImage for encoding
+        let raw = buf.data;
+        let rgba = RgbaImage::from_raw(w, h, raw)
+            .ok_or_else(|| SelahError::AnnotationError("buffer size mismatch".into()))?;
+
         let image_format = match format {
-            selah_core::ImageFormat::Png => ImageFormat::Png,
-            selah_core::ImageFormat::Jpeg => ImageFormat::Jpeg,
-            selah_core::ImageFormat::Bmp => ImageFormat::Bmp,
-            selah_core::ImageFormat::WebP => ImageFormat::WebP,
+            crate::core::ImageFormat::Png => ImageFormat::Png,
+            crate::core::ImageFormat::Jpeg => ImageFormat::Jpeg,
+            crate::core::ImageFormat::Bmp => ImageFormat::Bmp,
+            crate::core::ImageFormat::WebP => ImageFormat::WebP,
         };
 
-        let mut buf = std::io::Cursor::new(Vec::new());
-        rgba.write_to(&mut buf, image_format).map_err(|e| {
-            selah_core::SelahError::AnnotationError(format!("failed to encode image: {e}"))
+        let mut out = std::io::Cursor::new(Vec::new());
+        rgba.write_to(&mut out, image_format).map_err(|e| {
+            SelahError::AnnotationError(format!("failed to encode image: {e}"))
         })?;
-        Ok(buf.into_inner())
+        Ok(out.into_inner())
     }
 
     /// Fill a rectangle with a solid color.
-    fn fill_rect(img: &mut RgbaImage, rect: &Rect, color: &Color) {
-        let (iw, ih) = (img.width() as i32, img.height() as i32);
-        let x0 = (rect.x as i32).max(0);
-        let y0 = (rect.y as i32).max(0);
-        let x1 = ((rect.x + rect.width) as i32).min(iw);
-        let y1 = ((rect.y + rect.height) as i32).min(ih);
-        let pixel = image::Rgba([color.r, color.g, color.b, color.a]);
+    fn fill_rect(buf: &mut PixelBuffer, rect: &Rect, color: &Color) {
+        let (iw, ih) = (buf.width as i32, buf.height as i32);
+        let x0 = (rect.x() as i32).max(0);
+        let y0 = (rect.y() as i32).max(0);
+        let x1 = ((rect.x() + rect.width()) as i32).min(iw);
+        let y1 = ((rect.y() + rect.height()) as i32).min(ih);
+        let pixel = [color.r, color.g, color.b, color.a];
         for y in y0..y1 {
             for x in x0..x1 {
-                img.put_pixel(x as u32, y as u32, pixel);
+                buf.set_rgba(x as u32, y as u32, pixel);
             }
         }
     }
 
     /// Blend a semi-transparent rectangle over existing pixels.
-    fn blend_rect(img: &mut RgbaImage, rect: &Rect, color: &Color, opacity: f32) {
-        let (iw, ih) = (img.width() as i32, img.height() as i32);
-        let x0 = (rect.x as i32).max(0);
-        let y0 = (rect.y as i32).max(0);
-        let x1 = ((rect.x + rect.width) as i32).min(iw);
-        let y1 = ((rect.y + rect.height) as i32).min(ih);
+    fn blend_rect(buf: &mut PixelBuffer, rect: &Rect, color: &Color, opacity: f32) {
+        let (iw, ih) = (buf.width as i32, buf.height as i32);
+        let x0 = (rect.x() as i32).max(0);
+        let y0 = (rect.y() as i32).max(0);
+        let x1 = ((rect.x() + rect.width()) as i32).min(iw);
+        let y1 = ((rect.y() + rect.height()) as i32).min(ih);
+        let opacity_u8 = (opacity * 255.0) as u8;
+        let overlay = [color.r, color.g, color.b, 255];
         for y in y0..y1 {
             for x in x0..x1 {
-                let existing = img.get_pixel(x as u32, y as u32);
-                let blended = image::Rgba([
-                    ((1.0 - opacity) * existing[0] as f32 + opacity * color.r as f32) as u8,
-                    ((1.0 - opacity) * existing[1] as f32 + opacity * color.g as f32) as u8,
-                    ((1.0 - opacity) * existing[2] as f32 + opacity * color.b as f32) as u8,
-                    255,
-                ]);
-                img.put_pixel(x as u32, y as u32, blended);
+                let existing = buf.get_rgba(x as u32, y as u32).unwrap_or([0, 0, 0, 0]);
+                let blended = ranga::blend::blend_pixel(
+                    overlay,
+                    existing,
+                    ranga::blend::BlendMode::Normal,
+                    opacity_u8,
+                );
+                buf.set_rgba(x as u32, y as u32, blended);
             }
         }
     }
 
     /// Draw a rectangle outline.
-    fn stroke_rect(img: &mut RgbaImage, rect: &Rect, color: &Color, thickness: u32) {
-        let t = thickness as f64;
+    fn stroke_rect(buf: &mut PixelBuffer, rect: &Rect, color: &Color, thickness: u32) {
+        let t = thickness as f32;
         // Top edge
-        Self::fill_rect(img, &Rect::new(rect.x, rect.y, rect.width, t), color);
+        Self::fill_rect(buf, &Rect::new(rect.x(), rect.y(), rect.width(), t), color);
         // Bottom edge
         Self::fill_rect(
-            img,
-            &Rect::new(rect.x, rect.y + rect.height - t, rect.width, t),
+            buf,
+            &Rect::new(rect.x(), rect.y() + rect.height() - t, rect.width(), t),
             color,
         );
         // Left edge
-        Self::fill_rect(img, &Rect::new(rect.x, rect.y, t, rect.height), color);
+        Self::fill_rect(buf, &Rect::new(rect.x(), rect.y(), t, rect.height()), color);
         // Right edge
         Self::fill_rect(
-            img,
-            &Rect::new(rect.x + rect.width - t, rect.y, t, rect.height),
+            buf,
+            &Rect::new(rect.x() + rect.width() - t, rect.y(), t, rect.height()),
             color,
         );
     }
 
     /// Draw an ellipse outline inscribed in the given rect.
-    fn stroke_ellipse(img: &mut RgbaImage, rect: &Rect, color: &Color, thickness: u32) {
-        let cx = rect.x + rect.width / 2.0;
-        let cy = rect.y + rect.height / 2.0;
-        let rx = rect.width / 2.0;
-        let ry = rect.height / 2.0;
-        let pixel = image::Rgba([color.r, color.g, color.b, color.a]);
-        let (iw, ih) = (img.width() as i32, img.height() as i32);
+    fn stroke_ellipse(buf: &mut PixelBuffer, rect: &Rect, color: &Color, thickness: u32) {
+        let cx = rect.x() + rect.width() / 2.0;
+        let cy = rect.y() + rect.height() / 2.0;
+        let rx = rect.width() / 2.0;
+        let ry = rect.height() / 2.0;
+        let pixel = [color.r, color.g, color.b, color.a];
+        let (iw, ih) = (buf.width as i32, buf.height as i32);
 
         // Sample the ellipse outline with enough points
         let steps = ((rx + ry) * 4.0) as i32;
         for i in 0..steps {
             let angle = 2.0 * std::f64::consts::PI * (i as f64) / (steps as f64);
-            let ex = cx + rx * angle.cos();
-            let ey = cy + ry * angle.sin();
+            let ex = cx as f64 + rx as f64 * angle.cos();
+            let ey = cy as f64 + ry as f64 * angle.sin();
             // Draw a small filled square for thickness
             for dy in 0..thickness as i32 {
                 for dx in 0..thickness as i32 {
                     let px = ex as i32 + dx - thickness as i32 / 2;
                     let py = ey as i32 + dy - thickness as i32 / 2;
                     if px >= 0 && px < iw && py >= 0 && py < ih {
-                        img.put_pixel(px as u32, py as u32, pixel);
+                        buf.set_rgba(px as u32, py as u32, pixel);
                     }
                 }
             }
@@ -281,7 +297,7 @@ impl AnnotationCanvas {
 
     /// Draw a line using Bresenham's algorithm with thickness.
     fn draw_line(
-        img: &mut RgbaImage,
+        buf: &mut PixelBuffer,
         x0: i32,
         y0: i32,
         x1: i32,
@@ -289,8 +305,8 @@ impl AnnotationCanvas {
         color: &Color,
         thickness: u32,
     ) {
-        let pixel = image::Rgba([color.r, color.g, color.b, color.a]);
-        let (iw, ih) = (img.width() as i32, img.height() as i32);
+        let pixel = [color.r, color.g, color.b, color.a];
+        let (iw, ih) = (buf.width as i32, buf.height as i32);
         let half_t = thickness as i32 / 2;
 
         let dx = (x1 - x0).abs();
@@ -307,7 +323,7 @@ impl AnnotationCanvas {
                     let px = cx + tx;
                     let py = cy + ty;
                     if px >= 0 && px < iw && py >= 0 && py < ih {
-                        img.put_pixel(px as u32, py as u32, pixel);
+                        buf.set_rgba(px as u32, py as u32, pixel);
                     }
                 }
             }
@@ -343,51 +359,52 @@ impl AnnotationCanvas {
                 AnnotationKind::Rectangle => {
                     svg.push_str(&format!(
                         r#"  <rect x="{}" y="{}" width="{}" height="{}" stroke="{}" fill="none" stroke-width="2"/>"#,
-                        pos.x, pos.y, pos.width, pos.height, color
+                        pos.x(), pos.y(), pos.width(), pos.height(), color
                     ));
                 }
                 AnnotationKind::Circle => {
-                    let cx = pos.x + pos.width / 2.0;
-                    let cy = pos.y + pos.height / 2.0;
-                    let rx = pos.width / 2.0;
-                    let ry = pos.height / 2.0;
+                    let cx = pos.x() + pos.width() / 2.0;
+                    let cy = pos.y() + pos.height() / 2.0;
+                    let rx = pos.width() / 2.0;
+                    let ry = pos.height() / 2.0;
                     svg.push_str(&format!(
                         r#"  <ellipse cx="{cx}" cy="{cy}" rx="{rx}" ry="{ry}" stroke="{color}" fill="none" stroke-width="2"/>"#,
                     ));
                 }
                 AnnotationKind::Arrow => {
-                    let x2 = pos.x + pos.width;
-                    let y2 = pos.y + pos.height;
+                    let x2 = pos.x() + pos.width();
+                    let y2 = pos.y() + pos.height();
                     svg.push_str(&format!(
                         r#"  <line x1="{}" y1="{}" x2="{x2}" y2="{y2}" stroke="{color}" stroke-width="2" marker-end="url(#arrow)"/>"#,
-                        pos.x, pos.y
+                        pos.x(), pos.y()
                     ));
                 }
                 AnnotationKind::Text => {
                     let text = ann.text.as_deref().unwrap_or("");
+                    let escaped = xml_escape(text);
                     svg.push_str(&format!(
-                        r#"  <text x="{}" y="{}" fill="{color}" font-size="16">{text}</text>"#,
-                        pos.x,
-                        pos.y + 16.0
+                        r#"  <text x="{}" y="{}" fill="{color}" font-size="16">{escaped}</text>"#,
+                        pos.x(),
+                        pos.y() + 16.0
                     ));
                 }
                 AnnotationKind::Highlight => {
                     svg.push_str(&format!(
                         r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="{color}" opacity="0.3"/>"#,
-                        pos.x, pos.y, pos.width, pos.height
+                        pos.x(), pos.y(), pos.width(), pos.height()
                     ));
                 }
                 AnnotationKind::Redaction => {
                     svg.push_str(&format!(
                         r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="black"/>"#,
-                        pos.x, pos.y, pos.width, pos.height
+                        pos.x(), pos.y(), pos.width(), pos.height()
                     ));
                 }
                 AnnotationKind::FreeForm => {
                     // Freeform rendered as a small filled rect placeholder
                     svg.push_str(&format!(
                         r#"  <rect x="{}" y="{}" width="{}" height="{}" stroke="{color}" fill="none" stroke-width="2" stroke-dasharray="4"/>"#,
-                        pos.x, pos.y, pos.width, pos.height
+                        pos.x(), pos.y(), pos.width(), pos.height()
                     ));
                 }
             }
@@ -590,9 +607,140 @@ mod tests {
         img.write_to(&mut buf, ImageFormat::Png).unwrap();
         let png_bytes = buf.into_inner();
 
-        let bmp_bytes = convert_format(&png_bytes, selah_core::ImageFormat::Bmp).unwrap();
+        let bmp_bytes = convert_format(&png_bytes, crate::core::ImageFormat::Bmp).unwrap();
         assert!(!bmp_bytes.is_empty());
         // BMP files start with "BM"
         assert_eq!(&bmp_bytes[0..2], b"BM");
+    }
+
+    #[test]
+    fn test_svg_text_xss_safe() {
+        let mut canvas = make_canvas();
+        canvas.add_annotation(Annotation::with_text(
+            AnnotationKind::Text,
+            Rect::new(0.0, 0.0, 200.0, 30.0),
+            Color::BLACK,
+            "<script>alert('xss')</script>".into(),
+        ));
+        let svg = canvas.to_svg();
+        assert!(!svg.contains("<script>"));
+        assert!(svg.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn test_svg_all_annotation_kinds() {
+        let mut canvas = make_canvas();
+        canvas.add_annotation(Annotation::new(
+            AnnotationKind::Arrow,
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            Color::RED,
+        ));
+        canvas.add_annotation(Annotation::new(
+            AnnotationKind::Circle,
+            Rect::new(50.0, 50.0, 80.0, 80.0),
+            Color::GREEN,
+        ));
+        canvas.add_annotation(Annotation::new(
+            AnnotationKind::Highlight,
+            Rect::new(10.0, 10.0, 200.0, 30.0),
+            Color::YELLOW,
+        ));
+        canvas.add_annotation(Annotation::new(
+            AnnotationKind::FreeForm,
+            Rect::new(0.0, 0.0, 50.0, 50.0),
+            Color::BLUE,
+        ));
+        let svg = canvas.to_svg();
+        assert!(svg.contains("<line"));
+        assert!(svg.contains("<ellipse"));
+        assert!(svg.contains("opacity=\"0.3\""));
+        assert!(svg.contains("stroke-dasharray"));
+    }
+
+    #[test]
+    fn test_render_to_image_small_png() {
+        // Create a 4x4 red PNG
+        let mut img = RgbaImage::new(4, 4);
+        for pixel in img.pixels_mut() {
+            *pixel = image::Rgba([255, 0, 0, 255]);
+        }
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, ImageFormat::Png).unwrap();
+        let png_bytes = buf.into_inner();
+
+        // Add a black redaction covering the top-left 2x2 area
+        let annotations = vec![Annotation::new(
+            AnnotationKind::Redaction,
+            Rect::new(0.0, 0.0, 2.0, 2.0),
+            Color::BLACK,
+        )];
+
+        let result = AnnotationCanvas::render_to_image(
+            &png_bytes,
+            &annotations,
+            crate::core::ImageFormat::Png,
+        )
+        .unwrap();
+
+        // Verify output is valid PNG
+        let output_img = image::load_from_memory(&result).unwrap().to_rgba8();
+        assert_eq!(output_img.width(), 4);
+        assert_eq!(output_img.height(), 4);
+
+        // Top-left pixel should be black (redacted)
+        let p = output_img.get_pixel(0, 0);
+        assert_eq!(p.0, [0, 0, 0, 255]);
+
+        // Bottom-right pixel should still be red
+        let p = output_img.get_pixel(3, 3);
+        assert_eq!(p.0, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn test_render_to_image_with_multiple_annotations() {
+        let mut img = RgbaImage::new(10, 10);
+        for pixel in img.pixels_mut() {
+            *pixel = image::Rgba([255, 255, 255, 255]);
+        }
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, ImageFormat::Png).unwrap();
+        let png_bytes = buf.into_inner();
+
+        let annotations = vec![
+            Annotation::new(
+                AnnotationKind::Rectangle,
+                Rect::new(1.0, 1.0, 8.0, 8.0),
+                Color::RED,
+            ),
+            Annotation::new(
+                AnnotationKind::Highlight,
+                Rect::new(3.0, 3.0, 4.0, 4.0),
+                Color::YELLOW,
+            ),
+        ];
+
+        let result = AnnotationCanvas::render_to_image(
+            &png_bytes,
+            &annotations,
+            crate::core::ImageFormat::Png,
+        )
+        .unwrap();
+
+        let output_img = image::load_from_memory(&result).unwrap();
+        assert_eq!(output_img.width(), 10);
+        assert_eq!(output_img.height(), 10);
+    }
+
+    #[test]
+    fn test_svg_text_with_no_text() {
+        let mut canvas = make_canvas();
+        canvas.add_annotation(Annotation::new(
+            AnnotationKind::Text,
+            Rect::new(0.0, 0.0, 100.0, 20.0),
+            Color::BLACK,
+        ));
+        let svg = canvas.to_svg();
+        // Should produce a <text> element with empty content
+        assert!(svg.contains("<text"));
     }
 }
