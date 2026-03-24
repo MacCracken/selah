@@ -362,13 +362,7 @@ async fn tool_capture(args: &Value, api_url: &str) -> Result<Value, String> {
         let source = match &region {
             crate::core::CaptureRegion::FullScreen => "full screen".to_string(),
             crate::core::CaptureRegion::Rect(r) => {
-                format!(
-                    "region {}x{} at {},{}",
-                    r.width(),
-                    r.height(),
-                    r.x(),
-                    r.y()
-                )
+                format!("region {}x{} at {},{}", r.width(), r.height(), r.x(), r.y())
             }
             crate::core::CaptureRegion::Window(w) => format!("window {w}"),
         };
@@ -420,9 +414,8 @@ fn tool_annotate(args: &Value) -> Result<Value, String> {
         .unwrap_or_else(|| crate::core::derive_output_path(image_path, "annotated"));
 
     let format = crate::core::ImageFormat::Png; // default
-    let result =
-        crate::annotate::AnnotationCanvas::render_to_image(&source, &annotations, format)
-            .map_err(|e| e.to_string())?;
+    let result = crate::annotate::AnnotationCanvas::render_to_image(&source, &annotations, format)
+        .map_err(|e| e.to_string())?;
 
     std::fs::write(&output, &result).map_err(|e| format!("failed to write {output}: {e}"))?;
 
@@ -548,10 +541,7 @@ fn tool_redact(args: &Value) -> Result<Value, String> {
 }
 
 fn tool_history(args: &Value) -> Result<Value, String> {
-    let limit = args
-        .get("limit")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(20) as usize;
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
 
     let since = args
         .get("since")

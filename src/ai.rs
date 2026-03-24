@@ -128,7 +128,9 @@ pub fn suggest_redactions(text: &str) -> Vec<RedactionSuggestion> {
     // from generic numeric IDs and timestamps.
     for word in text.split_whitespace() {
         // Only consider tokens that contain at least one phone separator
-        let has_separator = word.chars().any(|c| c == '-' || c == '.' || c == '(' || c == ')');
+        let has_separator = word
+            .chars()
+            .any(|c| c == '-' || c == '.' || c == '(' || c == ')');
         if !has_separator {
             continue;
         }
@@ -203,11 +205,7 @@ fn luhn_check(digits: &str) -> bool {
         if let Some(d) = ch.to_digit(10) {
             let val = if double {
                 let doubled = d * 2;
-                if doubled > 9 {
-                    doubled - 9
-                } else {
-                    doubled
-                }
+                if doubled > 9 { doubled - 9 } else { doubled }
             } else {
                 d
             };

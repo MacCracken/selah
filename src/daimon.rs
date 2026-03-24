@@ -83,7 +83,12 @@ impl DaimonClient {
             "capabilities": ["screenshot", "annotate", "ocr", "redact"]
         });
 
-        let resp = self.client.post(&url).json(&body).send().await
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
             .map_err(|e| SelahError::Api(format!("daimon register failed: {e}")))?;
 
         if !resp.status().is_success() {
@@ -92,7 +97,9 @@ impl DaimonClient {
             return Err(SelahError::Api(format!("daimon register {status}: {text}")));
         }
 
-        let result: serde_json::Value = resp.json().await
+        let result: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| SelahError::Api(format!("daimon register parse: {e}")))?;
 
         result["agent_id"]
@@ -104,13 +111,19 @@ impl DaimonClient {
     /// Send a heartbeat to daimon.
     pub async fn heartbeat(&self, agent_id: &str) -> Result<(), SelahError> {
         let url = format!("{}/v1/agents/{agent_id}/heartbeat", self.config.endpoint);
-        let resp = self.client.post(&url).send().await
+        let resp = self
+            .client
+            .post(&url)
+            .send()
+            .await
             .map_err(|e| SelahError::Api(format!("daimon heartbeat failed: {e}")))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(SelahError::Api(format!("daimon heartbeat {status}: {text}")));
+            return Err(SelahError::Api(format!(
+                "daimon heartbeat {status}: {text}"
+            )));
         }
 
         Ok(())
@@ -157,10 +170,7 @@ impl HooshClient {
     /// Sends the image to hoosh for real OCR via a vision model.
     /// Returns extracted text with bounding boxes.
     pub async fn ocr(&self, image_data: &[u8]) -> Result<crate::OcrResult, SelahError> {
-        let b64 = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            image_data,
-        );
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, image_data);
 
         let url = format!("{}/v1/vision/ocr", self.config.endpoint);
         let body = serde_json::json!({
@@ -168,7 +178,12 @@ impl HooshClient {
             "task": "ocr",
         });
 
-        let resp = self.client.post(&url).json(&body).send().await
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
             .map_err(|e| SelahError::Api(format!("hoosh OCR failed: {e}")))?;
 
         if !resp.status().is_success() {
@@ -177,7 +192,9 @@ impl HooshClient {
             return Err(SelahError::Api(format!("hoosh OCR {status}: {text}")));
         }
 
-        let result: serde_json::Value = resp.json().await
+        let result: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| SelahError::Api(format!("hoosh OCR parse: {e}")))?;
 
         let text = result["text"].as_str().unwrap_or("").to_string();

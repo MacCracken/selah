@@ -1,7 +1,7 @@
 //! Screenshot history — persisted as JSON-lines.
 
-use chrono::{DateTime, Utc};
 use crate::SelahError;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -21,7 +21,11 @@ impl FileLock {
         // retry briefly (another process holds it).
         for _ in 0..50 {
             match OpenOptions::new().write(true).create_new(true).open(path) {
-                Ok(_) => return Ok(Self { path: path.to_path_buf() }),
+                Ok(_) => {
+                    return Ok(Self {
+                        path: path.to_path_buf(),
+                    });
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     std::thread::sleep(std::time::Duration::from_millis(20));
                 }

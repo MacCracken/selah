@@ -1,11 +1,11 @@
 //! Annotation engine for Selah.
 
-use image::ImageFormat;
-use image::RgbaImage;
-use ranga::pixel::{PixelBuffer, PixelFormat};
 use crate::core::{Annotation, AnnotationKind, Color, xml_escape};
 use crate::error::SelahError;
 use crate::geometry::Rect;
+use image::ImageFormat;
+use image::RgbaImage;
+use ranga::pixel::{PixelBuffer, PixelFormat};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use uuid::Uuid;
@@ -15,9 +15,8 @@ pub fn convert_format(
     source: &[u8],
     target: crate::core::ImageFormat,
 ) -> Result<Vec<u8>, SelahError> {
-    let img = image::load_from_memory(source).map_err(|e| {
-        SelahError::AnnotationError(format!("failed to load image: {e}"))
-    })?;
+    let img = image::load_from_memory(source)
+        .map_err(|e| SelahError::AnnotationError(format!("failed to load image: {e}")))?;
     let rgba = img.to_rgba8();
 
     let image_format = match target {
@@ -28,9 +27,8 @@ pub fn convert_format(
     };
 
     let mut buf = std::io::Cursor::new(Vec::new());
-    rgba.write_to(&mut buf, image_format).map_err(|e| {
-        SelahError::AnnotationError(format!("failed to encode image: {e}"))
-    })?;
+    rgba.write_to(&mut buf, image_format)
+        .map_err(|e| SelahError::AnnotationError(format!("failed to encode image: {e}")))?;
     Ok(buf.into_inner())
 }
 
@@ -134,9 +132,7 @@ impl AnnotationCanvas {
     pub fn load_from_file(path: &Path) -> Result<Self, SelahError> {
         let json = std::fs::read_to_string(path)?;
         let layer: AnnotationLayer = serde_json::from_str(&json).map_err(|e| {
-            SelahError::AnnotationError(format!(
-                "failed to deserialize annotations: {e}"
-            ))
+            SelahError::AnnotationError(format!("failed to deserialize annotations: {e}"))
         })?;
         Ok(Self {
             width: layer.width,
@@ -154,9 +150,8 @@ impl AnnotationCanvas {
         annotations: &[Annotation],
         format: crate::core::ImageFormat,
     ) -> Result<Vec<u8>, SelahError> {
-        let img = image::load_from_memory(source).map_err(|e| {
-            SelahError::AnnotationError(format!("failed to load image: {e}"))
-        })?;
+        let img = image::load_from_memory(source)
+            .map_err(|e| SelahError::AnnotationError(format!("failed to load image: {e}")))?;
         let rgba = img.to_rgba8();
         let (w, h) = (rgba.width(), rgba.height());
 
@@ -216,9 +211,8 @@ impl AnnotationCanvas {
         };
 
         let mut out = std::io::Cursor::new(Vec::new());
-        rgba.write_to(&mut out, image_format).map_err(|e| {
-            SelahError::AnnotationError(format!("failed to encode image: {e}"))
-        })?;
+        rgba.write_to(&mut out, image_format)
+            .map_err(|e| SelahError::AnnotationError(format!("failed to encode image: {e}")))?;
         Ok(out.into_inner())
     }
 
@@ -411,7 +405,10 @@ impl AnnotationCanvas {
                 AnnotationKind::Redaction => {
                     svg.push_str(&format!(
                         r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="black"/>"#,
-                        pos.x(), pos.y(), pos.width(), pos.height()
+                        pos.x(),
+                        pos.y(),
+                        pos.width(),
+                        pos.height()
                     ));
                 }
                 AnnotationKind::FreeForm => {

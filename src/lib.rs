@@ -1,28 +1,31 @@
 //! Selah — AI-native screenshot capture, annotation, and redaction library for AGNOS.
 
-pub mod core;
-pub mod geometry;
-pub mod error;
-pub mod capture;
-pub mod history;
-pub mod annotate;
 pub mod ai;
+pub mod annotate;
+pub mod capture;
+pub mod core;
 pub mod daimon;
+pub mod error;
+pub mod geometry;
+pub mod history;
 #[cfg(any(feature = "mcp", test))]
 pub mod mcp;
 
 // Re-exports for convenience
-pub use core::{
-    Annotation, AnnotationKind, CaptureRegion, CaptureSource, Color, ImageFormat,
-    Monitor, RedactionTarget, Screenshot, xml_escape, derive_output_path,
+pub use ai::{
+    OcrResult, RedactionSuggestion, SmartCropSuggestion, extract_text_regions, suggest_redactions,
+    suggest_smart_crop,
 };
-pub use geometry::Rect;
-pub use error::SelahError;
-pub use capture::{CaptureClient, CaptureResponse};
-pub use history::{HistoryStore, HistoryEntry};
 pub use annotate::{AnnotationCanvas, AnnotationLayer, convert_format};
-pub use ai::{OcrResult, RedactionSuggestion, SmartCropSuggestion, extract_text_regions, suggest_redactions, suggest_smart_crop};
+pub use capture::{CaptureClient, CaptureResponse};
+pub use core::{
+    Annotation, AnnotationKind, CaptureRegion, CaptureSource, Color, ImageFormat, Monitor,
+    RedactionTarget, Screenshot, derive_output_path, xml_escape,
+};
 pub use daimon::{DaimonClient, DaimonConfig, HooshClient, HooshConfig};
+pub use error::SelahError;
+pub use geometry::Rect;
+pub use history::{HistoryEntry, HistoryStore};
 #[cfg(feature = "mcp")]
 pub use mcp::run_server as run_mcp_server;
 
@@ -105,7 +108,8 @@ pub fn redact_image(
         suggestions.retain(|s| targets.contains(&s.target_type));
     }
 
-    let annotations: Vec<Annotation> = suggestions.iter()
+    let annotations: Vec<Annotation> = suggestions
+        .iter()
         .map(|s| Annotation::new(AnnotationKind::Redaction, s.region, Color::BLACK))
         .collect();
 

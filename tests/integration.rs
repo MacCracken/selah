@@ -70,7 +70,8 @@ fn test_redact_image_with_no_pii() {
 #[test]
 fn test_geometry_serde_backward_compat() {
     // Old format used f64 values
-    let json = r#"{"x": 10.123456789012345, "y": 20.987654321098765, "width": 100.0, "height": 50.0}"#;
+    let json =
+        r#"{"x": 10.123456789012345, "y": 20.987654321098765, "width": 100.0, "height": 50.0}"#;
     let r: Rect = serde_json::from_str(json).unwrap();
     assert!((r.x() - 10.1234).abs() < 0.01);
     assert!((r.y() - 20.9876).abs() < 0.01);
@@ -163,8 +164,10 @@ fn test_convert_format_roundtrip() {
 fn test_history_store_integration() {
     use selah::HistoryStore;
 
-    let path =
-        std::env::temp_dir().join(format!("selah_integration_test_{}.jsonl", uuid::Uuid::new_v4()));
+    let path = std::env::temp_dir().join(format!(
+        "selah_integration_test_{}.jsonl",
+        uuid::Uuid::new_v4()
+    ));
     let store = HistoryStore::open(path.clone());
 
     let entry = HistoryEntry {

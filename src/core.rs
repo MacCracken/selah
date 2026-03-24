@@ -562,8 +562,10 @@ mod tests {
 
     #[test]
     fn test_xml_escape_all_special_chars() {
-        assert_eq!(xml_escape(r#"<a href="x">&'test'</a>"#),
-            "&lt;a href=&quot;x&quot;&gt;&amp;&#x27;test&#x27;&lt;/a&gt;");
+        assert_eq!(
+            xml_escape(r#"<a href="x">&'test'</a>"#),
+            "&lt;a href=&quot;x&quot;&gt;&amp;&#x27;test&#x27;&lt;/a&gt;"
+        );
     }
 
     #[test]

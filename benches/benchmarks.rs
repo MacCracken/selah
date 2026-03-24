@@ -2,8 +2,8 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use selah::{
-    Annotation, AnnotationCanvas, AnnotationKind, Color, ImageFormat, Rect,
-    suggest_redactions, xml_escape,
+    Annotation, AnnotationCanvas, AnnotationKind, Color, ImageFormat, Rect, suggest_redactions,
+    xml_escape,
 };
 
 fn make_png(width: u32, height: u32) -> Vec<u8> {
@@ -51,7 +51,8 @@ fn bench_render_to_image(c: &mut Criterion) {
 
 fn bench_suggest_redactions(c: &mut Criterion) {
     let clean_text = "This is a perfectly normal sentence with no sensitive data at all.";
-    let pii_text = "Contact user@example.com at 192.168.1.100 or call 555-123-4567. Card: 4111111111111111";
+    let pii_text =
+        "Contact user@example.com at 192.168.1.100 or call 555-123-4567. Card: 4111111111111111";
     let long_text = clean_text.repeat(100);
 
     c.bench_function("suggest_redactions_clean", |b| {
@@ -69,7 +70,14 @@ fn bench_suggest_redactions(c: &mut Criterion) {
 
 fn bench_rect_operations(c: &mut Criterion) {
     c.bench_function("rect_new", |b| {
-        b.iter(|| Rect::new(black_box(10.0), black_box(20.0), black_box(100.0), black_box(50.0)));
+        b.iter(|| {
+            Rect::new(
+                black_box(10.0),
+                black_box(20.0),
+                black_box(100.0),
+                black_box(50.0),
+            )
+        });
     });
 
     let r = Rect::new(10.0, 10.0, 100.0, 50.0);

@@ -3,8 +3,8 @@
 //! Run with: `cargo run --example basic`
 
 use selah::{
-    Annotation, AnnotationCanvas, AnnotationKind, Color, ImageFormat, Rect,
-    suggest_redactions, suggest_smart_crop, xml_escape,
+    Annotation, AnnotationCanvas, AnnotationKind, Color, ImageFormat, Rect, suggest_redactions,
+    suggest_smart_crop, xml_escape,
 };
 
 fn main() {
@@ -54,7 +54,12 @@ fn main() {
     let suggestions = suggest_redactions(text);
     println!("\nPII detected in text:");
     for s in &suggestions {
-        println!("  - {} (confidence: {:.0}%): {}", s.target_type, s.confidence * 100.0, s.matched_text);
+        println!(
+            "  - {} (confidence: {:.0}%): {}",
+            s.target_type,
+            s.confidence * 100.0,
+            s.matched_text
+        );
     }
 
     // Demonstrate smart crop suggestions
