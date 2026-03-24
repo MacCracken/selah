@@ -92,6 +92,14 @@ pub fn extract_text_regions(data: &[u8]) -> OcrResult {
 /// Detect sensitive data in text using regex-like pattern matching.
 ///
 /// Detects emails, phone numbers, credit card numbers, and IP addresses.
+///
+/// # Example
+///
+/// ```
+/// let suggestions = selah::suggest_redactions("contact user@example.com for info");
+/// assert_eq!(suggestions.len(), 1);
+/// assert_eq!(suggestions[0].matched_text, "user@example.com");
+/// ```
 pub fn suggest_redactions(text: &str) -> Vec<RedactionSuggestion> {
     let mut suggestions = Vec::new();
 
@@ -187,7 +195,7 @@ pub fn suggest_redactions(text: &str) -> Vec<RedactionSuggestion> {
 }
 
 /// Luhn algorithm check for credit card validation.
-pub fn luhn_check(digits: &str) -> bool {
+fn luhn_check(digits: &str) -> bool {
     let mut sum = 0u32;
     let mut double = false;
 

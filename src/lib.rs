@@ -26,16 +26,45 @@ pub use daimon::{DaimonClient, DaimonConfig, HooshClient, HooshConfig};
 #[cfg(feature = "mcp")]
 pub use mcp::run_server as run_mcp_server;
 
-// Re-export hisab::Vec2 as Point for convenience
+/// Re-export hisab's 2D vector type for use as points and coordinates.
 pub use hisab::Vec2;
 
 /// Decode base64-encoded image data from a capture response.
+///
+/// # Example
+///
+/// ```
+/// let encoded = base64::Engine::encode(
+///     &base64::engine::general_purpose::STANDARD,
+///     b"hello",
+/// );
+/// let decoded = selah::decode_image_data(&encoded).unwrap();
+/// assert_eq!(decoded, b"hello");
+/// ```
 pub fn decode_image_data(base64_data: &str) -> Result<Vec<u8>, SelahError> {
     base64::Engine::decode(&base64::engine::general_purpose::STANDARD, base64_data)
         .map_err(|e| SelahError::Api(format!("failed to decode image data: {e}")))
 }
 
 /// Apply annotations to an image and return the encoded bytes.
+///
+/// # Example
+///
+/// ```
+/// use selah::{Annotation, AnnotationKind, Color, Rect, ImageFormat};
+///
+/// // Create a minimal 1x1 PNG
+/// let mut img = image::RgbaImage::new(4, 4);
+/// let mut buf = std::io::Cursor::new(Vec::new());
+/// img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+/// let png_bytes = buf.into_inner();
+///
+/// let annotations = vec![
+///     Annotation::new(AnnotationKind::Rectangle, Rect::new(0.0, 0.0, 2.0, 2.0), Color::RED),
+/// ];
+/// let result = selah::annotate_image(&png_bytes, &annotations, ImageFormat::Png).unwrap();
+/// assert!(!result.is_empty());
+/// ```
 pub fn annotate_image(
     source: &[u8],
     annotations: &[Annotation],
@@ -46,6 +75,20 @@ pub fn annotate_image(
 
 /// Detect PII in an image and produce redacted bytes.
 /// Returns (redacted image bytes, list of suggestions).
+///
+/// # Example
+///
+/// ```
+/// use selah::ImageFormat;
+///
+/// let mut img = image::RgbaImage::new(4, 4);
+/// let mut buf = std::io::Cursor::new(Vec::new());
+/// img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+/// let png_bytes = buf.into_inner();
+///
+/// let (redacted, suggestions) = selah::redact_image(&png_bytes, None, ImageFormat::Png).unwrap();
+/// assert!(!redacted.is_empty());
+/// ```
 pub fn redact_image(
     source: &[u8],
     targets: Option<&[RedactionTarget]>,

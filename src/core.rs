@@ -26,6 +26,7 @@ pub struct Screenshot {
 }
 
 /// Source of a screen capture.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum CaptureSource {
     /// Full screen capture.
@@ -56,6 +57,7 @@ impl std::fmt::Display for CaptureSource {
 }
 
 /// Capture region specification.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum CaptureRegion {
     /// Capture the entire screen.
@@ -83,6 +85,19 @@ pub struct Annotation {
 
 impl Annotation {
     /// Create a new annotation.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use selah::{Annotation, AnnotationKind, Rect, Color};
+    ///
+    /// let ann = Annotation::new(
+    ///     AnnotationKind::Rectangle,
+    ///     Rect::new(10.0, 20.0, 100.0, 50.0),
+    ///     Color::RED,
+    /// );
+    /// assert!(ann.text.is_none());
+    /// ```
     pub fn new(kind: AnnotationKind, position: Rect, color: Color) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -106,6 +121,7 @@ impl Annotation {
 }
 
 /// Types of annotations.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AnnotationKind {
     Arrow,
@@ -132,6 +148,7 @@ impl std::fmt::Display for AnnotationKind {
 }
 
 /// Supported image formats.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
 pub enum ImageFormat {
     #[default]
@@ -143,6 +160,15 @@ pub enum ImageFormat {
 
 impl ImageFormat {
     /// File extension for this format.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use selah::ImageFormat;
+    ///
+    /// assert_eq!(ImageFormat::Png.extension(), "png");
+    /// assert_eq!("jpg".parse::<ImageFormat>().unwrap(), ImageFormat::Jpeg);
+    /// ```
     pub fn extension(&self) -> &'static str {
         match self {
             ImageFormat::Png => "png",
@@ -186,6 +212,13 @@ impl std::str::FromStr for ImageFormat {
 }
 
 /// Escape a string for safe inclusion in XML/SVG content.
+///
+/// # Example
+///
+/// ```
+/// assert_eq!(selah::xml_escape("<script>alert('xss')</script>"),
+///            "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;");
+/// ```
 pub fn xml_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
@@ -204,6 +237,12 @@ pub fn xml_escape(s: &str) -> String {
 /// Generate a default output path by appending a suffix before the file extension.
 ///
 /// e.g. `derive_output_path("photo.png", "annotated")` -> `"photo_annotated.png"`
+///
+/// # Example
+///
+/// ```
+/// assert_eq!(selah::derive_output_path("photo.png", "annotated"), "photo_annotated.png");
+/// ```
 pub fn derive_output_path(input: &str, suffix: &str) -> String {
     let p = std::path::Path::new(input);
     let stem = p.file_stem().unwrap_or_default().to_string_lossy();
@@ -314,6 +353,7 @@ pub struct Monitor {
 }
 
 /// Types of sensitive data that can be redacted.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum RedactionTarget {
     Email,

@@ -8,6 +8,19 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub struct Rect(hisab::Rect);
 
 impl Rect {
+    /// Create a new rectangle from position and size.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use selah::Rect;
+    /// use hisab::Vec2;
+    ///
+    /// let r = Rect::new(10.0, 20.0, 100.0, 50.0);
+    /// assert_eq!(r.x(), 10.0);
+    /// assert_eq!(r.width(), 100.0);
+    /// assert!(r.contains_point(Vec2::new(50.0, 40.0)));
+    /// ```
     pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
         // Use direct field construction to preserve negative width/height (for arrows)
         Self(hisab::Rect {

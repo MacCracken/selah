@@ -34,7 +34,7 @@ struct RegionSpec {
 }
 
 /// Response from `/v1/screen/capture`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CaptureResponse {
     pub image_data: String,
     pub width: u32,
@@ -250,9 +250,14 @@ fn clamp_to_u32(val: f32) -> u32 {
 }
 
 /// Detected display session type.
+///
+/// Represents the windowing system protocol in use on the current session.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SessionType {
+    /// The Wayland display protocol.
     Wayland,
+    /// The X Window System (X11) protocol.
     X11,
 }
 

@@ -57,6 +57,20 @@ pub struct AnnotationCanvas {
 
 impl AnnotationCanvas {
     /// Create a new empty canvas.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use selah::{AnnotationCanvas, Annotation, AnnotationKind, Rect, Color};
+    ///
+    /// let mut canvas = AnnotationCanvas::new(1920, 1080);
+    /// canvas.add_annotation(Annotation::new(
+    ///     AnnotationKind::Rectangle,
+    ///     Rect::new(10.0, 10.0, 100.0, 50.0),
+    ///     Color::RED,
+    /// ));
+    /// assert_eq!(canvas.count(), 1);
+    /// ```
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             width,

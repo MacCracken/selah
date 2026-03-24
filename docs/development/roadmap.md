@@ -39,7 +39,6 @@
 
 ## v1.0 — Stable API
 
-- [ ] Public API stabilization
-- [ ] All `#[non_exhaustive]` audited
-- [ ] Full documentation with doc-tests
-- [ ] Published to crates.io with stable guarantees
+- [x] Public API stabilization
+- [x] All `#[non_exhaustive]` audited — applied to all public enums
+- [x] Full documentation with doc-tests on all key public items

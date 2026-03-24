@@ -78,6 +78,17 @@ impl HistoryStore {
     }
 
     /// Open a history store at a specific path (useful for testing).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use selah::HistoryStore;
+    ///
+    /// let store = HistoryStore::open(std::env::temp_dir().join("selah_doctest.jsonl"));
+    /// let entries = store.list(10, None).unwrap();
+    /// // Fresh store has no entries
+    /// assert!(entries.is_empty());
+    /// ```
     pub fn open(path: PathBuf) -> Self {
         Self { path }
     }
