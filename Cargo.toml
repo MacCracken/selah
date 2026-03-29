@@ -18,7 +18,7 @@ name = "selah"
 path = "src/lib.rs"
 
 [dependencies]
-hisab = "0.24"
+hisab = "1.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "io-util", "io-std"] }
@@ -28,13 +28,15 @@ uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "2"
 tracing = "0.1"
 image = "0.25"
-ranga = "0.24"
+ranga = "0.29"
 base64 = "0.22"
 bote = { version = "0.22", optional = true }
+hoosh = { version = "1", default-features = false, optional = true }
 
 [features]
 default = []
 mcp = ["dep:bote"]
+ai = ["dep:hoosh"]
 
 [dev-dependencies]
 serde_json = "1"
@@ -45,7 +47,8 @@ image = "0.25"
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 base64 = "0.22"
-hisab = "0.24"
+hisab = "1.3"
+hoosh = { version = "1", default-features = false }
 
 [[bench]]
 name = "benchmarks"

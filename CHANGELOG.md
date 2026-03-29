@@ -4,6 +4,13 @@ All notable changes to Selah will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.29.3] - 2026-03-28
+
+### Changed
+
+- Updated all transitive dependencies to latest compatible versions
+- Version bump to 0.29.3
+
 ## [0.24.3] - 2026-03-24
 
 ### Changed
