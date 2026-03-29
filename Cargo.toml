@@ -30,7 +30,7 @@ tracing = "0.1"
 image = "0.25"
 ranga = "0.29"
 base64 = "0.22"
-bote = { version = "0.22", optional = true }
+bote = { version = "0.50", optional = true }
 hoosh = { version = "1", default-features = false, optional = true }
 
 [features]
@@ -40,7 +40,7 @@ ai = ["dep:hoosh"]
 
 [dev-dependencies]
 serde_json = "1"
-bote = "0.22"
+bote = "0.50"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 image = "0.25"

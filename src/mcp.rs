@@ -13,12 +13,12 @@ use serde_json::Value;
 fn build_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
 
-    registry.register(ToolDef {
-        name: "selah_capture".into(),
-        description: "Take a screenshot via the daimon screen capture API".into(),
-        input_schema: ToolSchema {
-            schema_type: "object".into(),
-            properties: HashMap::from([
+    registry.register(ToolDef::new(
+        "selah_capture",
+        "Take a screenshot via the daimon screen capture API",
+        ToolSchema::new(
+            "object",
+            HashMap::from([
                 (
                     "region".into(),
                     serde_json::json!({
@@ -49,16 +49,16 @@ fn build_registry() -> ToolRegistry {
                     }),
                 ),
             ]),
-            required: vec![],
-        },
-    });
+            vec![],
+        ),
+    ));
 
-    registry.register(ToolDef {
-        name: "selah_annotate".into(),
-        description: "Add annotations to an image".into(),
-        input_schema: ToolSchema {
-            schema_type: "object".into(),
-            properties: HashMap::from([
+    registry.register(ToolDef::new(
+        "selah_annotate",
+        "Add annotations to an image",
+        ToolSchema::new(
+            "object",
+            HashMap::from([
                 (
                     "image_path".into(),
                     serde_json::json!({ "type": "string", "description": "Path to the source image" }),
@@ -100,16 +100,16 @@ fn build_registry() -> ToolRegistry {
                     serde_json::json!({ "type": "string", "description": "Output file path" }),
                 ),
             ]),
-            required: vec!["image_path".into(), "annotations".into()],
-        },
-    });
+            vec!["image_path".into(), "annotations".into()],
+        ),
+    ));
 
-    registry.register(ToolDef {
-        name: "selah_ocr".into(),
-        description: "Extract text from an image".into(),
-        input_schema: ToolSchema {
-            schema_type: "object".into(),
-            properties: HashMap::from([
+    registry.register(ToolDef::new(
+        "selah_ocr",
+        "Extract text from an image",
+        ToolSchema::new(
+            "object",
+            HashMap::from([
                 (
                     "image_path".into(),
                     serde_json::json!({ "type": "string", "description": "Path to the image" }),
@@ -123,16 +123,16 @@ fn build_registry() -> ToolRegistry {
                     }),
                 ),
             ]),
-            required: vec!["image_path".into()],
-        },
-    });
+            vec!["image_path".into()],
+        ),
+    ));
 
-    registry.register(ToolDef {
-        name: "selah_redact".into(),
-        description: "Detect and redact sensitive content in an image".into(),
-        input_schema: ToolSchema {
-            schema_type: "object".into(),
-            properties: HashMap::from([
+    registry.register(ToolDef::new(
+        "selah_redact",
+        "Detect and redact sensitive content in an image",
+        ToolSchema::new(
+            "object",
+            HashMap::from([
                 (
                     "image_path".into(),
                     serde_json::json!({ "type": "string", "description": "Path to the image" }),
@@ -153,16 +153,16 @@ fn build_registry() -> ToolRegistry {
                     serde_json::json!({ "type": "string", "description": "Output file path" }),
                 ),
             ]),
-            required: vec!["image_path".into()],
-        },
-    });
+            vec!["image_path".into()],
+        ),
+    ));
 
-    registry.register(ToolDef {
-        name: "selah_history".into(),
-        description: "List recent screenshots and their metadata".into(),
-        input_schema: ToolSchema {
-            schema_type: "object".into(),
-            properties: HashMap::from([
+    registry.register(ToolDef::new(
+        "selah_history",
+        "List recent screenshots and their metadata",
+        ToolSchema::new(
+            "object",
+            HashMap::from([
                 (
                     "limit".into(),
                     serde_json::json!({
@@ -179,9 +179,9 @@ fn build_registry() -> ToolRegistry {
                     }),
                 ),
             ]),
-            required: vec![],
-        },
-    });
+            vec![],
+        ),
+    ));
 
     registry
 }
@@ -603,7 +603,7 @@ mod tests {
 
         let names: Vec<&str> = tools
             .iter()
-            .map(|t| t.get("name").unwrap().as_str().unwrap())
+            .map(|t: &serde_json::Value| t.get("name").unwrap().as_str().unwrap())
             .collect();
         assert!(names.contains(&"selah_capture"));
         assert!(names.contains(&"selah_annotate"));

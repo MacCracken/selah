@@ -8,8 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- **bote** 0.22 → 0.50 — migrated MCP tool registration to `ToolDef::new()`/`ToolSchema::new()` constructor API
+- **hisab** 0.24 → 1.3
+- **ranga** 0.24 → 0.29.4
+- **hoosh** 1.0 added as optional dependency behind `ai` feature flag
 - Updated all transitive dependencies to latest compatible versions
-- Version bump to 0.29.3
 
 ## [0.24.3] - 2026-03-24
 
