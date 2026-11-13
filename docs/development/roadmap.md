@@ -1,5 +1,21 @@
 # Selah Roadmap
 
+## Unreleased — Toolchain, Dependencies & Hardening
+
+- [x] MSRV 1.89 → 1.100 (edition 2024); dependencies to latest (ranga 1.0, bote 0.92, reqwest 0.13, hisab 1.4, base64 0.23, criterion 0.8)
+- [x] `image` restricted to supported codecs (PNG/JPEG/BMP/WebP); dependency tree 288 → 229 crates; zero ignored advisories
+- [x] Decode limits (decompression-bomb guard), bounded file reads and HTTP bodies
+- [x] Leak-free redaction (normalized rects, outward rounding, NaN rejected); MCP redact fails closed for unlocatable pixel text
+- [x] Rasterizer hardening (line clipping, bounded ellipse sampling) — no overflow/hang on extreme coordinates
+- [x] History: OS file locks, atomic rewrites, private permissions, bounded-memory `list`
+- [x] MCP: inputs must be images, outputs must be image files (no symlinks), traversal checks on both; schema-conformant annotations; `engine: "hoosh"` OCR wired up
+- [x] PII detection: punctuation-tolerant, space-grouped cards, `(555) 123-4567`, no double reports
+- [x] 289 tests (was 171), mock-HTTP coverage of capture/daimon/hoosh clients
+- [ ] Map OCR bounding boxes to PII matches (pixel-level auto-redaction)
+- [ ] Format-aware metadata scan for the stub OCR (skip compressed pixel data → no false positives)
+- [ ] Optional MCP path confinement to an allowed root directory
+- [ ] Per-call rendering work budget for MCP `selah_annotate`
+
 ## v0.24.3 — Library Restructure (current release)
 
 - [x] Core capture and annotation types

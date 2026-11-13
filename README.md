@@ -20,32 +20,50 @@
 
 ## Architecture
 
+Selah is a library crate (the GUI/CLI lives in [taswir](https://github.com/MacCracken/taswir)):
+
 ```
-selah
-├── selah-core      — Screenshot types, annotation primitives, geometry, formats
-├── selah-capture   — Daimon screen capture API client, file saving
-├── selah-annotate  — Annotation canvas, drawing tools, redaction, SVG rendering
-└── selah-ai        — OCR, PII detection, smart crop suggestions
+selah/src/
+├── core.rs       Annotation, AnnotationKind, ImageFormat, Color, Screenshot, Monitor
+├── geometry.rs   Rect (backed by hisab)
+├── capture.rs    CaptureClient — daimon screen capture API, clipboard
+├── annotate.rs   AnnotationCanvas — pixel rendering (ranga), SVG overlay, format conversion
+├── ai.rs         PII detection, OCR stub, smart crop suggestions
+├── daimon.rs     DaimonClient, HooshClient (LLM vision OCR)
+├── history.rs    HistoryStore — JSONL screenshot history
+└── mcp.rs        MCP server via bote (feature "mcp")
 ```
 
 ## Usage
 
-```bash
-# Capture full screen
-selah capture
-
-# Capture a region
-selah capture --region 100,100,800,600
-
-# Annotate an existing image
-selah annotate screenshot.png
-
-# Extract text from an image
-selah ocr screenshot.png
-
-# Auto-detect and redact sensitive content
-selah redact screenshot.png
+```toml
+[dependencies]
+selah = "0.29"
+# selah = { version = "0.29", features = ["mcp"] }  # MCP server
 ```
+
+```rust
+use selah::{Annotation, AnnotationKind, Color, ImageFormat, Rect, SelahError};
+
+fn annotate(png: &[u8]) -> Result<Vec<u8>, SelahError> {
+    // Detect PII in text (e.g. from OCR)
+    for s in selah::suggest_redactions("mail admin@example.com, card 4111 1111 1111 1111") {
+        println!("{}: {}", s.target_type, s.matched_text);
+    }
+
+    // Draw annotations onto an encoded image
+    selah::annotate_image(
+        png,
+        &[
+            Annotation::new(AnnotationKind::Rectangle, Rect::new(10.0, 10.0, 200.0, 80.0), Color::RED),
+            Annotation::new(AnnotationKind::Redaction, Rect::new(40.0, 120.0, 160.0, 24.0), Color::BLACK),
+        ],
+        ImageFormat::Jpeg,
+    )
+}
+```
+
+Requires Rust 1.100+. Supported image codecs: PNG, JPEG, BMP, WebP.
 
 ## AGNOS Integration
 

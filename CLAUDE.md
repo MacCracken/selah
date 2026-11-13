@@ -6,7 +6,7 @@
 
 - **Type**: Flat library crate
 - **License**: GPL-3.0
-- **MSRV**: 1.89
+- **MSRV**: 1.100
 - **Version**: SemVer 0.D.M pre-1.0
 
 ## Consumers
@@ -22,11 +22,13 @@ selah/src/
 ├── geometry.rs   Rect wrapper over hisab::Rect, backward-compatible serde
 ├── error.rs      SelahError (#[non_exhaustive])
 ├── capture.rs    CaptureClient — async reqwest to daimon API, clipboard, session detection
-├── history.rs    HistoryStore — JSONL persistence with file locking
+├── history.rs    HistoryStore — JSONL persistence with OS file locking
 ├── annotate.rs   AnnotationCanvas — pixel rendering (ranga), SVG output, format conversion
 ├── ai.rs         PII detection, OCR stub, smart crop suggestions
 ├── daimon.rs     DaimonClient, HooshClient — agent lifecycle, LLM vision OCR
-└── mcp.rs        MCP server via bote (feature-gated: "mcp")
+├── mcp.rs        MCP server via bote (feature-gated: "mcp")
+├── http.rs       (private) shared HTTP client, status checks, bounded bodies
+└── fsutil.rs     (private) bounded reads, atomic writes, private permissions
 ```
 
 ## Ecosystem Dependencies

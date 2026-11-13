@@ -1,13 +1,17 @@
 //! Selah — AI-native screenshot capture, annotation, and redaction library for AGNOS.
 
+#![forbid(unsafe_code)]
+
 pub mod ai;
 pub mod annotate;
 pub mod capture;
 pub mod core;
 pub mod daimon;
 pub mod error;
+mod fsutil;
 pub mod geometry;
 pub mod history;
+mod http;
 #[cfg(any(feature = "mcp", test))]
 pub mod mcp;
 
@@ -77,7 +81,17 @@ pub fn annotate_image(
 }
 
 /// Detect PII in an image and produce redacted bytes.
-/// Returns (redacted image bytes, list of suggestions).
+/// Returns (redacted image bytes, list of applied redactions).
+///
+/// Only matches with a located (non-zero) region are redacted and returned.
+///
+/// **Limitation:** the built-in OCR is a stub that scans the encoded file
+/// bytes (embedded metadata), not the rendered pixels, so it never yields
+/// locations and text *visible in the image* is not detected. Whatever it
+/// finds lives in metadata, which is not carried into the re-encoded output
+/// (a warning is logged). selah does not yet map OCR bounding boxes to PII
+/// matches, so pixel-level redaction requires the caller to supply regions,
+/// e.g. [`AnnotationKind::Redaction`] annotations via [`annotate_image`].
 ///
 /// # Example
 ///
@@ -100,12 +114,21 @@ pub fn redact_image(
     let ocr = extract_text_regions(source);
     let mut suggestions = suggest_redactions(&ocr.text);
 
-    // Filter zero-size regions
-    suggestions.retain(|s| s.region.area() > 0.0);
-
     // Filter by requested targets
     if let Some(targets) = targets {
         suggestions.retain(|s| targets.contains(&s.target_type));
+    }
+
+    // Only located (non-zero) regions can be redacted
+    let detected = suggestions.len();
+    suggestions.retain(|s| s.region.area() > 0.0);
+    if suggestions.len() < detected {
+        tracing::warn!(
+            unlocated = detected - suggestions.len(),
+            is_stub = ocr.is_stub,
+            "PII found without a location (stub OCR: embedded metadata, dropped by re-encoding); \
+             rendered text is not analyzed"
+        );
     }
 
     let annotations: Vec<Annotation> = suggestions

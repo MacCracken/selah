@@ -4,6 +4,11 @@ use hisab::Vec2;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// A rectangle defined by position and size, backed by hisab::Rect.
+///
+/// Width and height may be negative: arrows use the sign to encode direction
+/// (the arrow runs from `(x, y)` to `(x + width, y + height)`). Area-type
+/// operations ([`Rect::area`], [`Rect::contains_point`], [`Rect::intersects`])
+/// operate on the [normalized](Rect::normalized) rectangle.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect(hisab::Rect);
 
@@ -21,6 +26,8 @@ impl Rect {
     /// assert_eq!(r.width(), 100.0);
     /// assert!(r.contains_point(Vec2::new(50.0, 40.0)));
     /// ```
+    #[must_use]
+    #[inline]
     pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
         // Use direct field construction to preserve negative width/height (for arrows)
         Self(hisab::Rect {
@@ -29,39 +36,94 @@ impl Rect {
         })
     }
 
+    /// X coordinate of the origin corner.
+    #[must_use]
+    #[inline]
     pub fn x(&self) -> f32 {
         self.0.min.x
     }
+
+    /// Y coordinate of the origin corner.
+    #[must_use]
+    #[inline]
     pub fn y(&self) -> f32 {
         self.0.min.y
     }
+
+    /// Signed width (negative when the rect extends left of its origin).
+    #[must_use]
+    #[inline]
     pub fn width(&self) -> f32 {
         self.0.max.x - self.0.min.x
     }
+
+    /// Signed height (negative when the rect extends above its origin).
+    #[must_use]
+    #[inline]
     pub fn height(&self) -> f32 {
         self.0.max.y - self.0.min.y
     }
+
+    /// Area of the rectangle (always non-negative).
+    #[must_use]
+    #[inline]
     pub fn area(&self) -> f32 {
         self.width().abs() * self.height().abs()
     }
+
+    /// Center point.
+    #[must_use]
+    #[inline]
     pub fn center(&self) -> Vec2 {
         self.0.center()
     }
 
+    /// Whether all coordinates are finite (not NaN or infinite).
+    #[must_use]
+    #[inline]
+    pub fn is_finite(&self) -> bool {
+        self.0.min.is_finite() && self.0.max.is_finite()
+    }
+
+    /// Return an equivalent rectangle with non-negative width and height.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use selah::Rect;
+    ///
+    /// let r = Rect::new(100.0, 100.0, -50.0, -30.0).normalized();
+    /// assert_eq!((r.x(), r.y(), r.width(), r.height()), (50.0, 70.0, 50.0, 30.0));
+    /// ```
+    #[must_use]
+    #[inline]
+    pub fn normalized(&self) -> Self {
+        Self(hisab::Rect {
+            min: self.0.min.min(self.0.max),
+            max: self.0.min.max(self.0.max),
+        })
+    }
+
+    /// Whether `p` lies inside the rectangle (edges inclusive).
+    #[must_use]
+    #[inline]
     pub fn contains_point(&self, p: Vec2) -> bool {
-        p.x >= self.x()
-            && p.x <= self.x() + self.width()
-            && p.y >= self.y()
-            && p.y <= self.y() + self.height()
+        let n = self.normalized().0;
+        p.x >= n.min.x && p.x <= n.max.x && p.y >= n.min.y && p.y <= n.max.y
     }
 
+    /// Whether the two rectangles overlap (touching edges do not count).
+    #[must_use]
+    #[inline]
     pub fn intersects(&self, other: &Rect) -> bool {
-        self.x() < other.x() + other.width()
-            && self.x() + self.width() > other.x()
-            && self.y() < other.y() + other.height()
-            && self.y() + self.height() > other.y()
+        let a = self.normalized().0;
+        let b = other.normalized().0;
+        a.min.x < b.max.x && a.max.x > b.min.x && a.min.y < b.max.y && a.max.y > b.min.y
     }
 
+    /// Borrow the underlying hisab rectangle.
+    #[must_use]
+    #[inline]
     pub fn as_hisab(&self) -> &hisab::Rect {
         &self.0
     }
@@ -96,12 +158,15 @@ impl<'de> Deserialize<'de> for Rect {
             height: f64,
         }
         let r = RectRepr::deserialize(deserializer)?;
-        Ok(Rect::new(
-            r.x as f32,
-            r.y as f32,
-            r.width as f32,
-            r.height as f32,
-        ))
+        let rect = Rect::new(r.x as f32, r.y as f32, r.width as f32, r.height as f32);
+        // Values beyond f32 range collapse to infinity; reject them rather
+        // than letting NaN/inf propagate into rendering and capture requests.
+        if !rect.is_finite() {
+            return Err(serde::de::Error::custom(
+                "rect coordinates must be finite and within f32 range",
+            ));
+        }
+        Ok(rect)
     }
 }
 
@@ -189,6 +254,16 @@ mod tests {
     }
 
     #[test]
+    fn test_rect_serde_rejects_out_of_range() {
+        // 1e39 overflows f32 → infinity; must be rejected, not silently accepted
+        let json = r#"{"x":1e39,"y":0,"width":10,"height":10}"#;
+        let err = serde_json::from_str::<Rect>(json).unwrap_err();
+        assert!(err.to_string().contains("finite"));
+        let json = r#"{"x":0,"y":0,"width":-1e300,"height":10}"#;
+        assert!(serde_json::from_str::<Rect>(json).is_err());
+    }
+
+    #[test]
     fn test_rect_intersects_touching_edges() {
         // Rects that share an edge but don't overlap
         let a = Rect::new(0.0, 0.0, 100.0, 100.0);
@@ -225,6 +300,35 @@ mod tests {
         // Negative dimensions (arrows) still produce positive area
         let r = Rect::new(100.0, 100.0, -50.0, -30.0);
         assert_eq!(r.area(), 1500.0);
+    }
+
+    #[test]
+    fn test_rect_negative_dimensions_contains_and_intersects() {
+        // Same region as Rect::new(50, 70, 50, 30), expressed with negative size
+        let r = Rect::new(100.0, 100.0, -50.0, -30.0);
+        assert!(r.contains_point(Vec2::new(75.0, 85.0)));
+        assert!(!r.contains_point(Vec2::new(110.0, 85.0)));
+        assert!(r.intersects(&Rect::new(60.0, 80.0, 5.0, 5.0)));
+        assert!(Rect::new(60.0, 80.0, 5.0, 5.0).intersects(&r));
+    }
+
+    #[test]
+    fn test_rect_normalized() {
+        let r = Rect::new(100.0, 100.0, -50.0, -30.0).normalized();
+        assert_eq!(r.x(), 50.0);
+        assert_eq!(r.y(), 70.0);
+        assert_eq!(r.width(), 50.0);
+        assert_eq!(r.height(), 30.0);
+        // Already-normalized rects are unchanged
+        let p = Rect::new(1.0, 2.0, 3.0, 4.0);
+        assert_eq!(p.normalized(), p);
+    }
+
+    #[test]
+    fn test_rect_is_finite() {
+        assert!(Rect::new(0.0, 0.0, 1.0, 1.0).is_finite());
+        assert!(!Rect::new(f32::NAN, 0.0, 1.0, 1.0).is_finite());
+        assert!(!Rect::new(0.0, 0.0, f32::INFINITY, 1.0).is_finite());
     }
 
     #[test]

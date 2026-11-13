@@ -201,3 +201,78 @@ fn test_vec2_re_export() {
     let r = Rect::new(0.0, 0.0, 100.0, 100.0);
     assert!(r.contains_point(p));
 }
+
+#[test]
+fn test_annotate_image_to_jpeg() {
+    // RGBA → JPEG used to fail with "does not support the color type Rgba8"
+    let png = make_png(8, 8, [10, 200, 30, 255]);
+    let annotations = vec![Annotation::new(
+        AnnotationKind::Highlight,
+        Rect::new(0.0, 0.0, 4.0, 4.0),
+        Color::YELLOW,
+    )];
+    let jpg = annotate_image(&png, &annotations, ImageFormat::Jpeg).unwrap();
+    let img = image::load_from_memory(&jpg).unwrap();
+    assert_eq!((img.width(), img.height()), (8, 8));
+}
+
+#[test]
+fn test_redaction_rect_from_any_corner_covers_region() {
+    let png = make_png(8, 8, [255, 255, 255, 255]);
+    // Drag-selected "backwards" (bottom-right to top-left), with fractional edges
+    let annotations = vec![Annotation::new(
+        AnnotationKind::Redaction,
+        Rect::new(5.5, 5.5, -5.0, -5.0),
+        Color::BLACK,
+    )];
+    let out = annotate_image(&png, &annotations, ImageFormat::Png).unwrap();
+    let img = image::load_from_memory(&out).unwrap().to_rgba8();
+    for y in 0..=5 {
+        for x in 0..=5 {
+            assert_eq!(img.get_pixel(x, y).0, [0, 0, 0, 255], "({x},{y}) leaked");
+        }
+    }
+    assert_eq!(img.get_pixel(7, 7).0, [255, 255, 255, 255]);
+}
+
+#[test]
+fn test_redact_image_unlocated_pii_is_not_reported_as_applied() {
+    // PII embedded as trailing bytes is found by the stub OCR but has no
+    // bounding box, so nothing is redacted and nothing is claimed.
+    let mut png = make_png(4, 4, [0, 0, 0, 255]);
+    png.extend_from_slice(b"\0email admin@example.com\0");
+    let (out, applied) = redact_image(&png, None, ImageFormat::Png).unwrap();
+    assert!(applied.is_empty());
+    assert!(image::load_from_memory(&out).is_ok());
+    // Re-encoding drops the embedded bytes the stub found
+    assert!(!out.windows(17).any(|w| w == b"admin@example.com"));
+}
+
+#[test]
+fn test_pii_detection_common_formats() {
+    let text = "Reach me at <jane.doe@example.org>, card 4111 1111 1111 1111, \
+                server 10.1.2.3. Office: (555) 123-4567.";
+    let kinds: Vec<_> = suggest_redactions(text)
+        .into_iter()
+        .map(|s| (s.target_type, s.matched_text))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            (RedactionTarget::Email, "jane.doe@example.org".to_string()),
+            (
+                RedactionTarget::CreditCard,
+                "4111 1111 1111 1111".to_string()
+            ),
+            (RedactionTarget::IpAddress, "10.1.2.3".to_string()),
+            (RedactionTarget::Phone, "(555) 123-4567".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn test_unsupported_input_format_rejected() {
+    // GIF decoding is not compiled in; it must error cleanly, not panic
+    let gif = b"GIF89a\x01\x00\x01\x00\x00\x00\x00;";
+    assert!(annotate_image(gif, &[], ImageFormat::Png).is_err());
+}

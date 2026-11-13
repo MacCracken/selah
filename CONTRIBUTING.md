@@ -5,7 +5,7 @@ Thank you for your interest in contributing to Selah!
 ## Development
 
 1. Fork and clone the repository
-2. Ensure you have Rust 1.89+ installed
+2. Ensure you have Rust 1.100+ installed
 3. Run `make check` to verify your environment
 4. Make your changes
 5. Run `make check` before submitting

@@ -4,6 +4,7 @@ use crate::error::SelahError;
 use crate::geometry::Rect;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use uuid::Uuid;
 
 /// A captured screenshot.
@@ -98,6 +99,7 @@ impl Annotation {
     /// );
     /// assert!(ann.text.is_none());
     /// ```
+    #[must_use]
     pub fn new(kind: AnnotationKind, position: Rect, color: Color) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -109,6 +111,7 @@ impl Annotation {
     }
 
     /// Create a new annotation with text.
+    #[must_use]
     pub fn with_text(kind: AnnotationKind, position: Rect, color: Color, text: String) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -147,6 +150,27 @@ impl std::fmt::Display for AnnotationKind {
     }
 }
 
+impl std::str::FromStr for AnnotationKind {
+    type Err = SelahError;
+
+    /// Parse a kind name case-insensitively (`"rectangle"`, `"Rectangle"`,
+    /// `"rect"`, `"freeform"`, …).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "arrow" => Ok(AnnotationKind::Arrow),
+            "rectangle" | "rect" => Ok(AnnotationKind::Rectangle),
+            "circle" | "ellipse" => Ok(AnnotationKind::Circle),
+            "text" => Ok(AnnotationKind::Text),
+            "highlight" => Ok(AnnotationKind::Highlight),
+            "redaction" | "redact" => Ok(AnnotationKind::Redaction),
+            "freeform" | "free_form" | "free-form" => Ok(AnnotationKind::FreeForm),
+            other => Err(SelahError::AnnotationError(format!(
+                "unknown annotation kind {other:?} (use arrow, rectangle, circle, text, highlight, redaction, or freeform)"
+            ))),
+        }
+    }
+}
+
 /// Supported image formats.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
@@ -169,6 +193,8 @@ impl ImageFormat {
     /// assert_eq!(ImageFormat::Png.extension(), "png");
     /// assert_eq!("jpg".parse::<ImageFormat>().unwrap(), ImageFormat::Jpeg);
     /// ```
+    #[must_use]
+    #[inline]
     pub fn extension(&self) -> &'static str {
         match self {
             ImageFormat::Png => "png",
@@ -179,6 +205,8 @@ impl ImageFormat {
     }
 
     /// MIME type for this format.
+    #[must_use]
+    #[inline]
     pub fn mime_type(&self) -> &'static str {
         match self {
             ImageFormat::Png => "image/png",
@@ -186,6 +214,22 @@ impl ImageFormat {
             ImageFormat::Bmp => "image/bmp",
             ImageFormat::WebP => "image/webp",
         }
+    }
+
+    /// Infer the format from a path's file extension (case-insensitive).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use selah::ImageFormat;
+    /// use std::path::Path;
+    ///
+    /// assert_eq!(ImageFormat::from_path(Path::new("shot.JPEG")), Some(ImageFormat::Jpeg));
+    /// assert_eq!(ImageFormat::from_path(Path::new("notes.txt")), None);
+    /// ```
+    #[must_use]
+    pub fn from_path(path: &std::path::Path) -> Option<Self> {
+        path.extension()?.to_str()?.parse().ok()
     }
 }
 
@@ -213,25 +257,86 @@ impl std::str::FromStr for ImageFormat {
 
 /// Escape a string for safe inclusion in XML/SVG content.
 ///
+/// Escapes the five XML special characters and drops characters that are not
+/// allowed anywhere in an XML 1.0 document (C0 controls other than tab, LF and
+/// CR, plus U+FFFE/U+FFFF), so the output is always well-formed.
+///
 /// # Example
 ///
 /// ```
 /// assert_eq!(selah::xml_escape("<script>alert('xss')</script>"),
 ///            "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;");
 /// ```
+#[must_use]
 pub fn xml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#x27;"),
-            _ => out.push(ch),
-        }
+    // Fast path: most text needs no escaping at all.
+    if !s.bytes().any(is_xml_special) {
+        return s.to_owned();
     }
+    let mut out = String::with_capacity(s.len() + s.len() / 8);
+    push_xml_escaped(&mut out, s);
     out
+}
+
+/// Bytes that may need escaping or removal: the five XML specials, C0
+/// controls other than tab/LF/CR, and `0xEF` (lead byte of U+FFFE/U+FFFF).
+static XML_SPECIAL: [bool; 256] = {
+    let mut t = [false; 256];
+    let mut i = 0;
+    while i < 0x20 {
+        t[i] = true;
+        i += 1;
+    }
+    t[b'\t' as usize] = false;
+    t[b'\n' as usize] = false;
+    t[b'\r' as usize] = false;
+    t[b'&' as usize] = true;
+    t[b'<' as usize] = true;
+    t[b'>' as usize] = true;
+    t[b'"' as usize] = true;
+    t[b'\'' as usize] = true;
+    t[0xEF] = true;
+    t
+};
+
+#[inline]
+fn is_xml_special(b: u8) -> bool {
+    XML_SPECIAL[usize::from(b)]
+}
+
+/// Append the XML-escaped form of `s` to `out` (see [`xml_escape`]).
+///
+/// Runs of ordinary bytes are copied in bulk via a table-driven scan; only
+/// flagged characters are handled one at a time.
+#[inline]
+pub(crate) fn push_xml_escaped(out: &mut String, mut rest: &str) {
+    while !rest.is_empty() {
+        let run = rest.bytes().position(is_xml_special).unwrap_or(rest.len());
+        // Flagged bytes are ASCII or a UTF-8 lead byte, so `run` is always a
+        // char boundary; `split_at_checked` keeps this panic-free regardless.
+        if run > 0
+            && let Some((plain, tail)) = rest.split_at_checked(run)
+        {
+            out.push_str(plain);
+            rest = tail;
+            continue;
+        }
+        let mut chars = rest.chars();
+        match chars.next() {
+            Some('&') => out.push_str("&amp;"),
+            Some('<') => out.push_str("&lt;"),
+            Some('>') => out.push_str("&gt;"),
+            Some('"') => out.push_str("&quot;"),
+            Some('\'') => out.push_str("&#x27;"),
+            // Not allowed anywhere in XML 1.0: C0 controls except tab/LF/CR,
+            // and the non-characters U+FFFE / U+FFFF.
+            Some(c) if (c < ' ' && !matches!(c, '\t' | '\n' | '\r')) => {}
+            Some('\u{FFFE}' | '\u{FFFF}') => {}
+            Some(c) => out.push(c),
+            None => {}
+        }
+        rest = chars.as_str();
+    }
 }
 
 /// Generate a default output path by appending a suffix before the file extension.
@@ -243,6 +348,7 @@ pub fn xml_escape(s: &str) -> String {
 /// ```
 /// assert_eq!(selah::derive_output_path("photo.png", "annotated"), "photo_annotated.png");
 /// ```
+#[must_use]
 pub fn derive_output_path(input: &str, suffix: &str) -> String {
     let p = std::path::Path::new(input);
     let stem = p.file_stem().unwrap_or_default().to_string_lossy();
@@ -301,18 +407,38 @@ impl Color {
         a: 128,
     };
 
-    pub fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
+    /// Create a color from RGBA components.
+    #[must_use]
+    #[inline]
+    pub const fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self { r, g, b, a }
     }
 
     /// CSS rgba string.
+    #[must_use]
     pub fn to_css(&self) -> String {
-        format!(
+        self.css().to_string()
+    }
+
+    /// Allocation-free CSS `rgba()` formatter, for use with `write!`.
+    #[inline]
+    pub(crate) fn css(&self) -> impl fmt::Display + '_ {
+        CssColor(self)
+    }
+}
+
+struct CssColor<'a>(&'a Color);
+
+impl fmt::Display for CssColor<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let c = self.0;
+        write!(
+            f,
             "rgba({},{},{},{:.2})",
-            self.r,
-            self.g,
-            self.b,
-            self.a as f64 / 255.0
+            c.r,
+            c.g,
+            c.b,
+            f64::from(c.a) / 255.0
         )
     }
 }
@@ -371,6 +497,22 @@ impl std::fmt::Display for RedactionTarget {
             RedactionTarget::CreditCard => write!(f, "credit card"),
             RedactionTarget::IpAddress => write!(f, "IP address"),
             RedactionTarget::Custom(s) => write!(f, "custom: {s}"),
+        }
+    }
+}
+
+impl RedactionTarget {
+    /// Stable machine-readable key (`email`, `phone`, `credit_card`,
+    /// `ip_address`, `custom`), as used by the MCP `selah_redact` tool.
+    #[must_use]
+    #[inline]
+    pub fn key(&self) -> &'static str {
+        match self {
+            RedactionTarget::Email => "email",
+            RedactionTarget::Phone => "phone",
+            RedactionTarget::CreditCard => "credit_card",
+            RedactionTarget::IpAddress => "ip_address",
+            RedactionTarget::Custom(_) => "custom",
         }
     }
 }
@@ -566,6 +708,68 @@ mod tests {
             xml_escape(r#"<a href="x">&'test'</a>"#),
             "&lt;a href=&quot;x&quot;&gt;&amp;&#x27;test&#x27;&lt;/a&gt;"
         );
+    }
+
+    #[test]
+    fn test_xml_escape_strips_xml_illegal_chars() {
+        assert_eq!(xml_escape("a\u{0}b\u{1b}c"), "abc");
+        assert_eq!(xml_escape("tab\tnl\ncr\r"), "tab\tnl\ncr\r");
+        assert_eq!(xml_escape("x\u{FFFE}y\u{FFFF}z"), "xyz");
+        // U+FFFD and other EF-prefixed chars are legal and kept
+        assert_eq!(xml_escape("\u{FFFD}\u{FF01}"), "\u{FFFD}\u{FF01}");
+    }
+
+    #[test]
+    fn test_xml_escape_multibyte_preserved() {
+        assert_eq!(xml_escape("héllo <wörld> 日本"), "héllo &lt;wörld&gt; 日本");
+    }
+
+    #[test]
+    fn test_image_format_from_path() {
+        use std::path::Path;
+        assert_eq!(
+            ImageFormat::from_path(Path::new("a/b.JPG")),
+            Some(ImageFormat::Jpeg)
+        );
+        assert_eq!(
+            ImageFormat::from_path(Path::new("x.webp")),
+            Some(ImageFormat::WebP)
+        );
+        assert_eq!(ImageFormat::from_path(Path::new("noext")), None);
+        assert_eq!(ImageFormat::from_path(Path::new("x.tiff")), None);
+    }
+
+    #[test]
+    fn test_annotation_kind_from_str_roundtrip() {
+        for kind in [
+            AnnotationKind::Arrow,
+            AnnotationKind::Rectangle,
+            AnnotationKind::Circle,
+            AnnotationKind::Text,
+            AnnotationKind::Highlight,
+            AnnotationKind::Redaction,
+            AnnotationKind::FreeForm,
+        ] {
+            assert_eq!(kind.to_string().parse::<AnnotationKind>().unwrap(), kind);
+        }
+        assert_eq!(
+            "Rectangle".parse::<AnnotationKind>().unwrap(),
+            AnnotationKind::Rectangle
+        );
+        assert_eq!(
+            "FreeForm".parse::<AnnotationKind>().unwrap(),
+            AnnotationKind::FreeForm
+        );
+        assert!("blob".parse::<AnnotationKind>().is_err());
+    }
+
+    #[test]
+    fn test_redaction_target_key() {
+        assert_eq!(RedactionTarget::Email.key(), "email");
+        assert_eq!(RedactionTarget::Phone.key(), "phone");
+        assert_eq!(RedactionTarget::CreditCard.key(), "credit_card");
+        assert_eq!(RedactionTarget::IpAddress.key(), "ip_address");
+        assert_eq!(RedactionTarget::Custom("x".into()).key(), "custom");
     }
 
     #[test]
