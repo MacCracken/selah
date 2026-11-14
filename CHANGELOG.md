@@ -98,6 +98,58 @@ The Rust crate stays at 0.30.x on crates.io.
 - **Benches**: the four M2 benches, at 5.6× to 7.2× Rust.
 - **Surface parity**: 37/37.
 
+### Port — M5 (system and clients)
+
+- **`src/history.cyr`:** `SlHistoryEntry` and `SlHistoryStore` (open, open_default, record, list, get, delete).
+  - One JSON line per entry, byte for byte as serde_json writes it, read as serde reads it; a line that doesn't read
+    is skipped.
+  - Writers take `flock` on `<history>.lock`, retried every 10 ms for 5 s; a torn last line is terminated before an
+    append; `delete` rewrites the file atomically and keeps every line it cannot read.
+  - `list` keeps the newest entries in a bounded heap (newest first, ties in file order), each line parsed in a
+    scratch arena reset per line.
+- **`src/http.cyr`:** requests over sandhi with `read_ms`, `write_ms` and `total_ms` (L10), Rust's status text
+  (reason phrase, lossy UTF-8, the 512-byte cut), Rust's "too large" text, and endpoint URLs with the url crate's
+  segment encoding.
+- **`src/spawn.cyr`** (L3): a tool run with bytes on its stdin and its stderr kept, in one poll loop; SIGPIPE blocked
+  and consumed through a signalfd.
+- **`src/capture.cyr`:** `SlCaptureClient` (capture, capture_full, capture_region, capture_monitor, list_monitors,
+  save_to_file, copy_to_clipboard), `RegionSpec`, session detection, the clipboard's MIME sniff from image 0.25.10's
+  table. Core gained `SlMonitor` and `SlCaptureRegion`, and Rect's Debug form.
+- **`src/daimon.cyr`:** the configs (with Rust's JSON and a Debug that never shows the key) and the clients,
+  retargeted (D2): `register_agent` posts to daimon's `POST /v1/agents`; `ocr` asks hoosh's chat completions,
+  downscaling and re-encoding the image as JPEG until the request fits hoosh's 1 MiB cap (L8), and scales the regions
+  back. `heartbeat` is gone.
+- **`src/scratch.cyr`:** a freelist arena handed to sandhi and bayan, so requests and parses leave nothing behind (a
+  request with a 256 MiB cap leaves 736 bytes on the bump heap; a parse, none).
+- **`src/json.cyr`**, for every reader: `-0` reads as −0.0 and an integer past i64 as the nearest double, as serde
+  reads them (bayan read 0 and refused); a float literal past f64 is refused in a field selah reads; strings must be
+  UTF-8. One pass, a word at a time through plain ASCII.
+- **Rust's `{:?}` beyond ASCII:** `src/debug_data.cyr`, generated from Rust (914 ranges), makes every Debug text
+  exact.
+- **Divergences (ADR 0002):**
+  - #21: a defect in a member serde ignores (a duplicate key, a lone surrogate, invalid UTF-8) is refused.
+  - #22: the HTTP layer's own transport texts; sandhi's PROTOCOL error past its buffer; the endpoint kept as given.
+  - #23: the clipboard ends when the tool exits, and a tool that leaves input unread is an error.
+  - #1, #6, #9 and #18 extended: WebP capture refused; OCR needs a model, and a fenced answer is unwrapped;
+    `with_timeout`; `save_to_file` atomic and 0600.
+- **Golden:** a new `system` module, 662 rows (654 ok, 8 accepted), through Rust's own HistoryStore and clients
+  against a loopback copy of `serve_once`. Rust lists every Cyrius-written history file (`oracle --reverse`).
+  Identical on x86_64 ELF, aarch64 (qemu) and x86_64 PE (wine). Two mutation probes showed the gates bite.
+- **Tests:**
+  - `history.tcyr`: 18 Rust tests, the `HistoryStore::open` doctest and `test_history_store_integration`.
+  - `http.tcyr`: 6 Rust tests, against a loopback mock server on a thread (`tests/mock_http.cyr`).
+  - `capture.tcyr`: 19 Rust tests, and the spawn helper's cases; also run under qemu-aarch64.
+  - `daimon.tcyr`: 20 Rust tests (the two heartbeat tests as one), and the OCR downscale end to end.
+- **Benches** (new, with Rust's numbers from `oracle --bench`): `history_record` 0.84×, `history_list_1000` 11×,
+  `history_get_1000` 19×, `history_delete_miss_1000` 16×, `capture_parse_1mb` 96×.
+  - The scratch allocator went from a freelist call per allocation to an arena on the freelist (3.5 µs a history
+    line to nothing), and the JSON pre-pass was fused into one word-at-a-time pass (2.2 to 0.75 µs a line; 29 to
+    19 ms for the 1 MiB answer).
+- **Filed:**
+  - cyrius: no spawn that feeds stdin (L3);
+  - bayan: the JSON parser's throughput (L21), and base64 encoding added to the allocator issue (L19);
+  - sandhi: the whole response cap reserved per request, and over-cap reported as PROTOCOL (L22).
+
 ### Port — M4 (annotation)
 
 - **`src/raster.cyr`:** Rust's rasterizer in Rust's arithmetic.

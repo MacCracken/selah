@@ -212,6 +212,138 @@ fn _b_m4(): i64 {
     return sink;
 }
 
+# ---- M5: history and the HTTP layer's parsing, on inputs the oracle's --bench builds identically. Entry i: id i (the
+# low 8 bytes, big-endian), path /home/u/Pictures/shot-<i>.png, unix second 1763164800 + i, nanosecond (i * 7919) mod
+# 10^9, "full screen", 1920 x 1080, png.
+
+fn _b_hentry(i): *SlHistoryEntry {
+    var id: u8[16];
+    var k = 0;
+    while (k < 16) {
+        store8(&id + k, 0);
+        k = k + 1;
+    }
+    var j = 0;
+    while (j < 8) {
+        store8(&id + 15 - j, (i >> (j * 8)) & 255);
+        j = j + 1;
+    }
+    var pb = str_builder_new();
+    str_builder_add_cstr(pb, "/home/u/Pictures/shot-");
+    str_builder_add_int(pb, i);
+    str_builder_add_cstr(pb, ".png");
+    var path = str_builder_build(pb);
+    return SlHistoryEntry_new(&id, str_data(path), str_len(path), 1763164800 + i, (i * 7919) % 1000000000,
+        "full screen", 11, 1920, 1080, "png", 3);
+}
+
+# A fresh store at build/bench/<name>.jsonl holding entries 0..n.
+fn _b_hstore(name, n): *SlHistoryStore {
+    sys_mkdir("build", 493);
+    sys_mkdir("build/bench", 493);
+    var pb = str_builder_new();
+    str_builder_add_cstr(pb, "build/bench/");
+    str_builder_add_cstr(pb, name);
+    str_builder_add_cstr(pb, ".jsonl");
+    var path = str_data(str_builder_build(pb));
+    var sb = str_builder_new();
+    var i = 0;
+    while (i < n) {
+        var e = _b_hentry(i);
+        SlHistoryEntry_to_json(e, sb);
+        str_builder_putc(sb, 10);
+        SlHistoryEntry_free(e);
+        i = i + 1;
+    }
+    var all = str_builder_build(sb);
+    file_write_all(path, str_data(all), str_len(all));
+    return SlHistoryStore_open(path);
+}
+
+fn _b_m5(): i64 {
+    var sink = 0;
+    var rs = _b_hstore("history_record", 0);
+    var b = bench_new("history_record");
+    var n = 2000;
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        var e = _b_hentry(i);
+        var t, v = SlHistoryStore_record(rs, e);
+        SlHistoryEntry_free(e);
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+
+    var s = _b_hstore("history_1000", 1000);
+    var bl = bench_new("history_list_1000");
+    var nl = 200;
+    bench_batch_start(bl);
+    i = 0;
+    while (i < nl) {
+        var lt, lv = SlHistoryStore_list(s, 10);
+        sink = sink + vec_len(lv);
+        selah_history_entries_free(lv);
+        i = i + 1;
+    }
+    bench_batch_stop(bl, nl);
+    bench_report(bl);
+
+    var last = _b_hentry(999);
+    var bg = bench_new("history_get_1000");
+    bench_batch_start(bg);
+    i = 0;
+    while (i < nl) {
+        var gt, gv = SlHistoryStore_get(s, last);
+        if (gv != 0) {
+            sink = sink + 1;
+            SlHistoryEntry_free(gv);
+        }
+        i = i + 1;
+    }
+    bench_batch_stop(bg, nl);
+    bench_report(bg);
+
+    var miss = _b_hentry(5000);
+    var bd = bench_new("history_delete_miss_1000");
+    bench_batch_start(bd);
+    i = 0;
+    while (i < nl) {
+        var dt, dv = SlHistoryStore_delete(s, miss);
+        sink = sink + dv;
+        i = i + 1;
+    }
+    bench_batch_stop(bd, nl);
+    bench_report(bd);
+
+    # A capture answer carrying 1 MiB of base64 (the pattern `(i * 7) mod 64` over the alphabet).
+    var alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    var cb = str_builder_new();
+    str_builder_add_cstr(cb, "{\"image_data\":\"");
+    var k = 0;
+    while (k < 1048576) {
+        str_builder_putc(cb, load8(alpha + ((k * 7) % 64)));
+        k = k + 1;
+    }
+    str_builder_add_cstr(cb, "\",\"width\":1920,\"height\":1080,\"format\":\"png\"}");
+    var body = str_builder_build(cb);
+    var bc = bench_new("capture_parse_1mb");
+    var nc = 50;
+    bench_batch_start(bc);
+    i = 0;
+    while (i < nc) {
+        var ct, cv = _sl_capture_from_body(str_data(body), str_len(body));
+        var r: *SlCaptureResponse = _sl_as_capture_resp(cv);
+        sink = sink + r.width;
+        SlCaptureResponse_free(r);
+        i = i + 1;
+    }
+    bench_batch_stop(bc, nc);
+    bench_report(bc);
+    return sink;
+}
+
 # ---- M3: codecs, on one 512 x 512 RGBA image the oracle's --bench builds identically:
 # (x ^ y, 3x + y, 5y ^ x, 255) mod 256, a pattern with edges and gradients, neither flat nor noise.
 fn _b_image(): *SlImage {
@@ -338,6 +470,7 @@ fn main(): i64 {
     _b_redact("suggest_redactions_long", str_data(ltext), str_len(ltext), 5000);
     _b_extract();
     _b_m4();
+    _b_m5();
     _b_codecs();
     return 0;
 }

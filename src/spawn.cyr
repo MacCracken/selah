@@ -1,0 +1,290 @@
+# spawn.cyr — run a tool with bytes on its stdin, its stderr kept (port plan D12; ledger L3).
+#
+# UPSTREAM(L3): lib/process.cyr has `run`, `spawn` and `exec_capture`, but none feeds the child's stdin, which the
+# clipboard tools (wl-copy, xclip) read the image from. Filed with cyrius; until it lands, this is selah's own.
+#
+# What Rust's copy_to_clipboard does with std::process::Command, and how it is done here:
+#   - The program is found on PATH as Command finds a bare name (the PATH of this process, else /bin:/usr/bin), and
+#     runs with this process's environment, stdin a pipe, stdout /dev/null, stderr a pipe. In the child the signal
+#     mask is emptied and SIGPIPE set back to its default before execve, as Command does.
+#   - Rust feeds stdin from a second thread so a tool that fills its stderr pipe cannot deadlock it, and awaits only
+#     the exit status: both tools fork a background process that keeps serving the selection and may hold the
+#     inherited pipes open. Here one poll loop writes stdin, drains stderr (keeping the first 64 KiB) and checks for
+#     the exit; stdin is closed when written, and stderr is read only until the tool has exited (never to EOF).
+#   - Writing to a tool that has gone raises SIGPIPE, which would end this process. SIGPIPE is blocked in this thread
+#     while writing, and one the writes raised is taken off the pending set (through a signalfd) before the mask is
+#     restored.
+#   - A tool that exits successfully before taking all of its input is a write failure (Rust's writer thread would
+#     wait on it for ever when a background process holds the pipe).
+# Linux only (x86_64 and aarch64); on Windows the spawn reports that it cannot run the tool.
+
+const _SL_STDERR_KEEP = 65536;
+
+# The spawn's outcome: `ran` 1 once the tool was started; its exit `code` (0..255) or `signal`, `core` 1 for a core
+# dump; `werr` the first stdin write error (a negative errno, or -1 for input left unread); the kept stderr on the
+# freelist (`err`, `errlen`).
+struct SlSpawn { ran: i64; code: i64; signal: i64; core: i64; werr: i64; err: i64; errlen: i64; }
+
+#must_use
+fn _sl_as_spawn(p): *SlSpawn {
+    return p;
+}
+
+# The full path of the executable `name` (NUL-terminated): `name` itself when it holds a `/`, else the first
+# `<dir>/<name>` on PATH that is a regular file with an execute bit. A NUL-terminated Str, or 0.
+#must_use
+fn _sl_which(name): i64 {
+    var n = strlen(name);
+    var i = 0;
+    while (i < n) {
+        if (load8(name + i) == 47) { return str_from(name); }
+        i = i + 1;
+    }
+    var path = getenv("PATH");
+    if (path == 0) { path = "/bin:/usr/bin"; }
+    var pn = strlen(path);
+    var s = 0;
+    while (s <= pn) {
+        var e = s;
+        while (e < pn && load8(path + e) != 58) { e = e + 1; }
+        var sb = str_builder_new();
+        if (e == s) {
+            str_builder_add_cstr(sb, ".");
+        } else {
+            _sl_sb_bytes(sb, path + s, e - s);
+        }
+        str_builder_putc(sb, 47);
+        str_builder_add_cstr(sb, name);
+        var full = str_builder_build(sb);
+        #ifndef CYRIUS_TARGET_WIN
+        var st[256];
+        var fp = str_data(full);
+        if (xstat(fp, &st) == 0) {
+            var mode = load32(&st + STAT_MODE);
+            if ((mode & 61440) == 32768 && (mode & 73) != 0) { return full; }
+        }
+        #endif
+        s = e + 1;
+    }
+    return 0;
+}
+
+# This process's environment as the NULL-terminated array execve takes (lib/io.cyr's env_block), or an empty one.
+#must_use
+fn _sl_envp(): i64 {
+    var lenb: i64[1];
+    var blob = env_block(&lenb);
+    var n = lenb[0];
+    var count = 0;
+    var i = 0;
+    while (blob != 0 && i < n) {
+        if (load8(blob + i) == 0) { count = count + 1; }
+        i = i + 1;
+    }
+    var envp = alloc((count + 1) * 8);
+    if (envp == 0) { return 0; }
+    var ei = 0;
+    var start = 0;
+    i = 0;
+    while (blob != 0 && i < n) {
+        if (load8(blob + i) == 0) {
+            store64(envp + ei * 8, blob + start);
+            ei = ei + 1;
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    store64(envp + ei * 8, 0);
+    return envp;
+}
+
+#ifndef CYRIUS_TARGET_WIN
+
+# The signal set holding only SIGPIPE (bit 12 of the 64-bit set).
+const _SL_SIGPIPE_SET = 4096;
+
+# Takes one pending SIGPIPE off the calling thread without waiting: a signalfd for SIGPIPE (the stdlib wrapper, so
+# the syscall is right on x86_64 and aarch64), read once without blocking, closed. Raw rt_sigtimedwait numbers would
+# be renumbered on aarch64.
+fn _sl_sigpipe_consume(): i64 {
+    var set: i64[1];
+    set[0] = _SL_SIGPIPE_SET;
+    var fd = sys_signalfd(-1, &set, 0);
+    if (fd < 0) { return fd; }
+    fd_set_nonblocking(fd);
+    var info: u8[128];
+    file_read(fd, &info, 128);
+    sys_close(fd);
+    return 0;
+}
+
+# Appends what the stderr pipe has now, without blocking: up to the keep limit, the rest read and dropped. Returns 1
+# at EOF, else 0.
+fn _sl_drain_stderr(fd, sp: *SlSpawn): i64 {
+    var tmp: u8[4096];
+    while (1 == 1) {
+        var r = file_read(fd, &tmp, 4096);
+        if (r == 0) { return 1; }
+        if (r < 0) { return 0; }
+        var keep = r;
+        if (sp.errlen + keep > _SL_STDERR_KEEP) { keep = _SL_STDERR_KEEP - sp.errlen; }
+        if (keep > 0) {
+            memcpy(sp.err + sp.errlen, &tmp, keep);
+            sp.errlen = sp.errlen + keep;
+        }
+    }
+    return 0;
+}
+
+# The child, between fork and execve: signals as Command leaves them, then stdin, stdout and stderr, then execve.
+fn _sl_spawn_child(path, argv, envp, in_r, in_w, err_r, err_w): i64 {
+    var empty: i64[1];
+    empty[0] = 0;
+    sys_sigprocmask(SIG_SETMASK, &empty, 0);
+    signal_default(SIGPIPE);
+    sys_close(in_w);
+    sys_close(err_r);
+    sys_dup2(in_r, 0);
+    if (in_r != 0) { sys_close(in_r); }
+    var devnull = sys_open("/dev/null", 1, 0);
+    if (devnull >= 0) {
+        sys_dup2(devnull, 1);
+        if (devnull != 1) { sys_close(devnull); }
+    }
+    sys_dup2(err_w, 2);
+    if (err_w != 2) { sys_close(err_w); }
+    sys_execve(path, argv, envp);
+    sys_exit(127);
+    return 0;
+}
+
+#endif
+
+# Runs the program at `path` (resolved; argv a NULL-terminated array of NUL-terminated strings) with data[0..n) on
+# its stdin, and fills `sp`. Ok(0) once the tool has been waited for; Err(negative errno) when it could not be started
+# or waited for.
+fn _sl_spawn_feed(path, argv, data, n, sp: *SlSpawn): (i64, i64) {
+    sp.ran = 0;
+    sp.code = 0;
+    sp.signal = 0;
+    sp.core = 0;
+    sp.werr = 0;
+    sp.errlen = 0;
+    sp.err = fl_alloc(_SL_STDERR_KEEP + 1);
+    if (sp.err == 0) { return (0, -12); }
+    #ifdef CYRIUS_TARGET_WIN
+    return (0, -38);
+    #endif
+    #ifndef CYRIUS_TARGET_WIN
+    var envp = _sl_envp();
+    if (envp == 0) { return (0, -12); }
+    var ip: u8[16];
+    var ep: u8[16];
+    var pr = sys_pipe(&ip);
+    if (pr < 0) { return (0, pr); }
+    var pr2 = sys_pipe(&ep);
+    if (pr2 < 0) {
+        sys_close(load32(&ip));
+        sys_close(load32(&ip + 4));
+        return (0, pr2);
+    }
+    var in_r = load32(&ip);
+    var in_w = load32(&ip + 4);
+    var err_r = load32(&ep);
+    var err_w = load32(&ep + 4);
+    var pid = sys_fork();
+    if (pid < 0) {
+        sys_close(in_r);
+        sys_close(in_w);
+        sys_close(err_r);
+        sys_close(err_w);
+        return (0, pid);
+    }
+    if (pid == 0) { _sl_spawn_child(path, argv, envp, in_r, in_w, err_r, err_w); }
+    sys_close(in_r);
+    sys_close(err_w);
+    sp.ran = 1;
+    fd_set_nonblocking(in_w);
+    fd_set_nonblocking(err_r);
+
+    # SIGPIPE blocked while writing. When the caller had blocked it already, a SIGPIPE pending now may be theirs, so
+    # none is taken off afterwards; otherwise none can have been pending, and one the writes raised is ours.
+    var block: i64[1];
+    block[0] = _SL_SIGPIPE_SET;
+    var old: i64[1];
+    old[0] = 0;
+    sys_sigprocmask(SIG_BLOCK, &block, &old);
+    var ours = 1;
+    if ((old[0] & _SL_SIGPIPE_SET) != 0) { ours = 0; }
+
+    var off = 0;
+    var wfd = in_w;
+    if (n == 0) {
+        sys_close(wfd);
+        wfd = -1;
+    }
+    var st: u8[8];
+    var exited = 0;
+    var werr = 0;
+    var epipe = 0;
+    while (exited == 0) {
+        var pfd: u8[16];
+        store32(&pfd, err_r);
+        store16(&pfd + 4, 1);
+        store16(&pfd + 6, 0);
+        var nfds = 1;
+        if (wfd >= 0) {
+            store32(&pfd + 8, wfd);
+            store16(&pfd + 12, 4);
+            store16(&pfd + 14, 0);
+            nfds = 2;
+        }
+        var ts: i64[2];
+        ts[0] = 0;
+        ts[1] = 50000000;
+        sys_ppoll(&pfd, nfds, &ts, 0, 8);
+        _sl_drain_stderr(err_r, sp);
+        if (wfd >= 0) {
+            var w = file_write(wfd, data + off, n - off);
+            if (w > 0) { off = off + w; }
+            if (w < 0 && w != -11) {
+                if (w == -32) { epipe = 1; }
+                if (werr == 0) { werr = w; }
+                sys_close(wfd);
+                wfd = -1;
+            }
+            if (wfd >= 0 && off >= n) {
+                sys_close(wfd);
+                wfd = -1;
+            }
+        }
+        var rp = sys_waitpid(pid, &st, 1);
+        if (rp == pid) { exited = 1; }
+        if (rp < 0 && rp != -4) {
+            if (wfd >= 0) { sys_close(wfd); }
+            sys_close(err_r);
+            sys_sigprocmask(SIG_SETMASK, &old, 0);
+            return (0, rp);
+        }
+    }
+    if (wfd >= 0) {
+        # The tool ended before taking all of its input.
+        sys_close(wfd);
+        if (werr == 0) { werr = -1; }
+    }
+    _sl_drain_stderr(err_r, sp);
+    sys_close(err_r);
+    if (epipe == 1 && ours == 1) { _sl_sigpipe_consume(); }
+    sys_sigprocmask(SIG_SETMASK, &old, 0);
+    store8(sp.err + sp.errlen, 0);
+    var status = load32(&st);
+    if (WIFEXITED(status) == 1) {
+        sp.code = WEXITSTATUS(status);
+    } else {
+        sp.signal = status & 127;
+        if ((status & 128) != 0) { sp.core = 1; }
+    }
+    sp.werr = werr;
+    return (1, 0);
+    #endif
+}

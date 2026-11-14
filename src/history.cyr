@@ -1,0 +1,770 @@
+# history.cyr — the screenshot history, one JSON line per capture (Rust: rust-old/src/history.rs).
+#
+# Port plan M5. Each line is a HistoryEntry as serde_json writes it ({"id","path","timestamp","source","width",
+# "height","format"}), read back as serde reads it. A line that doesn't read is skipped, never fatal.
+#   - Writers (record, delete) hold an exclusive OS lock on `<history>.lock`: flock(LOCK_EX | LOCK_NB), retried every
+#     10 ms for at most 5 s (Rust: File::try_lock). The kernel drops it when the descriptor closes or the process
+#     dies, so a crash leaves no stale lock; the lock file itself stays, and only a live lock blocks.
+#   - Readers don't lock: a rewrite is an atomic rename and an append is one write, so a reader sees a consistent
+#     file, at worst with a torn last line, which it skips.
+#   - record terminates a torn last line before appending, so the new entry is not glued onto it and lost.
+#   - list keeps only the `limit` newest entries in memory, in a heap keyed on (timestamp, line number) (L4): newest
+#     first, equal timestamps in file order. Each line is parsed in a scratch allocator, reset per line.
+#   - delete rewrites the file atomically (fsutil) and keeps every line it cannot read, byte for byte.
+# Paths are NUL-terminated strings. The history file is 0600 and the default directory 0700.
+
+# How long a writer waits for the lock (Rust's LOCK_TIMEOUT, 5 s); a variable only so the tests can reach the
+# deadline branch quickly.
+var _sl_history_lock_timeout_ms = 5000;
+const _SL_HISTORY_LOCK_RETRY_MS = 10;
+const _SL_LINE_CHUNK = 65536;
+
+# O_CLOEXEC where the target has it (Rust's std opens every file close-on-exec); Windows has no exec to close on.
+#ifdef CYRIUS_TARGET_WIN
+var _SL_O_CLOEXEC = 0;
+#endif
+#ifndef CYRIUS_TARGET_WIN
+var _SL_O_CLOEXEC = O_CLOEXEC;
+#endif
+
+# A history entry: the id's 16 bytes (id_a, id_b), the timestamp as unix seconds and nanoseconds (chrono's: a leap
+# second is second 59 with 10^9 added), the dimensions, and three Strs. One freelist block holds the struct and its
+# strings; free it with SlHistoryEntry_free.
+struct SlHistoryEntry {
+    id_a: i64;
+    id_b: i64;
+    path: i64;
+    secs: i64;
+    nanos: i64;
+    source: i64;
+    width: i64;
+    height: i64;
+    format: i64;
+}
+
+# The store: the history file's path and its lock file's (`<path>.lock`), NUL-terminated, on the freelist.
+struct SlHistoryStore { path: i64; lock: i64; }
+
+#must_use
+fn _sl_as_history(p): *SlHistoryEntry {
+    return p;
+}
+
+#must_use
+fn _sl_as_store(p): *SlHistoryStore {
+    return p;
+}
+
+# Writes a Str header for p[0..n) at h, and copies the bytes to dst (NUL-terminated). Returns the byte after them.
+fn _sl_history_put(h, dst, p, n): i64 {
+    if (n > 0) { memcpy(dst, p, n); }
+    store8(dst + n, 0);
+    store64(h, dst);
+    store64(h + 8, n);
+    return dst + n + 1;
+}
+
+# A new entry: id16 is the id's 16 bytes; path, source and format are (pointer, length) pairs. 0 when out of memory.
+#must_use
+fn SlHistoryEntry_new(id16, path, plen, secs, nanos, source, slen, width, height, format, flen): *SlHistoryEntry {
+    var size = sizeof(SlHistoryEntry) + 48 + plen + slen + flen + 3;
+    var e: *SlHistoryEntry = _sl_as_history(fl_alloc(size));
+    if (e == 0) { return 0; }
+    memcpy(e, id16, 16);
+    var h = _sl_addr(e) + sizeof(SlHistoryEntry);
+    var d = h + 48;
+    d = _sl_history_put(h, d, path, plen);
+    d = _sl_history_put(h + 16, d, source, slen);
+    _sl_history_put(h + 32, d, format, flen);
+    e.path = h;
+    e.source = h + 16;
+    e.format = h + 32;
+    e.secs = secs;
+    e.nanos = nanos;
+    e.width = width;
+    e.height = height;
+    return e;
+}
+
+# Frees an entry (one block: the struct and its strings).
+fn SlHistoryEntry_free(e: *SlHistoryEntry): i64 {
+    if (e != 0) { fl_free(e); }
+    return 0;
+}
+
+# Appends serde's JSON for the entry, on one line: {"id":…,"path":…,"timestamp":…,"source":…,"width":…,…}.
+fn SlHistoryEntry_to_json(e: *SlHistoryEntry, sb): i64 {
+    str_builder_add_cstr(sb, "{\"id\":\"");
+    _sl_uuid_fmt(sb, e, 1);
+    str_builder_add_cstr(sb, "\",\"path\":");
+    _sl_json_str_s(sb, e.path);
+    str_builder_add_cstr(sb, ",\"timestamp\":\"");
+    _sl_rfc3339_fmt(sb, e.secs, e.nanos);
+    str_builder_add_cstr(sb, "\",\"source\":");
+    _sl_json_str_s(sb, e.source);
+    str_builder_add_cstr(sb, ",\"width\":");
+    str_builder_add_int(sb, e.width);
+    str_builder_add_cstr(sb, ",\"height\":");
+    str_builder_add_int(sb, e.height);
+    str_builder_add_cstr(sb, ",\"format\":");
+    _sl_json_str_s(sb, e.format);
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+# Err(SL_ERR_SERDE) with "history entry: <what>".
+fn _sl_history_bad(detail_out, what): Result {
+    if (detail_out == 0) { return Err(SL_ERR_SERDE); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "history entry: ");
+    str_builder_add_cstr(sb, what);
+    return _sl_fail(SL_ERR_SERDE, detail_out, str_builder_build(sb));
+}
+
+# A HistoryEntry from a bayan value, as serde's derive reads one: an object (unknown members ignored) or the array of
+# its seven fields; `id` a Uuid in any of its forms, `timestamp` RFC 3339 as chrono reads it, the dimensions u32.
+# Ok(*SlHistoryEntry) or Err(SL_ERR_SERDE).
+fn _sl_history_from_value(v, detail_out): Result {
+    if (v == 0) { return _sl_history_bad(detail_out, "not a JSON document"); }
+    if (bayan_json_v_is_obj(v) == false && bayan_json_v_is_arr(v) == false) {
+        return _sl_history_bad(detail_out, "invalid type: expected struct HistoryEntry");
+    }
+    var ids = _sl_json_as_str(_sl_json_field(v, "id", 7, 0));
+    var id: u8[16];
+    if (ids == 0 || _sl_uuid_parse(str_data(ids), str_len(ids), &id) == 0) {
+        return _sl_history_bad(detail_out, "`id` is missing or not a UUID");
+    }
+    var path = _sl_json_as_str(_sl_json_field(v, "path", 7, 1));
+    var ts = _sl_json_as_str(_sl_json_field(v, "timestamp", 7, 2));
+    var source = _sl_json_as_str(_sl_json_field(v, "source", 7, 3));
+    var format = _sl_json_as_str(_sl_json_field(v, "format", 7, 6));
+    if (path == 0 || ts == 0 || source == 0 || format == 0) {
+        return _sl_history_bad(detail_out, "`path`, `timestamp`, `source` and `format` must be strings");
+    }
+    var secs = 0;
+    var nanos = 0;
+    if (_sl_rfc3339_parse(str_data(ts), str_len(ts), &secs, &nanos) == 0) {
+        return _sl_history_bad(detail_out, "`timestamp` is not an RFC 3339 date-time");
+    }
+    var w = _sl_json_as_uint(_sl_json_field(v, "width", 7, 4), 4294967295);
+    var h = _sl_json_as_uint(_sl_json_field(v, "height", 7, 5), 4294967295);
+    if (w < 0 || h < 0) { return _sl_history_bad(detail_out, "`width` and `height` must be u32 integers"); }
+    var e = SlHistoryEntry_new(&id, str_data(path), str_len(path), secs, nanos, str_data(source), str_len(source),
+        w, h, str_data(format), str_len(format));
+    if (e == 0) { return _sl_history_bad(detail_out, "out of memory"); }
+    return Ok(e);
+}
+
+# A HistoryEntry from JSON p[0..n), as serde_json::from_slice reads one. Ok(*SlHistoryEntry) or Err(SL_ERR_SERDE).
+fn SlHistoryEntry_from_json(p, n, detail_out = 0): Result {
+    var a = _sl_scratch_new();
+    if (a == 0) { return _sl_history_bad(detail_out, "out of memory"); }
+    var t, v = _sl_history_from_value(_sl_json_parse_a(a, p, n), detail_out);
+    _sl_scratch_free(a);
+    if (is_err_result(t) == 1) { return Err(v); }
+    return Ok(v);
+}
+
+# Rust's private EntryId: only the `id` (an object's member, or the one element of an array). Stores the 16 bytes
+# at out and returns 1, or returns 0 when serde would refuse it.
+fn _sl_history_id_from_value(v, out): i64 {
+    if (v == 0) { return 0; }
+    var f = 0;
+    if (bayan_json_v_is_obj(v) == true) {
+        f = _sl_json_member(v, "id");
+    } elif (bayan_json_v_is_arr(v) == true) {
+        f = _sl_json_seq_elem(v, 1, 0);
+    }
+    var s = _sl_json_as_str(f);
+    if (s == 0) { return 0; }
+    return _sl_uuid_parse(str_data(s), str_len(s), out);
+}
+
+# ── the store ────────────────────────────────────────────────────────────────────────
+
+# A store for the history file at `path` (Rust: HistoryStore::open; nothing is touched until used). 0 when out of
+# memory.
+#must_use
+fn SlHistoryStore_open(path): *SlHistoryStore {
+    var s: *SlHistoryStore = _sl_as_store(fl_calloc(sizeof(SlHistoryStore)));
+    if (s == 0) { return 0; }
+    var n = strlen(path);
+    s.path = _sl_fl_dup(path, n);
+    s.lock = fl_alloc(n + 6);
+    if (s.path == 0 || s.lock == 0) {
+        SlHistoryStore_free(s);
+        return 0;
+    }
+    memcpy(s.lock, path, n);
+    memcpy(s.lock + n, ".lock", 6);
+    return s;
+}
+
+# Frees a store (the history file is untouched).
+fn SlHistoryStore_free(s: *SlHistoryStore): i64 {
+    if (s == 0) { return 0; }
+    if (s.path != 0) { fl_free(s.path); }
+    if (s.lock != 0) { fl_free(s.lock); }
+    fl_free(s);
+    return 0;
+}
+
+# The history file's path (NUL-terminated, owned by the store).
+#must_use
+fn SlHistoryStore_path(s: *SlHistoryStore): i64 {
+    return s.path;
+}
+
+# 1 when the NUL-terminated `p` is an absolute path (Unix: it starts with `/`; an empty one is not).
+#must_use
+fn _sl_path_absolute(p): i64 {
+    if (p == 0) { return 0; }
+    if (load8(p) == 47) { return 1; }
+    return 0;
+}
+
+# Appends `name` (NUL-terminated) to the path p[0..n) as PathBuf::push does for a relative name: a separator only
+# when the path does not already end with one. Returns the new path as a NUL-terminated Str.
+#must_use
+fn _sl_path_push(p, n, name): i64 {
+    var sb = str_builder_new();
+    _sl_sb_bytes(sb, p, n);
+    if (n > 0 && load8(p + n - 1) != 47) { str_builder_putc(sb, 47); }
+    str_builder_add_cstr(sb, name);
+    return str_builder_build(sb);
+}
+
+# Rust's default_data_dir: `$XDG_DATA_HOME/selah`, else `$HOME/.local/share/selah`, where an unset, empty or relative
+# value is ignored (the XDG rule). A NUL-terminated Str, or 0 when neither is usable.
+#must_use
+fn _sl_default_data_dir(xdg, home): i64 {
+    var base = 0;
+    if (_sl_path_absolute(xdg) == 1) {
+        base = str_from(xdg);
+    } elif (_sl_path_absolute(home) == 1) {
+        base = _sl_path_push(home, strlen(home), ".local/share");
+    } else {
+        return 0;
+    }
+    return _sl_path_push(str_data(base), str_len(base), "selah");
+}
+
+# A store at the default location: `$XDG_DATA_HOME/selah/history.jsonl` or `~/.local/share/selah/history.jsonl`, the
+# directory created 0700 (Rust: HistoryStore::open_default). Ok(*SlHistoryStore) or Err(SL_ERR_IO).
+fn SlHistoryStore_open_default(detail_out = 0): Result {
+    var dir = _sl_default_data_dir(getenv("XDG_DATA_HOME"), getenv("HOME"));
+    if (dir == 0) {
+        return _sl_fail_cstr(SL_ERR_IO, detail_out,
+            "cannot locate data directory: neither XDG_DATA_HOME nor HOME is an absolute path");
+    }
+    var t, v = _sl_create_private_dir_all(str_data(dir), detail_out);
+    if (is_err_result(t) == 1) { return Err(v); }
+    var file = _sl_path_push(str_data(dir), str_len(dir), "history.jsonl");
+    var s = SlHistoryStore_open(str_data(file));
+    if (s == 0) { return _sl_io_errno(detail_out, -12); }
+    return Ok(s);
+}
+
+# The lock file's path: the history path with `.lock` appended (a Str over the store's own copy).
+#must_use
+fn _sl_history_lock_path(s: *SlHistoryStore): i64 {
+    return str_from(s.lock);
+}
+
+# Takes the writers' lock (HistoryLock::acquire): the lock file opened (created 0600), then a non-blocking exclusive
+# flock retried every 10 ms until 5 s have passed. Ok(fd; closing it releases the lock) or Err(SL_ERR_IO).
+fn _sl_history_lock(s: *SlHistoryStore, detail_out): Result {
+    var fd = file_open(s.lock, O_WRONLY | O_CREAT | _SL_O_CLOEXEC, 384);
+    if (fd < 0) { return _sl_io_errno(detail_out, fd); }
+    var deadline = clock_now_ms() + _sl_history_lock_timeout_ms;
+    while (1 == 1) {
+        var r = xflock(fd, LOCK_EX | LOCK_NB);
+        if (r == 0) { return Ok(fd); }
+        if (r != -11) {
+            file_close(fd);
+            return _sl_io_errno(detail_out, r);
+        }
+        if (clock_now_ms() >= deadline) {
+            file_close(fd);
+            return _sl_fail_cstr(SL_ERR_IO, detail_out, "timed out waiting for history lock");
+        }
+        sleep_ms(_SL_HISTORY_LOCK_RETRY_MS);
+    }
+    return Err(SL_ERR_IO);
+}
+
+# Writes all of data[0..n) to fd. 0, or a negative errno.
+fn _sl_write_all(fd, data, n): i64 {
+    var off = 0;
+    while (off < n) {
+        var w = file_write(fd, data + off, n - off);
+        if (w < 0) { return w; }
+        if (w == 0) { return -5; }
+        off = off + w;
+    }
+    return 0;
+}
+
+# Records an entry: its line appended under the lock, after a newline when the file's last line is torn (Rust:
+# HistoryStore::record). Ok(0) or Err(SL_ERR_IO).
+fn SlHistoryStore_record(s: *SlHistoryStore, e: *SlHistoryEntry, detail_out = 0): Result {
+    var sb = str_builder_new();
+    SlHistoryEntry_to_json(e, sb);
+    str_builder_putc(sb, 10);
+    var line = str_builder_build(sb);
+    var lt, lfd = _sl_history_lock(s, detail_out);
+    if (is_err_result(lt) == 1) { return Err(lfd); }
+    var fd = file_open(s.path, O_RDWR | O_APPEND | O_CREAT | _SL_O_CLOEXEC, 384);
+    if (fd < 0) {
+        file_close(lfd);
+        return _sl_io_errno(detail_out, fd);
+    }
+    var err = 0;
+    var size = sys_lseek(fd, 0, 2);
+    if (size < 0) { err = size; }
+    if (err == 0 && size > 0) {
+        var last: u8[8];
+        var sr = sys_lseek(fd, -1, 2);
+        var rr = 0;
+        if (sr >= 0) { rr = file_read(fd, &last, 1); }
+        if (sr < 0) {
+            err = sr;
+        } elif (rr < 0) {
+            err = rr;
+        } elif (rr == 0) {
+            err = -5;
+        } elif (load8(&last) != 10) {
+            var nb = str_builder_new();
+            str_builder_putc(nb, 10);
+            str_builder_add(nb, line);
+            line = str_builder_build(nb);
+        }
+    }
+    # Append mode: the write lands at the end whatever the seek above left.
+    if (err == 0) { err = _sl_write_all(fd, str_data(line), str_len(line)); }
+    file_close(fd);
+    file_close(lfd);
+    if (err < 0) { return _sl_io_errno(detail_out, err); }
+    _sl_log_kv(SK_DEBUG, "recorded history entry", "path", str_data(e.path));
+    return Ok(0);
+}
+
+# ── reading lines ────────────────────────────────────────────────────────────────────
+
+# A line reader over a file: { fd, chunk, chunk length, position, line buffer, its length, its capacity, eof }.
+struct SlLines { fd: i64; buf: i64; len: i64; pos: i64; line: i64; llen: i64; lcap: i64; eof: i64; }
+
+#must_use
+fn _sl_as_lines(p): *SlLines {
+    return p;
+}
+
+# Opens the history file for reading. Ok(*SlLines), Ok(0) when the file does not exist yet, or Err(SL_ERR_IO).
+fn _sl_lines_open(path, detail_out): Result {
+    var fd = file_open(path, O_RDONLY | _SL_O_CLOEXEC, 0);
+    if (fd == -2) { return Ok(0); }
+    if (fd < 0) { return _sl_io_errno(detail_out, fd); }
+    var r: *SlLines = _sl_as_lines(fl_calloc(sizeof(SlLines)));
+    var buf = fl_alloc(_SL_LINE_CHUNK);
+    if (r == 0 || buf == 0) {
+        file_close(fd);
+        if (r != 0) { fl_free(r); }
+        return _sl_io_errno(detail_out, -12);
+    }
+    r.fd = fd;
+    r.buf = buf;
+    return Ok(r);
+}
+
+fn _sl_lines_close(r: *SlLines): i64 {
+    if (r == 0) { return 0; }
+    file_close(r.fd);
+    fl_free(r.buf);
+    if (r.line != 0) { fl_free(r.line); }
+    fl_free(r);
+    return 0;
+}
+
+# Appends p[0..n) to the reader's line buffer. 0, or -12 when out of memory.
+fn _sl_lines_keep(r: *SlLines, p, n): i64 {
+    if (r.llen + n > r.lcap) {
+        var cap = r.lcap * 2;
+        if (cap < 256) { cap = 256; }
+        while (cap < r.llen + n) { cap = cap * 2; }
+        var nb = fl_alloc(cap);
+        if (nb == 0) { return -12; }
+        if (r.line != 0) {
+            memcpy(nb, r.line, r.llen);
+            fl_free(r.line);
+        }
+        r.line = nb;
+        r.lcap = cap;
+    }
+    memcpy(r.line + r.llen, p, n);
+    r.llen = r.llen + n;
+    return 0;
+}
+
+# The next line, without its `\n` (Rust: read_until(b'\n')): stores where it is and its length (valid until the next
+# call) and returns 1; returns 0 at the end of the file, or a negative errno.
+fn _sl_lines_next(r: *SlLines, p_out, n_out): i64 {
+    r.llen = 0;
+    while (1 == 1) {
+        if (r.pos < r.len) {
+            var start = r.buf + r.pos;
+            var avail = r.len - r.pos;
+            var k = 0;
+            while (k < avail && load8(start + k) != 10) { k = k + 1; }
+            if (k < avail) {
+                r.pos = r.pos + k + 1;
+                if (r.llen == 0) {
+                    store64(p_out, start);
+                    store64(n_out, k);
+                    return 1;
+                }
+                if (_sl_lines_keep(r, start, k) < 0) { return -12; }
+                store64(p_out, r.line);
+                store64(n_out, r.llen);
+                return 1;
+            }
+            if (_sl_lines_keep(r, start, avail) < 0) { return -12; }
+            r.pos = r.len;
+        }
+        if (r.eof == 1) {
+            if (r.llen == 0) { return 0; }
+            store64(p_out, r.line);
+            store64(n_out, r.llen);
+            return 1;
+        }
+        var got = file_read(r.fd, r.buf, _SL_LINE_CHUNK);
+        if (got < 0) { return got; }
+        if (got == 0) {
+            r.eof = 1;
+        } else {
+            r.len = got;
+            r.pos = 0;
+        }
+    }
+    return 0;
+}
+
+# 1 for the bytes Rust's `u8::is_ascii_whitespace` (and so `trim_ascii`) strips: space, \t, \n, \x0C, \r.
+#must_use
+fn _sl_ascii_ws(c): i64 {
+    if (c == 32 || c == 9 || c == 10 || c == 12 || c == 13) { return 1; }
+    return 0;
+}
+
+# p[0..n) with ASCII whitespace trimmed from both ends: (start, length).
+fn _sl_trim_ascii(p, n): (i64, i64) {
+    var s = 0;
+    var e = n;
+    while (s < e && _sl_ascii_ws(load8(p + s)) == 1) { s = s + 1; }
+    while (e > s && _sl_ascii_ws(load8(p + e - 1)) == 1) { e = e - 1; }
+    return (p + s, e - s);
+}
+
+# ── list ─────────────────────────────────────────────────────────────────────────────
+
+# A bounded min-heap of entries keyed on (timestamp, line number), the "worst" at the root: the oldest timestamp,
+# and among equal timestamps the later line. Four i64 slots per item: secs, nanos, line number, entry.
+struct SlTopN { items: i64; n: i64; cap: i64; }
+
+#must_use
+fn _sl_as_topn(p): *SlTopN {
+    return p;
+}
+
+# 1 when item i ranks below item j (it is dropped first).
+#must_use
+fn _sl_topn_less(h: *SlTopN, i, j): i64 {
+    var a = h.items + i * 32;
+    var b = h.items + j * 32;
+    var xs = load64(a);
+    var ys = load64(b);
+    if (xs != ys) {
+        if (xs < ys) { return 1; }
+        return 0;
+    }
+    var xn = load64(a + 8);
+    var yn = load64(b + 8);
+    if (xn != yn) {
+        if (xn < yn) { return 1; }
+        return 0;
+    }
+    if (load64(a + 16) > load64(b + 16)) { return 1; }
+    return 0;
+}
+
+fn _sl_topn_swap(h: *SlTopN, i, j): i64 {
+    var a = h.items + i * 32;
+    var b = h.items + j * 32;
+    var k = 0;
+    while (k < 32) {
+        var t = load64(a + k);
+        store64(a + k, load64(b + k));
+        store64(b + k, t);
+        k = k + 8;
+    }
+    return 0;
+}
+
+fn _sl_topn_down(h: *SlTopN, i0): i64 {
+    var i = i0;
+    while (1 == 1) {
+        var l = i * 2 + 1;
+        if (l >= h.n) { return 0; }
+        var m = l;
+        if (l + 1 < h.n && _sl_topn_less(h, l + 1, l) == 1) { m = l + 1; }
+        if (_sl_topn_less(h, m, i) == 0) { return 0; }
+        _sl_topn_swap(h, i, m);
+        i = m;
+    }
+    return 0;
+}
+
+# Pushes an entry. 0, or -12 when out of memory (the entry is then freed).
+fn _sl_topn_push(h: *SlTopN, e: *SlHistoryEntry, seq): i64 {
+    if (h.n == h.cap) {
+        var cap = h.cap * 2;
+        if (cap < 16) { cap = 16; }
+        var nb = fl_alloc(cap * 32);
+        if (nb == 0) {
+            SlHistoryEntry_free(e);
+            return -12;
+        }
+        if (h.items != 0) {
+            memcpy(nb, h.items, h.n * 32);
+            fl_free(h.items);
+        }
+        h.items = nb;
+        h.cap = cap;
+    }
+    var it = h.items + h.n * 32;
+    store64(it, e.secs);
+    store64(it + 8, e.nanos);
+    store64(it + 16, seq);
+    store64(it + 24, e);
+    var i = h.n;
+    h.n = h.n + 1;
+    while (i > 0) {
+        var parent = (i - 1) / 2;
+        if (_sl_topn_less(h, i, parent) == 0) { break; }
+        _sl_topn_swap(h, i, parent);
+        i = parent;
+    }
+    return 0;
+}
+
+# Removes the lowest-ranked item and returns its entry.
+fn _sl_topn_pop(h: *SlTopN): i64 {
+    var e = load64(h.items + 24);
+    h.n = h.n - 1;
+    if (h.n > 0) {
+        _sl_topn_swap(h, 0, h.n);
+        _sl_topn_down(h, 0);
+    }
+    return e;
+}
+
+fn _sl_topn_free(h: *SlTopN): i64 {
+    while (h.n > 0) { SlHistoryEntry_free(_sl_topn_pop(h)); }
+    if (h.items != 0) { fl_free(h.items); }
+    return 0;
+}
+
+# The newest captures, newest first, at most `limit` of them (a negative limit is unbounded, as usize::MAX), only
+# those at or after `since` when it is non-zero (a pointer to two i64 slots: unix seconds, nanoseconds). Malformed
+# lines are skipped and counted in a warning (Rust: HistoryStore::list). Ok(vec of *SlHistoryEntry, each freed with
+# SlHistoryEntry_free) or Err(SL_ERR_IO).
+fn SlHistoryStore_list(s: *SlHistoryStore, limit, since = 0, detail_out = 0): Result {
+    var out = vec_new();
+    if (limit == 0) { return Ok(out); }
+    var ot, rd = _sl_lines_open(s.path, detail_out);
+    if (is_err_result(ot) == 1) { return Err(rd); }
+    if (rd == 0) { return Ok(out); }
+    var r: *SlLines = _sl_as_lines(rd);
+    var a = _sl_scratch_new();
+    var h: *SlTopN = _sl_as_topn(fl_calloc(sizeof(SlTopN)));
+    var seq = 0;
+    var skipped = 0;
+    var err = 0;
+    if (a == 0 || h == 0) { err = -12; }
+    while (err == 0) {
+        var lp = 0;
+        var ln = 0;
+        var got = _sl_lines_next(r, &lp, &ln);
+        if (got < 0) { err = got; }
+        if (got != 1) { break; }
+        var tp, tn = _sl_trim_ascii(lp, ln);
+        if (tn == 0) { continue; }
+        seq = seq + 1;
+        var t, e = _sl_history_from_value(_sl_json_parse_a(a, tp, tn), 0);
+        reset_via(a);
+        if (is_err_result(t) == 1) {
+            skipped = skipped + 1;
+            continue;
+        }
+        var en: *SlHistoryEntry = _sl_as_history(e);
+        if (since != 0) {
+            var ss = load64(since);
+            var sn = load64(since + 8);
+            if (en.secs < ss || (en.secs == ss && en.nanos < sn)) {
+                SlHistoryEntry_free(en);
+                continue;
+            }
+        }
+        if (_sl_topn_push(h, en, seq) < 0) {
+            err = -12;
+            break;
+        }
+        if (limit > 0 && h.n > limit) { SlHistoryEntry_free(_sl_topn_pop(h)); }
+    }
+    _sl_lines_close(r);
+    _sl_scratch_free(a);
+    if (err < 0) {
+        if (h != 0) {
+            _sl_topn_free(h);
+            fl_free(h);
+        }
+        return _sl_io_errno(detail_out, err);
+    }
+    if (skipped > 0) {
+        var sb = str_builder_new();
+        str_builder_add_int(sb, skipped);
+        _sl_log_kv(SK_WARN, "skipped malformed history lines", "skipped", str_data(str_builder_build(sb)));
+    }
+    # Popping yields the lowest rank first: fill from the back so the newest comes first.
+    var cnt = h.n;
+    var i = 0;
+    while (i < cnt) {
+        vec_push(out, 0);
+        i = i + 1;
+    }
+    var j = cnt - 1;
+    while (j >= 0) {
+        vec_set(out, j, _sl_topn_pop(h));
+        j = j - 1;
+    }
+    _sl_topn_free(h);
+    fl_free(h);
+    return Ok(out);
+}
+
+# Frees a vec of entries from SlHistoryStore_list.
+fn selah_history_entries_free(v): i64 {
+    if (v == 0) { return 0; }
+    var i = 0;
+    while (i < vec_len(v)) {
+        SlHistoryEntry_free(vec_get(v, i));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# ── get and delete ───────────────────────────────────────────────────────────────────
+
+# The entry with id `id16` (16 bytes): the first line whose id matches and which reads whole (Rust:
+# HistoryStore::get). Ok(*SlHistoryEntry), Ok(0) when there is none, or Err(SL_ERR_IO).
+fn SlHistoryStore_get(s: *SlHistoryStore, id16, detail_out = 0): Result {
+    var ot, rd = _sl_lines_open(s.path, detail_out);
+    if (is_err_result(ot) == 1) { return Err(rd); }
+    if (rd == 0) { return Ok(0); }
+    var r: *SlLines = _sl_as_lines(rd);
+    var a = _sl_scratch_new();
+    var found = 0;
+    var err = 0;
+    if (a == 0) { err = -12; }
+    while (err == 0 && found == 0) {
+        var lp = 0;
+        var ln = 0;
+        var got = _sl_lines_next(r, &lp, &ln);
+        if (got < 0) { err = got; }
+        if (got != 1) { break; }
+        var tp, tn = _sl_trim_ascii(lp, ln);
+        if (tn == 0) { continue; }
+        var v = _sl_json_parse_a(a, tp, tn);
+        var id: u8[16];
+        if (_sl_history_id_from_value(v, &id) == 1 && memeq(&id, id16, 16) == 1) {
+            var t, e = _sl_history_from_value(v, 0);
+            if (is_ok(t) == 1) { found = e; }
+        }
+        reset_via(a);
+    }
+    _sl_lines_close(r);
+    _sl_scratch_free(a);
+    if (err < 0) { return _sl_io_errno(detail_out, err); }
+    return Ok(found);
+}
+
+# Deletes the entry with id `id16`: under the lock, every line whose id matches is dropped and the rest (lines it
+# cannot read included, byte for byte, each with its `\n`) written back atomically; nothing is written when none
+# matched (Rust: HistoryStore::delete). Ok(1) when one was removed, Ok(0) when none, or Err(SL_ERR_IO).
+fn SlHistoryStore_delete(s: *SlHistoryStore, id16, detail_out = 0): Result {
+    var lt, lfd = _sl_history_lock(s, detail_out);
+    if (is_err_result(lt) == 1) { return Err(lfd); }
+    # Rust reads the file whole, and a file that is not there yet deletes nothing.
+    var probe = file_open(s.path, O_RDONLY | _SL_O_CLOEXEC, 0);
+    if (probe == -2) {
+        file_close(lfd);
+        return Ok(0);
+    }
+    if (probe >= 0) { file_close(probe); }
+    var size = 0;
+    var rt, content = _sl_read_limited(s.path, 9223372036854775806, &size, detail_out);
+    if (is_err_result(rt) == 1) {
+        file_close(lfd);
+        return Err(content);
+    }
+    var a = _sl_scratch_new();
+    if (a == 0) {
+        fl_free(content);
+        file_close(lfd);
+        return _sl_io_errno(detail_out, -12);
+    }
+    # What stays: every kept line with its `\n` (one more byte at most than the file).
+    var rest = fl_alloc(size + 2);
+    if (rest == 0) {
+        _sl_scratch_free(a);
+        fl_free(content);
+        file_close(lfd);
+        return _sl_io_errno(detail_out, -12);
+    }
+    var rn = 0;
+    var found = 0;
+    var start = 0;
+    while (start <= size) {
+        var end = start;
+        while (end < size && load8(content + end) != 10) { end = end + 1; }
+        var lp = content + start;
+        var ln = end - start;
+        var tp, tn = _sl_trim_ascii(lp, ln);
+        if (tn > 0) {
+            var id: u8[16];
+            var v = _sl_json_parse_a(a, lp, ln);
+            if (_sl_history_id_from_value(v, &id) == 1 && memeq(&id, id16, 16) == 1) {
+                found = 1;
+            } else {
+                memcpy(rest + rn, lp, ln);
+                store8(rest + rn + ln, 10);
+                rn = rn + ln + 1;
+            }
+            reset_via(a);
+        }
+        start = end + 1;
+    }
+    _sl_scratch_free(a);
+    fl_free(content);
+    if (found == 1) {
+        var wt, wv = _sl_write_atomic(s.path, rest, rn, detail_out);
+        if (is_err_result(wt) == 1) {
+            fl_free(rest);
+            file_close(lfd);
+            return Err(wv);
+        }
+        _sl_log_debug("deleted history entry");
+    }
+    fl_free(rest);
+    file_close(lfd);
+    return Ok(found);
+}

@@ -1,0 +1,379 @@
+# daimon.tcyr — rust-old/src/daimon.rs's tests, ported (port plan M5). Registration and OCR are retargeted to the
+# live services' routes (D2, ADR 0002 #4–#7), so their tests assert the new requests; heartbeat is dropped, and its two
+# tests become a check that sandhi sends a percent-encoded path as it is. Cyrius-only: the OCR downscale under hoosh's
+# 1 MiB cap (L8), the area average, a fenced answer, and OCR without a model.
+
+include "tests/selah_src.cyr"
+include "tests/support.cyr"
+include "tests/mock_http.cyr"
+
+fn _t_daimon_config_default(): i64 {
+    test_group("test_daimon_config_default");
+    var c: *SlDaimonConfig = SlDaimonConfig_default();
+    assert(_t_cstr_is(c.endpoint, "http://localhost:8090") == 1 && c.api_key == 0, "localhost:8090, no key");
+    return 0;
+}
+
+fn _t_hoosh_config_default(): i64 {
+    test_group("test_hoosh_config_default");
+    var c: *SlHooshConfig = SlHooshConfig_default();
+    assert(_t_cstr_is(c.endpoint, "http://localhost:8088") == 1 && c.model == 0, "localhost:8088, no model");
+    return 0;
+}
+
+fn _t_daimon_client_endpoint(): i64 {
+    test_group("test_daimon_client_endpoint");
+    assert(_t_cstr_is(SlDaimonClient_endpoint(SlDaimonClient_new()), "http://localhost:8090") == 1, "default");
+    return 0;
+}
+
+fn _t_daimon_client_custom_config(): i64 {
+    test_group("test_daimon_client_custom_config");
+    var c = SlDaimonClient_with_config(SlDaimonConfig_new("http://custom:9090", "key123"));
+    assert(_t_cstr_is(SlDaimonClient_endpoint(c), "http://custom:9090") == 1, "custom");
+    return 0;
+}
+
+fn _t_hoosh_client_endpoint(): i64 {
+    test_group("test_hoosh_client_endpoint");
+    assert(_t_cstr_is(SlHooshClient_endpoint(SlHooshClient_new()), "http://localhost:8088") == 1, "default");
+    return 0;
+}
+
+fn _t_daimon_config_serde_roundtrip(): i64 {
+    test_group("test_daimon_config_serde_roundtrip");
+    var c = SlDaimonConfig_new("http://localhost:8090", "secret");
+    var sb = str_builder_new();
+    SlDaimonConfig_to_json(c, sb);
+    var js = str_builder_build(sb);
+    assert(_t_str_is(js, "{\"endpoint\":\"http://localhost:8090\",\"api_key\":\"secret\"}") == 1, "serde's JSON");
+    var t, v = SlDaimonConfig_from_json(str_data(js), str_len(js));
+    var p: *SlDaimonConfig = _sl_as_dconf(v);
+    assert(is_ok(t) == 1 && _t_cstr_is(p.endpoint, "http://localhost:8090") == 1, "endpoint");
+    assert(_t_cstr_is(p.api_key, "secret") == 1, "api key");
+    var only = "{\"endpoint\":\"http://x\"}";
+    var t2, v2 = SlDaimonConfig_from_json(only, strlen(only));
+    var q: *SlDaimonConfig = _sl_as_dconf(v2);
+    assert(is_ok(t2) == 1 && q.api_key == 0, "a missing Option is None");
+    return 0;
+}
+
+fn _t_hoosh_config_serde_roundtrip(): i64 {
+    test_group("test_hoosh_config_serde_roundtrip");
+    var c: *SlHooshConfig = SlHooshConfig_default();
+    var sb = str_builder_new();
+    SlHooshConfig_to_json(c, sb);
+    var js = str_builder_build(sb);
+    assert(_t_str_is(js, "{\"endpoint\":\"http://localhost:8088\"}") == 1, "Rust's JSON when no model is set");
+    var t, v = SlHooshConfig_from_json(str_data(js), str_len(js));
+    var p: *SlHooshConfig = _sl_as_hconf(v);
+    assert(is_ok(t) == 1 && _t_cstr_is(p.endpoint, "http://localhost:8088") == 1, "endpoint");
+    return 0;
+}
+
+fn _t_daimon_client_default_trait(): i64 {
+    test_group("test_daimon_client_default_trait");
+    assert(_t_cstr_is(SlDaimonClient_endpoint(SlDaimonClient_new()), "http://localhost:8090") == 1, "default");
+    return 0;
+}
+
+fn _t_hoosh_client_default_trait(): i64 {
+    test_group("test_hoosh_client_default_trait");
+    assert(_t_cstr_is(SlHooshClient_endpoint(SlHooshClient_new()), "http://localhost:8088") == 1, "default");
+    return 0;
+}
+
+fn _t_hoosh_client_custom_config(): i64 {
+    test_group("test_hoosh_client_custom_config");
+    var c = SlHooshClient_with_config(SlHooshConfig_new("http://custom:9999", 0));
+    assert(_t_cstr_is(SlHooshClient_endpoint(c), "http://custom:9999") == 1, "custom");
+    return 0;
+}
+
+fn _t_daimon_config_debug_redacts_api_key(): i64 {
+    test_group("test_daimon_config_debug_redacts_api_key");
+    var c = SlDaimonConfig_new("http://x", "super-secret");
+    var sb = str_builder_new();
+    SlDaimonConfig_fmt_debug(c, sb);
+    var dbg = str_builder_build(sb);
+    assert(_t_str_has(dbg, "super-secret") == 0 && _t_str_has(dbg, "<redacted>") == 1, "redacted");
+    assert(_t_str_is(dbg, "DaimonConfig { endpoint: \"http://x\", api_key: Some(\"<redacted>\") }") == 1,
+        "Rust's Debug shape");
+    var cb = str_builder_new();
+    SlDaimonClient_fmt_debug(SlDaimonClient_with_config(c), cb);
+    assert(_t_str_has(str_builder_build(cb), "super-secret") == 0, "the client's Debug too");
+    return 0;
+}
+
+fn _t_endpoint_trailing_slash_trimmed(): i64 {
+    test_group("test_endpoint_trailing_slash_trimmed");
+    var c = SlDaimonClient_with_config(SlDaimonConfig_new("http://localhost:8090/", 0));
+    assert(_t_cstr_is(SlDaimonClient_endpoint(c), "http://localhost:8090") == 1, "daimon");
+    var h = SlHooshClient_with_config(SlHooshConfig_new("http://localhost:8088//", 0));
+    assert(_t_cstr_is(SlHooshClient_endpoint(h), "http://localhost:8088") == 1, "hoosh");
+    return 0;
+}
+
+fn _t_endpoint_url_encodes_segments(): i64 {
+    test_group("test_endpoint_url_encodes_segments");
+    var segs = vec_new();
+    vec_push(segs, "v1");
+    vec_push(segs, "agents");
+    vec_push(segs, "a/b?c#d");
+    vec_push(segs, "heartbeat");
+    var t, v = _sl_endpoint_url("http://h:1/base/", segs);
+    assert(is_ok(t) == 1 && _t_str_is(v, "http://h:1/base/v1/agents/a%2Fb%3Fc%23d/heartbeat") == 1, "encoded");
+    var one = vec_new();
+    vec_push(one, "v1");
+    var t2, v2 = _sl_endpoint_url("not a url", one);
+    assert(is_err_result(t2) == 1, "not a URL");
+    var t3, v3 = _sl_endpoint_url("mailto:x@y.z", one);
+    assert(is_err_result(t3) == 1, "cannot be a base");
+    return 0;
+}
+
+fn _t_validate_agent_id(): i64 {
+    test_group("test_validate_agent_id");
+    var t, v = _sl_validate_agent_id("agent-123", 9);
+    assert(is_ok(t) == 1, "ok");
+    var t1, v1 = _sl_validate_agent_id("", 0);
+    var t2, v2 = _sl_validate_agent_id(".", 1);
+    var t3, v3 = _sl_validate_agent_id("..", 2);
+    var t4, v4 = _sl_validate_agent_id("a\nb", 3);
+    assert(is_err_result(t1) == 1 && is_err_result(t2) == 1 && is_err_result(t3) == 1 && is_err_result(t4) == 1,
+        "empty, dots, a control character");
+    var long = fl_alloc(258);
+    memset(long, 97, 257);
+    var t5, v5 = _sl_validate_agent_id(long, 257);
+    assert(is_err_result(t5) == 1, "over 256 bytes");
+    return 0;
+}
+
+# parse_region on JSON text, with factors 1 (Rust's own): 1 and the rect at out, or 0.
+fn _t_region(js, out: *SlRect): i64 {
+    var v = _sl_json_parse(js, strlen(js));
+    return _sl_parse_region(v, 1.0, 1.0, out);
+}
+
+fn _t_parse_region(): i64 {
+    test_group("test_parse_region");
+    var r: SlRect = SlRect_default();
+    var ok = _t_region("{\"x\": 10, \"y\": 10, \"width\": -5, \"height\": 5}", &r);
+    var x: f64 = r.x();
+    var w: f64 = r.width();
+    assert(ok == 1 && x == 5.0 && w == 5.0, "normalized");
+    assert(_t_region("{\"x\": 1e300, \"y\": 0, \"width\": 1, \"height\": 1}", &r) == 0, "not finite as f32");
+    assert(_t_region("{\"x\": 0, \"y\": 0, \"width\": 0, \"height\": 1}", &r) == 0, "empty");
+    assert(_t_region("{\"x\": 0, \"y\": 0}", &r) == 0, "missing fields");
+    return 0;
+}
+
+fn _t_register_agent_sends_bearer_token(): i64 {
+    test_group("test_register_agent_sends_bearer_token");
+    var m = _mock_serve(201, "{\"id\":42,\"name\":\"selah\",\"type\":\"Service\",\"status\":0}");
+    var c = SlDaimonClient_with_config(SlDaimonConfig_new(_mock_url(m), "tok"));
+    var t, v = SlDaimonClient_register_agent(c, "selah");
+    _mock_join(m);
+    assert(is_ok(t) == 1 && _t_str_is(v, "42") == 1, "daimon's integer id, as a string");
+    assert(_t_str_is(_mock_request_line(m), "POST /v1/agents HTTP/1.1") == 1, "POST /v1/agents (D2)");
+    assert(_t_str_is(_mock_header(m, "authorization"), "Bearer tok") == 1, "bearer");
+    assert(_t_str_is(_mock_body(m), "{\"name\":\"selah\",\"type\":\"Service\"}") == 1, "type Service");
+    return 0;
+}
+
+fn _t_register_agent_missing_id(): i64 {
+    test_group("test_register_agent_missing_id");
+    var m = _mock_serve(200, "{\"status\":\"ok\"}");
+    var c = SlDaimonClient_with_config(SlDaimonConfig_new(_mock_url(m), 0));
+    var d = 0;
+    var t, v = SlDaimonClient_register_agent(c, "selah", &d);
+    _mock_join(m);
+    assert(is_err_result(t) == 1 && _t_str_has(selah_error_display(v, d), "missing field `id`") == 1, "missing id");
+    assert(_mock_header(m, "authorization") == 0, "no key, no Authorization");
+    return 0;
+}
+
+# Rust's heartbeat tests, recast (heartbeat is dropped, D2): an encoded path reaches the server as it is, and an error
+# status carries daimon's text.
+fn _t_encoded_path_reaches_the_server(): i64 {
+    test_group("test_heartbeat_encodes_agent_id_and_omits_auth (as an encoded path)");
+    var m = _mock_serve(404, "no such agent");
+    var segs = vec_new();
+    vec_push(segs, "v1");
+    vec_push(segs, "agents");
+    vec_push(segs, "x/../../admin");
+    vec_push(segs, "heartbeat");
+    var ut, url = _sl_endpoint_url(_mock_url(m), segs);
+    var resp: SlHttpResponse = SlHttpResponse { 0, 0, 0 };
+    var t, v = _sl_http_call("POST", str_data(url), 0, 0, 0, 5000, 1024, "daimon heartbeat failed",
+        "daimon heartbeat", &resp, 0);
+    _mock_join(m);
+    assert(_t_str_is(_mock_request_line(m), "POST /v1/agents/x%2F..%2F..%2Fadmin/heartbeat HTTP/1.1") == 1,
+        "sent as it is");
+    var d = 0;
+    var ct, cv = _sl_http_check_status(&resp, "daimon heartbeat", &d);
+    var msg = selah_error_display(cv, d);
+    assert(_t_str_has(msg, "daimon heartbeat 404") == 1 && _t_str_has(msg, "no such agent") == 1,
+        "test_heartbeat_error_status's text");
+    return 0;
+}
+
+# A chat-completions answer whose content is `content` (JSON-escaped into the response).
+fn _t_chat(content): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"id\":\"c1\",\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":");
+    str_builder_add_cstr(sb, "{\"role\":\"assistant\",\"content\":");
+    _sl_json_str(sb, content, strlen(content));
+    str_builder_add_cstr(sb, "},\"finish_reason\":\"stop\"}]}");
+    return str_data(str_builder_build(sb));
+}
+
+fn _t_hoosh_ocr_sanitizes_response(): i64 {
+    test_group("test_hoosh_ocr_sanitizes_response");
+    var ab = str_builder_new();
+    str_builder_add_cstr(ab, "{\"text\":\"hi\",\"confidence\":7.5,\"regions\":[{\"x\":1,\"y\":2,\"width\":3,");
+    str_builder_add_cstr(ab, "\"height\":4},{\"x\":1e300,\"y\":0,\"width\":1,\"height\":1},");
+    str_builder_add_cstr(ab, "{\"x\":0,\"y\":0,\"width\":0,\"height\":0}]}");
+    var m = _mock_serve(200, _t_chat(str_data(str_builder_build(ab))));
+    var c = SlHooshClient_with_config(SlHooshConfig_new(_mock_url(m), "vision-model"));
+    var t, v = SlHooshClient_ocr(c, "img", 3);
+    _mock_join(m);
+    var o: *SlOcrResult = _sl_as_ocr(v);
+    var one: f64 = 1.0;
+    assert(is_ok(t) == 1 && _t_str_is(o.text, "hi") == 1, "text");
+    assert(o.confidence == one && vec_len(o.bounding_boxes) == 1 && o.is_stub == 0, "clamped, one region, not stub");
+    assert(_t_str_is(_mock_request_line(m), "POST /v1/chat/completions HTTP/1.1") == 1, "chat completions (D2)");
+    var body = _mock_body(m);
+    assert(_t_str_has(body, "\"model\":\"vision-model\"") == 1, "the model");
+    assert(_t_str_has(body, "\"url\":\"data:image/png;base64,aW1n\"") == 1, "base64(\"img\") as a data URL");
+    return 0;
+}
+
+# ── Cyrius-only ──────────────────────────────────────────────────────────────────────
+
+fn _t_ocr_needs_a_model(): i64 {
+    test_group("OCR without a model is refused before sending");
+    var c = SlHooshClient_new();
+    var d = 0;
+    var t, v = SlHooshClient_ocr(c, "img", 3, &d);
+    assert(is_err_result(t) == 1 && v == SL_ERR_API && _t_str_has(selah_error_display(v, d), "no model") == 1,
+        "refused");
+    return 0;
+}
+
+fn _t_ocr_fenced_answer(): i64 {
+    test_group("OCR: a fenced answer, a non-JSON answer");
+    var m = _mock_serve(200, _t_chat("```json\n{\"text\":\"ok\",\"confidence\":0.5}\n```"));
+    var c = SlHooshClient_with_config(SlHooshConfig_new(_mock_url(m), "v"));
+    var t, v = SlHooshClient_ocr(c, "img", 3);
+    _mock_join(m);
+    var o: *SlOcrResult = _sl_as_ocr(v);
+    assert(is_ok(t) == 1 && _t_str_is(o.text, "ok") == 1, "the fence is removed");
+    var m2 = _mock_serve(200, _t_chat("I see the word hello."));
+    var c2 = SlHooshClient_with_config(SlHooshConfig_new(_mock_url(m2), "v"));
+    var d = 0;
+    var t2, v2 = SlHooshClient_ocr(c2, "img", 3, &d);
+    _mock_join(m2);
+    assert(is_err_result(t2) == 1 && _t_str_has(selah_error_display(v2, d), "hoosh OCR: invalid response") == 1,
+        "prose is not an answer");
+    return 0;
+}
+
+fn _t_resample_box(): i64 {
+    test_group("area average");
+    var src = fl_alloc(16);
+    var vals = "\x00\x00\x00\xff\x64\x00\x00\xff\x00\xc8\x00\xff\x00\x00\x2c\xff";
+    memcpy(src, vals, 16);
+    var out = _sl_resample_box(src, 2, 2, 1, 1);
+    assert(load8(out) == 25 && load8(out + 1) == 50 && load8(out + 2) == 11 && load8(out + 3) == 255,
+        "2x2 to 1x1: the mean, rounded");
+    var px = fl_calloc(3 * 4);
+    store8(px, 90);
+    store8(px + 4, 30);
+    store8(px + 8, 0);
+    var o2 = _sl_resample_box(px, 3, 1, 2, 1);
+    assert(load8(o2) == 70 && load8(o2 + 4) == 10, "3 to 2: partial coverage weighted");
+    return 0;
+}
+
+fn _t_ocr_downscale(): i64 {
+    test_group("OCR: an image over hoosh's 1 MiB cap is shrunk, the regions scaled back (L8)");
+    var w = 1600;
+    var h = 1200;
+    var px = fl_alloc(w * h * 4);
+    var s = 2463534242;
+    var i = 0;
+    while (i < w * h * 4) {
+        s = s ^ (s << 13);
+        s = s ^ (s >> 7);
+        s = s ^ (s << 17);
+        store8(px + i, s & 255);
+        if ((i & 3) == 3) { store8(px + i, 255); }
+        i = i + 1;
+    }
+    var plen = 0;
+    var png = _sl_png_encode(px, w, h, &plen);
+    var answer = "{\"text\":\"t\",\"confidence\":1,\"regions\":[{\"x\":10,\"y\":20,\"width\":30,\"height\":40}]}";
+    var m = _mock_serve(200, _t_chat(answer));
+    var c = SlHooshClient_with_config(SlHooshConfig_new(_mock_url(m), "v"));
+    var t, v = SlHooshClient_ocr(c, png, plen);
+    _mock_join(m);
+    var body = _mock_body(m);
+    assert(is_ok(t) == 1 && str_len(body) <= 1048576, "the request fits under 1 MiB");
+    assert(_t_str_has(body, "data:image/jpeg;base64,") == 1, "re-encoded as JPEG");
+    # The image sent: decode the data URL back and read its size.
+    var key = "base64,";
+    var bp = str_data(body);
+    var at = 0;
+    while (memeq(bp + at, key, 7) == 0) { at = at + 1; }
+    var st = at + 7;
+    var en = st;
+    while (load8(bp + en) != 34) { en = en + 1; }
+    var jl = 0;
+    var dt, jpg = selah_decode_image_data(bp + st, en - st, &jl);
+    var it, iv = _sl_decode_image(jpg, jl);
+    var img: *SlImage = _sl_as_image(iv);
+    assert(is_ok(it) == 1 && img.width < w && img.height < h, "shrunk");
+    var o: *SlOcrResult = _sl_as_ocr(v);
+    var r: *SlRect = _sl_as_rect(vec_get(o.bounding_boxes, 0));
+    var fx: f64 = f64_from(w) / f64_from(img.width);
+    var x: f64 = r.x();
+    var want: f64 = 10.0 * fx;
+    var wf: f32 = f32_from(want);
+    var wd: f64 = f32_to(wf);
+    assert(x == wd, "x scaled back to the source");
+    return 0;
+}
+
+# Runs the suite; the exit code is the failure count, clamped.
+fn main(): i64 {
+    alloc_init();
+    _t_daimon_config_default();
+    _t_hoosh_config_default();
+    _t_daimon_client_endpoint();
+    _t_daimon_client_custom_config();
+    _t_hoosh_client_endpoint();
+    _t_daimon_config_serde_roundtrip();
+    _t_hoosh_config_serde_roundtrip();
+    _t_daimon_client_default_trait();
+    _t_hoosh_client_default_trait();
+    _t_hoosh_client_custom_config();
+    _t_daimon_config_debug_redacts_api_key();
+    _t_endpoint_trailing_slash_trimmed();
+    _t_endpoint_url_encodes_segments();
+    _t_validate_agent_id();
+    _t_parse_region();
+    _t_register_agent_sends_bearer_token();
+    _t_register_agent_missing_id();
+    _t_encoded_path_reaches_the_server();
+    _t_hoosh_ocr_sanitizes_response();
+    _t_ocr_needs_a_model();
+    _t_ocr_fenced_answer();
+    _t_resample_box();
+    _t_ocr_downscale();
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

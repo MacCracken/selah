@@ -1,0 +1,393 @@
+# capture.tcyr — rust-old/src/capture.rs's tests, ported (port plan M5), against the loopback mock server, with
+# Cyrius-only checks of the spawn helper behind the clipboard (D12, L3), the MIME sniff, the exit-status text, the
+# WebP refusal (ADR 0002 #1) and the agent id (D2).
+
+include "tests/selah_src.cyr"
+include "tests/support.cyr"
+include "tests/mock_http.cyr"
+
+# Rust's png_response(w, h): a capture answer holding a transparent w x h PNG.
+fn _t_png_response(w, h): i64 {
+    var px = fl_calloc(w * h * 4);
+    var plen = 0;
+    var png = _sl_png_encode(px, w, h, &plen);
+    var b64 = bayan_base64_encode(png, plen);
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"image_data\":\"");
+    str_builder_add_cstr(sb, b64);
+    str_builder_add_cstr(sb, "\",\"width\":");
+    str_builder_add_int(sb, w);
+    str_builder_add_cstr(sb, ",\"height\":");
+    str_builder_add_int(sb, h);
+    str_builder_add_cstr(sb, ",\"format\":\"png\"}");
+    return str_data(str_builder_build(sb));
+}
+
+# A rect-region request target.
+fn _t_region(kind, r: SlRect, window): *SlCaptureRegion {
+    var g: *SlCaptureRegion = _sl_as_region(fl_calloc(sizeof(SlCaptureRegion)));
+    g.kind = kind;
+    g.rect = r;
+    g.window = window;
+    return g;
+}
+
+fn _t_client_creation(): i64 {
+    test_group("test_client_creation");
+    var c = SlCaptureClient_new("http://localhost:8090");
+    assert(_t_cstr_is(SlCaptureClient_base_url(c), "http://localhost:8090") == 1, "base url");
+    return 0;
+}
+
+fn _t_client_strips_trailing_slash(): i64 {
+    test_group("test_client_strips_trailing_slash");
+    var c = SlCaptureClient_new("http://localhost:8090/");
+    assert(_t_cstr_is(SlCaptureClient_base_url(c), "http://localhost:8090") == 1, "stripped");
+    return 0;
+}
+
+# Rust's test_client_with_custom_client: the port takes a timeout, not a reqwest client (ADR 0002 #9).
+fn _t_client_with_custom_client(): i64 {
+    test_group("test_client_with_custom_client");
+    var c = SlCaptureClient_with_timeout("http://example.com:8090", 5000);
+    assert(_t_cstr_is(SlCaptureClient_base_url(c), "http://example.com:8090") == 1, "base url");
+    return 0;
+}
+
+fn _t_save_to_file(): i64 {
+    test_group("test_save_to_file");
+    var path = "/tmp/selah_test_save.png";
+    var data = "\x89PNG";
+    var t, v = SlCaptureClient_save_to_file(data, 4, path);
+    var n = 0;
+    var back = file_read_whole_max(path, 64, &n);
+    assert(is_ok(t) == 1 && n == 4 && memeq(back, data, 4) == 1, "read back");
+    xunlink(path);
+    return 0;
+}
+
+fn _t_detect_session_type_default(): i64 {
+    test_group("test_detect_session_type_default");
+    var st = selah_detect_session_type();
+    assert(st == SL_SESSION_WAYLAND || st == SL_SESSION_X11, "one of the two");
+    return 0;
+}
+
+fn _t_clamp_to_u32_negative(): i64 {
+    test_group("test_clamp_to_u32_negative");
+    assert(_sl_clamp_to_u32(-1.0) == 0, "-1");
+    assert(_sl_clamp_to_u32(-999.0) == 0, "-999");
+    var ninf: f64 = -_t_e(400);
+    assert(_sl_clamp_to_u32(ninf) == 0, "-inf");
+    return 0;
+}
+
+fn _t_clamp_to_u32_overflow(): i64 {
+    test_group("test_clamp_to_u32_overflow");
+    var big: f64 = 3.4028234663852886 * _t_e(38);
+    var fmax: f32 = f32_from(big);
+    var m: f64 = f32_to(fmax);
+    assert(_sl_clamp_to_u32(m) == 4294967295, "f32::MAX");
+    assert(_sl_clamp_to_u32(5000000000.0) == 4294967295, "5e9");
+    var inf: f64 = _t_e(400);
+    assert(_sl_clamp_to_u32(inf) == 4294967295, "inf");
+    return 0;
+}
+
+fn _t_clamp_to_u32_normal(): i64 {
+    test_group("test_clamp_to_u32_normal");
+    assert(_sl_clamp_to_u32(0.0) == 0, "0");
+    assert(_sl_clamp_to_u32(100.5) == 100, "100.5");
+    assert(_sl_clamp_to_u32(1920.0) == 1920, "1920");
+    return 0;
+}
+
+fn _t_client_base_url_multiple_trailing_slashes(): i64 {
+    test_group("test_client_base_url_multiple_trailing_slashes");
+    var c = SlCaptureClient_new("http://localhost:8090///");
+    var u = SlCaptureClient_base_url(c);
+    assert(load8(u + strlen(u) - 1) != 47, "no trailing slash");
+    return 0;
+}
+
+fn _t_clamp_to_u32_nan(): i64 {
+    test_group("test_clamp_to_u32_nan");
+    var z: f64 = 0.0;
+    var nan: f64 = z / z;
+    assert(_sl_clamp_to_u32(nan) == 0, "NaN");
+    return 0;
+}
+
+# The region spec of rect, as "x,y,w,h", or "err".
+fn _t_spec(r: SlRect): i64 {
+    var out: i64[4];
+    var t, v = _sl_region_spec(r, &out);
+    var sb = str_builder_new();
+    if (is_err_result(t) == 1) {
+        if (v == SL_ERR_INVALID_REGION) { str_builder_add_cstr(sb, "err"); }
+        return str_builder_build(sb);
+    }
+    var i = 0;
+    while (i < 4) {
+        if (i > 0) { str_builder_putc(sb, 44); }
+        str_builder_add_int(sb, out[i]);
+        i = i + 1;
+    }
+    return str_builder_build(sb);
+}
+
+fn _t_region_spec_normalizes_and_clips(): i64 {
+    test_group("test_region_spec_normalizes_and_clips");
+    assert(_t_str_is(_t_spec(_t_rect(100.0, 100.0, -50.0, -30.0)), "50,70,50,30") == 1, "negative size normalized");
+    assert(_t_str_is(_t_spec(_t_rect(-10.0, -5.0, 100.0, 50.0)), "0,0,90,45") == 1, "clipped, not shifted");
+    assert(_t_str_is(_t_spec(_t_rect(0.5, 0.5, 1.0, 1.0)), "0,0,2,2") == 1, "fractional edges round outward");
+    return 0;
+}
+
+fn _t_region_spec_rejects_invalid(): i64 {
+    test_group("test_region_spec_rejects_invalid");
+    var z: f64 = 0.0;
+    var nan: f64 = z / z;
+    var inf: f64 = _t_e(400);
+    assert(_t_str_is(_t_spec(_t_rect(0.0, 0.0, 0.0, 10.0)), "err") == 1, "empty");
+    assert(_t_str_is(_t_spec(_t_rect(-100.0, 0.0, 50.0, 10.0)), "err") == 1, "entirely off-screen");
+    assert(_t_str_is(_t_spec(_t_rect(nan, 0.0, 10.0, 10.0)), "err") == 1, "NaN");
+    assert(_t_str_is(_t_spec(_t_rect(0.0, 0.0, inf, 10.0)), "err") == 1, "infinite");
+    var d = 0;
+    var out: i64[4];
+    var t, v = _sl_region_spec(_t_rect(nan, 0.0, 10.0, 10.0), &out, &d);
+    var want = str_builder_new();
+    str_builder_add_cstr(want, "invalid region: region coordinates must be finite (got ");
+    str_builder_add_cstr(want, "Rect(Rect { min: Vec2(NaN, 0.0), max: Vec2(NaN, 10.0) }))");
+    assert(str_eq(selah_error_display(v, d), str_builder_build(want)) == 1, "Rust's text, with the rect's Debug");
+    var d2 = 0;
+    var t2, v2 = _sl_region_spec(_t_rect(-100.0, 0.5, 50.0, 10.0), &out, &d2);
+    assert(_t_str_is(selah_error_display(v2, d2),
+        "invalid region: region must cover at least 1x1 on-screen pixel (got 50x10 at -100,0.5)") == 1, "empty text");
+    return 0;
+}
+
+fn _t_capture_window_rejected_without_request(): i64 {
+    test_group("test_capture_window_rejected_without_request");
+    var c = SlCaptureClient_new("http://127.0.0.1:9");
+    var t, v = SlCaptureClient_capture(c, _t_region(SL_REGION_WINDOW, SlRect_default(), "firefox"), SL_FMT_PNG);
+    assert(is_err_result(t) == 1 && v == SL_ERR_INVALID_REGION, "InvalidRegion, not Api");
+    return 0;
+}
+
+fn _t_capture_monitor_empty_id_rejected(): i64 {
+    test_group("test_capture_monitor_empty_id_rejected");
+    var c = SlCaptureClient_new("http://127.0.0.1:9");
+    var t, v = SlCaptureClient_capture_monitor(c, " ", SL_FMT_PNG);
+    assert(is_err_result(t) == 1 && v == SL_ERR_INVALID_REGION, "InvalidRegion");
+    return 0;
+}
+
+fn _t_capture_region_request_and_response(): i64 {
+    test_group("test_capture_region_request_and_response");
+    var m = _mock_serve(200, _t_png_response(3, 2));
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, _mock_url(m));
+    str_builder_putc(sb, 47);
+    var c = SlCaptureClient_new(str_data(str_builder_build(sb)));
+    var t, v = SlCaptureClient_capture(c, _t_region(SL_REGION_RECT, _t_rect(10.0, 20.0, -5.0, 8.0), 0), SL_FMT_JPEG);
+    _mock_join(m);
+    var r: *SlCaptureResponse = _sl_as_capture_resp(v);
+    assert(is_ok(t) == 1 && r.width == 3 && r.height == 2, "3 x 2");
+    var pl = 0;
+    var dt, png = selah_decode_image_data(str_data(r.image_data), str_len(r.image_data), &pl);
+    var it, iv = _sl_decode_image(png, pl);
+    var img: *SlImage = _sl_as_image(iv);
+    assert(is_ok(dt) == 1 && is_ok(it) == 1 && img.width == 3, "the PNG decodes, 3 wide");
+    assert(_t_str_is(_mock_request_line(m), "POST /v1/screen/capture HTTP/1.1") == 1, "request line");
+    assert(_t_str_is(_mock_body(m),
+        "{\"region\":{\"x\":5,\"y\":20,\"width\":5,\"height\":8},\"format\":\"jpg\",\"agent_id\":\"selah\"}") == 1,
+      "body: region, format, agent id; no monitor");
+    return 0;
+}
+
+fn _t_capture_monitor_request(): i64 {
+    test_group("test_capture_monitor_request");
+    var m = _mock_serve(200, _t_png_response(1, 1));
+    var c = SlCaptureClient_new(_mock_url(m));
+    var t, v = SlCaptureClient_capture_monitor(c, "HDMI-A-1", SL_FMT_PNG);
+    _mock_join(m);
+    assert(is_ok(t) == 1, "captured");
+    assert(_t_str_is(_mock_body(m), "{\"monitor\":\"HDMI-A-1\",\"format\":\"png\",\"agent_id\":\"selah\"}") == 1,
+      "body: monitor, no region");
+    return 0;
+}
+
+fn _t_capture_error_status(): i64 {
+    test_group("test_capture_error_status");
+    var m = _mock_serve(403, "{\"error\":\"permission denied\"}");
+    var c = SlCaptureClient_new(_mock_url(m));
+    var d = 0;
+    var t, v = SlCaptureClient_capture_full(c, &d);
+    _mock_join(m);
+    var msg = selah_error_display(v, d);
+    assert(is_err_result(t) == 1 && _t_str_has(msg, "daimon capture 403") == 1, "status");
+    assert(_t_str_has(msg, "permission denied") == 1, "body");
+    return 0;
+}
+
+fn _t_list_monitors(): i64 {
+    test_group("test_list_monitors");
+    var m = _mock_serve(200,
+      "[{\"id\":\"DP-1\",\"name\":\"Main\",\"width\":2560,\"height\":1440,\"x\":0,\"y\":0,\"primary\":true}]");
+    var c = SlCaptureClient_new(_mock_url(m));
+    var t, v = SlCaptureClient_list_monitors(c);
+    _mock_join(m);
+    assert(is_ok(t) == 1 && vec_len(v) == 1, "one monitor");
+    var mon: *SlMonitor = _sl_as_monitor(vec_get(v, 0));
+    assert(_t_str_is(mon.id, "DP-1") == 1 && mon.primary == 1, "DP-1, primary");
+    assert(_t_str_is(_mock_request_line(m), "GET /v1/screen/monitors HTTP/1.1") == 1, "request line");
+    return 0;
+}
+
+fn _t_session_type_from_env(): i64 {
+    test_group("test_session_type_from_env");
+    assert(_sl_session_type_from("wayland-0", 0) == SL_SESSION_WAYLAND, "WAYLAND_DISPLAY");
+    assert(_sl_session_type_from("", 0) == SL_SESSION_X11, "empty WAYLAND_DISPLAY does not count");
+    assert(_sl_session_type_from(0, "Wayland") == SL_SESSION_WAYLAND, "XDG_SESSION_TYPE, any case");
+    assert(_sl_session_type_from(0, "x11") == SL_SESSION_X11, "x11");
+    assert(_sl_session_type_from(0, 0) == SL_SESSION_X11, "neither");
+    return 0;
+}
+
+# ── Cyrius-only ──────────────────────────────────────────────────────────────────────
+
+# Runs `/bin/sh -c script` with data[0..n) on stdin into the spawn record `s`. Returns the ok flag.
+fn _t_sh(script, data, n, s: *SlSpawn): i64 {
+    var argv: i64[4];
+    argv[0] = "sh";
+    argv[1] = "-c";
+    argv[2] = script;
+    argv[3] = 0;
+    var ok, err = _sl_spawn_feed("/bin/sh", &argv, data, n, s);
+    return ok;
+}
+
+fn _t_spawn_feeds_stdin(): i64 {
+    test_group("spawn: stdin fed whole, exit status, stderr kept");
+    var n = 1048576;
+    var data = fl_alloc(n);
+    var i = 0;
+    while (i < n) {
+        store8(data + i, (i * 7) & 255);
+        i = i + 1;
+    }
+    var spb: i64[7];
+    var s: *SlSpawn = _sl_as_spawn(&spb);
+    var ok = _t_sh("cat > /tmp/selah_spawn_test.bin", data, n, s);
+    var got = 0;
+    var back = file_read_whole_max("/tmp/selah_spawn_test.bin", n + 1, &got);
+    assert(ok == 1 && s.code == 0 && s.signal == 0 && s.werr == 0, "exit 0, every byte written");
+    assert(got == n && memeq(back, data, n) == 1, "the tool read exactly the data");
+    xunlink("/tmp/selah_spawn_test.bin");
+    var ok2 = _t_sh("cat > /dev/null; echo oops >&2; exit 3", data, 16, s);
+    assert(ok2 == 1 && s.code == 3 && s.errlen == 5 && memeq(s.err, "oops\n", 5) == 1, "exit 3, stderr kept");
+    var sb = str_builder_new();
+    _sl_exit_status_fmt(sb, s);
+    assert(_t_str_is(str_builder_build(sb), "exit status: 3") == 1, "Rust's ExitStatus text");
+    return 0;
+}
+
+fn _t_spawn_tool_that_does_not_read(): i64 {
+    test_group("spawn: a tool that exits without reading (no SIGPIPE death)");
+    var n = 4194304;
+    var data = fl_calloc(n);
+    var spb: i64[7];
+    var s: *SlSpawn = _sl_as_spawn(&spb);
+    var ok = _t_sh("exit 0", data, n, s);
+    assert(ok == 1 && s.code == 0, "exit 0");
+    assert(s.werr == -32 || s.werr == -1, "a write failure is recorded (EPIPE, or input left unread)");
+    var ok2 = _t_sh("exit 0", data, n, s);
+    assert(ok2 == 1, "and this process is still alive to run another");
+    return 0;
+}
+
+fn _t_spawn_stderr_flood_and_signal(): i64 {
+    test_group("spawn: a stderr flood does not deadlock; a signal death");
+    var n = 1048576;
+    var data = fl_calloc(n);
+    var spb: i64[7];
+    var s: *SlSpawn = _sl_as_spawn(&spb);
+    var ok = _t_sh("head -c 300000 /dev/zero >&2; cat > /dev/null", data, n, s);
+    assert(ok == 1 && s.code == 0 && s.werr == 0 && s.errlen == 65536, "64 KiB kept, all input taken");
+    var ok2 = _t_sh("kill -9 $$", data, 0, s);
+    var sb = str_builder_new();
+    _sl_exit_status_fmt(sb, s);
+    assert(ok2 == 1 && s.signal == 9 && _t_str_is(str_builder_build(sb), "signal: 9 (SIGKILL)") == 1,
+      "signal: 9 (SIGKILL)");
+    return 0;
+}
+
+fn _t_which(): i64 {
+    test_group("which: PATH lookup");
+    assert(_sl_which("sh") != 0, "sh is on PATH");
+    assert(_sl_which("selah-no-such-tool-x") == 0, "a missing tool");
+    assert(_t_str_is(_sl_which("/bin/sh"), "/bin/sh") == 1, "a path is kept");
+    return 0;
+}
+
+fn _t_guess_mime(): i64 {
+    test_group("guess_mime: image 0.25.10's table, image/png fallback");
+    assert(_t_cstr_is(_sl_guess_mime("\x89PNG\r\n\x1a\n", 8), "image/png") == 1, "png");
+    assert(_t_cstr_is(_sl_guess_mime("\xff\xd8\xff", 3), "image/jpeg") == 1, "jpeg");
+    assert(_t_cstr_is(_sl_guess_mime("BM", 2), "image/bmp") == 1, "bmp");
+    assert(_t_cstr_is(_sl_guess_mime("GIF87a", 6), "image/gif") == 1, "gif");
+    assert(_t_cstr_is(_sl_guess_mime("RIFF0000WEBP", 12), "image/webp") == 1, "webp");
+    assert(_t_cstr_is(_sl_guess_mime("P6", 2), "image/x-portable-anymap") == 1, "pnm");
+    assert(_t_cstr_is(_sl_guess_mime("text", 4), "image/png") == 1, "fallback");
+    return 0;
+}
+
+fn _t_webp_and_agent_id(): i64 {
+    test_group("WebP refused (ADR 0002 #1); the agent id (D2)");
+    var c = SlCaptureClient_new("http://127.0.0.1:9");
+    var t, v = SlCaptureClient_capture_monitor(c, "DP-1", SL_FMT_WEBP);
+    assert(is_err_result(t) == 1 && v == SL_ERR_UNSUPPORTED_FORMAT, "UnsupportedFormat, nothing sent");
+    var m = _mock_serve(200, _t_png_response(1, 1));
+    var c2 = SlCaptureClient_new(_mock_url(m));
+    SlCaptureClient_set_agent_id(c2, "42");
+    var t2, v2 = SlCaptureClient_capture_full(c2);
+    _mock_join(m);
+    assert(_t_str_is(_mock_body(m), "{\"format\":\"png\",\"agent_id\":\"42\"}") == 1, "the registered id is sent");
+    return 0;
+}
+
+# Runs the suite; the exit code is the failure count, clamped.
+fn main(): i64 {
+    alloc_init();
+    _t_client_creation();
+    _t_client_strips_trailing_slash();
+    _t_client_with_custom_client();
+    _t_save_to_file();
+    _t_detect_session_type_default();
+    _t_clamp_to_u32_negative();
+    _t_clamp_to_u32_overflow();
+    _t_clamp_to_u32_normal();
+    _t_client_base_url_multiple_trailing_slashes();
+    _t_clamp_to_u32_nan();
+    _t_region_spec_normalizes_and_clips();
+    _t_region_spec_rejects_invalid();
+    _t_capture_window_rejected_without_request();
+    _t_capture_monitor_empty_id_rejected();
+    _t_capture_region_request_and_response();
+    _t_capture_monitor_request();
+    _t_capture_error_status();
+    _t_list_monitors();
+    _t_session_type_from_env();
+    _t_spawn_feeds_stdin();
+    _t_spawn_tool_that_does_not_read();
+    _t_spawn_stderr_flood_and_signal();
+    _t_which();
+    _t_guess_mime();
+    _t_webp_and_agent_id();
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

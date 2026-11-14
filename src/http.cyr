@@ -1,0 +1,432 @@
+# http.cyr — the HTTP layer over sandhi: requests with deadlines and capped bodies, status checks, endpoint URLs
+# (Rust: rust-old/src/http.rs and daimon.rs's endpoint_url).
+#
+# Port plan M5, D6 (blocking), D10 (memory), L10.
+#   - Every request runs in a scratch allocator (scratch.cyr): sandhi reserves the whole response cap up front, and
+#     on the bump heap that would stay with the process. The body is copied to the freelist and the rest freed.
+#   - Every request sets `read_ms` and `write_ms` beside `total_ms` (L10: `total_ms` alone does not bound a blocked
+#     read), and `connect_ms` (Rust's 10 s connect timeout, never past the total).
+#   - UPSTREAM(L22): sandhi's buffer covers the head as well as the body, so the cap is the body limit plus 64 KiB.
+#     A body over the limit is refused with Rust's "too large" text; a response past the buffer is sandhi's PROTOCOL
+#     error, which does not say whether it was malformed, cut short or too large (ADR 0002 #22).
+#   - A non-2xx status is SL_ERR_API with Rust's text: `<context> <code> <reason>: <body>`, the body's first 513
+#     bytes decoded lossily (U+FFFD for each maximal invalid subpart, as Rust's from_utf8_lossy), cut to 512 bytes on
+#     a character boundary, `…` when anything was cut.
+#   - Transport failures are SL_ERR_API too; their text names sandhi's error kind, not reqwest's (ADR 0002 #22).
+
+const _SL_MAX_ERROR_BODY = 512;
+const _SL_MAX_CAPTURE_RESPONSE_BYTES = 268435456;
+const _SL_MAX_API_RESPONSE_BYTES = 16777216;
+const _SL_CONNECT_TIMEOUT_MS = 10000;
+const _SL_HTTP_HEADROOM = 65536;
+
+# A response: the status code, and the body on the freelist (NUL-terminated; free it with fl_free) with its length.
+struct SlHttpResponse { status: i64; body: i64; len: i64; }
+
+#must_use
+fn _sl_as_resp(p): *SlHttpResponse {
+    return p;
+}
+
+# The length of the longest prefix of the UTF-8 text p[0..n) that is at most `max` bytes and ends on a character
+# boundary (Rust: `&s[..s.floor_char_boundary(max)]`).
+#must_use
+fn _sl_truncate(p, n, max): i64 {
+    if (n <= max) { return n; }
+    var i = max;
+    while (i > 0 && load8(p + i) >= 128 && load8(p + i) < 192) { i = i - 1; }
+    return i;
+}
+
+# The length of the maximal invalid subpart at p[i] (its first byte starts no valid sequence there): the bytes Rust's
+# from_utf8_lossy replaces with one U+FFFD. 1 to 3.
+#must_use
+fn _sl_utf8_bad_len(p, i, n): i64 {
+    var c = load8(p + i);
+    var w = 0;
+    if (c >= 194 && c <= 223) { w = 2; }
+    if (c >= 224 && c <= 239) { w = 3; }
+    if (c >= 240 && c <= 244) { w = 4; }
+    if (w == 0 || i + 1 >= n) { return 1; }
+    var b = load8(p + i + 1);
+    if (w == 2) { return 1; }
+    var lo = 128;
+    var hi = 191;
+    if (c == 224) { lo = 160; }
+    if (c == 237) { hi = 159; }
+    if (c == 240) { lo = 144; }
+    if (c == 244) { hi = 143; }
+    if (b < lo || b > hi) { return 1; }
+    if (i + 2 >= n) { return 2; }
+    var b2 = load8(p + i + 2);
+    if (b2 < 128 || b2 > 191) { return 2; }
+    return 3;
+}
+
+# Appends p[0..n) decoded as Rust's String::from_utf8_lossy does: valid UTF-8 as it is, each maximal invalid subpart
+# as U+FFFD.
+fn _sl_utf8_lossy(sb, p, n): i64 {
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        if (c < 128) {
+            str_builder_putc(sb, c);
+            i = i + 1;
+        } else {
+            var l = _sl_utf8_seq(p, i, n);
+            if (l > 0) {
+                _sl_sb_bytes(sb, p + i, l);
+                i = i + l;
+            } else {
+                str_builder_putc(sb, 239);
+                str_builder_putc(sb, 191);
+                str_builder_putc(sb, 189);
+                i = i + _sl_utf8_bad_len(p, i, n);
+            }
+        }
+    }
+    return 0;
+}
+
+# The canonical reason phrase for a status code (Rust's http 1.5 StatusCode::canonical_reason), or 0.
+#must_use
+fn _sl_status_reason(code): i64 {
+    match code {
+        100 => { return "Continue"; }
+        101 => { return "Switching Protocols"; }
+        102 => { return "Processing"; }
+        103 => { return "Early Hints"; }
+        200 => { return "OK"; }
+        201 => { return "Created"; }
+        202 => { return "Accepted"; }
+        203 => { return "Non Authoritative Information"; }
+        204 => { return "No Content"; }
+        205 => { return "Reset Content"; }
+        206 => { return "Partial Content"; }
+        207 => { return "Multi-Status"; }
+        208 => { return "Already Reported"; }
+        226 => { return "IM Used"; }
+        300 => { return "Multiple Choices"; }
+        301 => { return "Moved Permanently"; }
+        302 => { return "Found"; }
+        303 => { return "See Other"; }
+        304 => { return "Not Modified"; }
+        305 => { return "Use Proxy"; }
+        307 => { return "Temporary Redirect"; }
+        308 => { return "Permanent Redirect"; }
+        400 => { return "Bad Request"; }
+        401 => { return "Unauthorized"; }
+        402 => { return "Payment Required"; }
+        403 => { return "Forbidden"; }
+        404 => { return "Not Found"; }
+        405 => { return "Method Not Allowed"; }
+        406 => { return "Not Acceptable"; }
+        407 => { return "Proxy Authentication Required"; }
+        408 => { return "Request Timeout"; }
+        409 => { return "Conflict"; }
+        410 => { return "Gone"; }
+        411 => { return "Length Required"; }
+        412 => { return "Precondition Failed"; }
+        413 => { return "Payload Too Large"; }
+        414 => { return "URI Too Long"; }
+        415 => { return "Unsupported Media Type"; }
+        416 => { return "Range Not Satisfiable"; }
+        417 => { return "Expectation Failed"; }
+        418 => { return "I'm a teapot"; }
+        421 => { return "Misdirected Request"; }
+        422 => { return "Unprocessable Entity"; }
+        423 => { return "Locked"; }
+        424 => { return "Failed Dependency"; }
+        425 => { return "Too Early"; }
+        426 => { return "Upgrade Required"; }
+        428 => { return "Precondition Required"; }
+        429 => { return "Too Many Requests"; }
+        431 => { return "Request Header Fields Too Large"; }
+        451 => { return "Unavailable For Legal Reasons"; }
+        500 => { return "Internal Server Error"; }
+        501 => { return "Not Implemented"; }
+        502 => { return "Bad Gateway"; }
+        503 => { return "Service Unavailable"; }
+        504 => { return "Gateway Timeout"; }
+        505 => { return "HTTP Version Not Supported"; }
+        506 => { return "Variant Also Negotiates"; }
+        507 => { return "Insufficient Storage"; }
+        508 => { return "Loop Detected"; }
+        510 => { return "Not Extended"; }
+        511 => { return "Network Authentication Required"; }
+        _ => { return 0; }
+    }
+    return 0;
+}
+
+# The SL_ERR_API error for a non-2xx response (Rust: http::check_status): `<context> <code> <reason>: <body>[…]`.
+fn _sl_http_status_err(code, body, blen, context, detail_out): Result {
+    if (detail_out == 0) { return Err(SL_ERR_API); }
+    var take = blen;
+    if (take > _SL_MAX_ERROR_BODY + 1) { take = _SL_MAX_ERROR_BODY + 1; }
+    var tb = str_builder_new();
+    _sl_utf8_lossy(tb, body, take);
+    var text = str_builder_build(tb);
+    var shown = _sl_truncate(str_data(text), str_len(text), _SL_MAX_ERROR_BODY);
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, context);
+    str_builder_putc(sb, 32);
+    str_builder_add_int(sb, code);
+    str_builder_putc(sb, 32);
+    var reason = _sl_status_reason(code);
+    if (reason == 0) { reason = "<unknown status code>"; }
+    str_builder_add_cstr(sb, reason);
+    str_builder_add_cstr(sb, ": ");
+    _sl_sb_bytes(sb, str_data(text), shown);
+    if (shown < str_len(text)) { str_builder_add_cstr(sb, "…"); }
+    _sl_log_kv(SK_WARN, "API request failed", "context", context);
+    return _sl_fail(SL_ERR_API, detail_out, str_builder_build(sb));
+}
+
+# Ok(0) for a 2xx response, else the status error.
+fn _sl_http_check_status(r: *SlHttpResponse, context, detail_out = 0): Result {
+    if (r.status >= 200 && r.status < 300) { return Ok(0); }
+    return _sl_http_status_err(r.status, r.body, r.len, context, detail_out);
+}
+
+# Err(SL_ERR_API): "<prefix>: <what>".
+fn _sl_api_fail(detail_out, prefix, what): Result {
+    if (detail_out == 0) { return Err(SL_ERR_API); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, prefix);
+    str_builder_add_cstr(sb, ": ");
+    str_builder_add_cstr(sb, what);
+    return _sl_fail(SL_ERR_API, detail_out, str_builder_build(sb));
+}
+
+# Err(SL_ERR_API): "<context>: response too large (<len> bytes, limit <max>)" (Rust: http::read_json).
+fn _sl_http_too_large(detail_out, context, len, max): Result {
+    if (detail_out == 0) { return Err(SL_ERR_API); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, context);
+    str_builder_add_cstr(sb, ": response too large (");
+    str_builder_add_int(sb, len);
+    str_builder_add_cstr(sb, " bytes, limit ");
+    str_builder_add_int(sb, max);
+    str_builder_add_cstr(sb, ")");
+    return _sl_fail(SL_ERR_API, detail_out, str_builder_build(sb));
+}
+
+# Err(SL_ERR_API): "<context>: invalid response: <why>" (Rust: http::read_json's JSON refusal).
+fn _sl_http_invalid(detail_out, context, why): Result {
+    if (detail_out == 0) { return Err(SL_ERR_API); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, context);
+    str_builder_add_cstr(sb, ": invalid response: ");
+    str_builder_add_cstr(sb, why);
+    return _sl_fail(SL_ERR_API, detail_out, str_builder_build(sb));
+}
+
+# The response body parsed as JSON in allocator `a` (Rust: http::read_json's parse; _sl_http_call applied the size
+# limit). Ok(bayan value) or Err(SL_ERR_API): "<context>: invalid response: not a JSON document".
+fn _sl_http_json(a, r: *SlHttpResponse, context, detail_out = 0): Result {
+    var v = _sl_json_parse_a(a, r.body, r.len);
+    if (v == 0) { return _sl_http_invalid(detail_out, context, "not a JSON document"); }
+    return Ok(v);
+}
+
+# What a sandhi error kind means, for the message.
+#must_use
+fn _sl_sandhi_err_text(kind): i64 {
+    if (kind == SANDHI_ERR_PARSE) { return "the URL could not be parsed"; }
+    if (kind == SANDHI_ERR_CONNECT) { return "the connection failed"; }
+    if (kind == SANDHI_ERR_TLS) { return "the TLS handshake failed"; }
+    if (kind == SANDHI_ERR_TIMEOUT) { return "timed out"; }
+    if (kind == SANDHI_ERR_PROTOCOL) { return "the response was malformed, cut short, or larger than the limit"; }
+    if (kind == SANDHI_ERR_DISCOVERY) { return "the host name did not resolve"; }
+    if (kind == SANDHI_ERR_INTERNAL) { return "out of memory"; }
+    return "the request failed";
+}
+
+# One request (method "GET" or "POST"): `body` p[0..blen) is sent as JSON when blen > 0 (Content-Type
+# application/json); `api_key`, when non-zero, as `Authorization: Bearer <key>`. Every deadline is `timeout_ms`, the
+# connect at most 10 s. A body over `limit` is refused. On success the response is stored at `out` (its body freed
+# by the caller with fl_free) and the status is not yet checked. Failures are SL_ERR_API: "<sendctx>: <why>", or
+# Rust's too-large text under `context`.
+fn _sl_http_call(method, url, api_key, body, blen, timeout_ms, limit, sendctx, context, out: *SlHttpResponse,
+    detail_out = 0): Result {
+    out.status = 0;
+    out.body = 0;
+    out.len = 0;
+    var a = _sl_scratch_new();
+    if (a == 0) { return _sl_api_fail(detail_out, sendctx, "out of memory"); }
+    var h = sandhi_headers_new_a(a);
+    var ua = str_builder_new_a(a);
+    str_builder_add_cstr_a(a, ua, "selah/");
+    str_builder_add_cstr_a(a, ua, SL_VERSION);
+    var uas = str_builder_build_a(a, ua);
+    sandhi_headers_set_a(a, h, "User-Agent", str_data(uas));
+    if (blen > 0) { sandhi_headers_set_a(a, h, "Content-Type", "application/json"); }
+    sandhi_headers_set_a(a, h, "Accept", "*/*");
+    if (api_key != 0) {
+        var ab = str_builder_new_a(a);
+        str_builder_add_cstr_a(a, ab, "Bearer ");
+        str_builder_add_cstr_a(a, ab, api_key);
+        var auth = str_builder_build_a(a, ab);
+        sandhi_headers_set_a(a, h, "Authorization", str_data(auth));
+    }
+    var opts = sandhi_http_options_new_a(a);
+    sandhi_http_options_max_response_bytes(opts, limit + _SL_HTTP_HEADROOM);
+    var cms = _SL_CONNECT_TIMEOUT_MS;
+    if (timeout_ms < cms) { cms = timeout_ms; }
+    sandhi_http_options_connect_ms(opts, cms);
+    sandhi_http_options_read_ms(opts, timeout_ms);
+    sandhi_http_options_write_ms(opts, timeout_ms);
+    sandhi_http_options_total_ms(opts, timeout_ms);
+    var r = 0;
+    if (blen > 0 || streq(method, "POST") == 1) {
+        r = sandhi_http_post_opts_a(a, url, h, body, blen, opts);
+    } else {
+        r = sandhi_http_get_opts_a(a, url, h, opts);
+    }
+    var kind = sandhi_http_err_kind(r);
+    if (kind != SANDHI_OK) {
+        _sl_scratch_free(a);
+        return _sl_api_fail(detail_out, sendctx, _sl_sandhi_err_text(kind));
+    }
+    var n = sandhi_http_body_len(r);
+    if (n > limit) {
+        _sl_scratch_free(a);
+        return _sl_http_too_large(detail_out, context, n, limit);
+    }
+    var copy = _sl_fl_dup(sandhi_http_body(r), n);
+    out.status = sandhi_http_status(r);
+    _sl_scratch_free(a);
+    if (copy == 0) { return _sl_api_fail(detail_out, sendctx, "out of memory"); }
+    out.body = copy;
+    out.len = n;
+    return Ok(0);
+}
+
+# ── endpoint URLs ────────────────────────────────────────────────────────────────────
+
+# The length of the NUL-terminated `p` with every trailing `/` removed (Rust: trim_end_matches('/')).
+#must_use
+fn _sl_trim_slashes(p): i64 {
+    var n = strlen(p);
+    while (n > 0 && load8(p + n - 1) == 47) { n = n - 1; }
+    return n;
+}
+
+# 1 for the bytes the url crate percent-encodes in a path segment of an http(s) URL (SPECIAL_PATH_SEGMENT): C0
+# controls, space, `"`, `#`, `%`, `/`, `<`, `>`, `?`, `\`, `` ` ``, `{`, `}`, DEL and every byte of a non-ASCII
+# character.
+#must_use
+fn _sl_seg_encoded(c): i64 {
+    if (c < 33 || c > 126) { return 1; }
+    if (c == 34 || c == 35 || c == 37 || c == 47 || c == 60 || c == 62 || c == 63) { return 1; }
+    if (c == 92 || c == 96 || c == 123 || c == 125) { return 1; }
+    return 0;
+}
+
+# The index just past the scheme's `://` when the NUL-terminated `p` starts with http:// or https:// (the scheme in
+# any case), else 0.
+#must_use
+fn _sl_http_scheme_end(p, n): i64 {
+    var k = 0;
+    if (n >= 7) {
+        var lo = _sl_ascii_lower(p, 7);
+        if (memeq(lo, "http://", 7) == 1) { k = 7; }
+    }
+    if (k == 0 && n >= 8) {
+        var lo2 = _sl_ascii_lower(p, 8);
+        if (memeq(lo2, "https://", 8) == 1) { k = 8; }
+    }
+    return k;
+}
+
+# The URL `cur` (a Str, its path from `path_start`) with one segment appended as PathSegmentsMut::extend does:
+# ASCII tab, LF and CR are dropped and the rest percent-encoded (uppercase hex); a segment that is then `.` leaves an
+# empty segment, and `..` removes the last one (keeping its slash). Returns a new Str.
+#must_use
+fn _sl_url_push_seg(cur, path_start, seg): Str {
+    var raw = str_builder_new();
+    var n = strlen(seg);
+    var i = 0;
+    while (i < n) {
+        var c = load8(seg + i);
+        if (c != 9 && c != 10 && c != 13) { str_builder_putc(raw, c); }
+        i = i + 1;
+    }
+    var s = str_builder_build(raw);
+    var len = str_len(cur);
+    var d = str_data(cur);
+    var ob = str_builder_new();
+    if (str_len(s) == 2 && memeq(str_data(s), "..", 2) == 1) {
+        var keep = len;
+        while (keep > path_start + 1 && load8(d + keep - 1) != 47) { keep = keep - 1; }
+        _sl_sb_bytes(ob, d, keep);
+        return str_builder_build(ob);
+    }
+    _sl_sb_bytes(ob, d, len);
+    if (len > path_start + 1 || len == path_start) { str_builder_putc(ob, 47); }
+    if (str_len(s) == 1 && load8(str_data(s)) == 46) { return str_builder_build(ob); }
+    var j = 0;
+    while (j < str_len(s)) {
+        var b = load8(str_data(s) + j);
+        if (_sl_seg_encoded(b) == 1) {
+            str_builder_putc(ob, 37);
+            str_builder_putc(ob, load8("0123456789ABCDEF" + (b >> 4)));
+            str_builder_putc(ob, load8("0123456789ABCDEF" + (b & 15)));
+        } else {
+            str_builder_putc(ob, b);
+        }
+        j = j + 1;
+    }
+    return str_builder_build(ob);
+}
+
+# Rust's endpoint_url: `endpoint` with the path `segments` (a vec of NUL-terminated strings) appended, each
+# percent-encoded so a caller's value cannot change the path; `.` and `..` segments are skipped, an empty last
+# segment of the endpoint's path is dropped first, and any query stays after the path. The endpoint must be an
+# http(s) URL with a host; its text is otherwise kept as given (Rust re-serializes it; ADR 0002 #22).
+# Ok(NUL-terminated Str) or Err(SL_ERR_API).
+fn _sl_endpoint_url(endpoint, segments, detail_out = 0): Result {
+    var n = strlen(endpoint);
+    var se = _sl_http_scheme_end(endpoint, n);
+    var hs = se;
+    while (hs < n && load8(endpoint + hs) != 47 && load8(endpoint + hs) != 63 && load8(endpoint + hs) != 35) {
+        hs = hs + 1;
+    }
+    if (se == 0 || hs == se) {
+        if (detail_out == 0) { return Err(SL_ERR_API); }
+        var eb = str_builder_new();
+        str_builder_add_cstr(eb, "invalid endpoint ");
+        _sl_debug_str(eb, endpoint, n);
+        str_builder_add_cstr(eb, ": not an http(s) URL with a host");
+        return _sl_fail(SL_ERR_API, detail_out, str_builder_build(eb));
+    }
+    var pe = hs;
+    while (pe < n && load8(endpoint + pe) != 63 && load8(endpoint + pe) != 35) { pe = pe + 1; }
+    var sb = str_builder_new();
+    _sl_sb_bytes(sb, endpoint, hs);
+    var path_start = hs;
+    if (pe == hs) {
+        str_builder_putc(sb, 47);
+    } else {
+        var plen = pe - hs;
+        # pop_if_empty: a trailing `/` after the first one goes.
+        if (plen > 1 && load8(endpoint + pe - 1) == 47) { plen = plen - 1; }
+        _sl_sb_bytes(sb, endpoint + hs, plen);
+    }
+    var cur = str_builder_build(sb);
+    var k = 0;
+    while (k < vec_len(segments)) {
+        var seg = vec_get(segments, k);
+        var sl = strlen(seg);
+        var dot = 0;
+        if (sl == 1 && load8(seg) == 46) { dot = 1; }
+        if (sl == 2 && load8(seg) == 46 && load8(seg + 1) == 46) { dot = 1; }
+        if (dot == 0) { cur = _sl_url_push_seg(cur, path_start, seg); }
+        k = k + 1;
+    }
+    var fb = str_builder_new();
+    str_builder_add(fb, cur);
+    _sl_sb_bytes(fb, endpoint + pe, n - pe);
+    return Ok(str_builder_build(fb));
+}

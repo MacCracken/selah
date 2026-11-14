@@ -40,3 +40,19 @@ the iterations shown in the bench, measured 2026-11-14 on the same machine.
 | `decode_png_512` | 1.31 ms | 24.9 ms | 19× | chitra 1.3.1; filed (L18) |
 | `decode_jpeg_512` | 2.54 ms | 59.5 ms | 23× | chitra 1.3.1: bit-serial Huffman decoding; filed (L18) |
 | `convert_format_png_to_jpeg_512` | 14.5 ms | 59.8 ms | 4.1× | decode + encode |
+
+### M5 history and the HTTP layer (Cyrius-only benches; Rust's numbers from `oracle --bench`)
+
+Rust's criterion suite has none of these either. Both sides build the same inputs: entry i has id i, path
+`/home/u/Pictures/shot-<i>.png`, second 1763164800 + i, nanosecond (i × 7919) mod 10^9, "full screen", 1920 × 1080,
+png; the history file holds entries 0..1000 as serde_json writes them; the capture answer carries 1 MiB of base64.
+Each figure is the median of three runs, measured 2026-11-14 on a machine under load (load average 6–10 on 16
+cores; single runs varied by up to 2×).
+
+| Bench | Rust | Cyrius | Ratio | Notes |
+|---|---|---|---|---|
+| `history_record` | 19.0 µs | 15.9 µs | 0.84× | open the lock file, flock, append one line, close; mostly system calls |
+| `history_list_1000` | 0.774 ms | 8.45 ms | 11× | 1,000 lines read, parsed and ranked, the 10 newest kept. Per line: bayan's parse ~5 µs (L21), selah's pre-pass 0.75 µs (was 2.2: one pass, a word at a time), the entry ~2 µs; the scratch allocator now costs what an arena does (it cost 3.5 µs a line making a freelist call per allocation) |
+| `history_get_1000` | 0.361 ms | 6.82 ms | 19× | 1,000 lines read for the id only, the last one matching |
+| `history_delete_miss_1000` | 0.473 ms | 7.51 ms | 16× | the file read whole and every line's id parsed under the lock; nothing written |
+| `capture_parse_1mb` | 0.195 ms | 18.8 ms | 96× | bayan's string parse is ~15 ms of it (L21); selah's pre-pass 0.72 ms, the copy out the rest (was 29 ms before the pre-pass was fused) |

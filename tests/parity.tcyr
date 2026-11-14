@@ -7,12 +7,15 @@
 
 include "tests/parity_core.cyr"
 include "src/error.cyr"
+include "src/version_str.cyr"
 include "src/log.cyr"
+include "src/scratch.cyr"
 include "src/fmtf.cyr"
 include "src/json.cyr"
 include "src/uuid.cyr"
 include "src/rfc3339.cyr"
 include "src/geometry.cyr"
+include "src/debug_data.cyr"
 include "src/core.cyr"
 include "src/ai_data.cyr"
 include "src/ai.cyr"
@@ -24,6 +27,11 @@ include "src/fsutil.cyr"
 include "src/raster.cyr"
 include "src/annotate.cyr"
 include "src/selah.cyr"
+include "src/history.cyr"
+include "src/http.cyr"
+include "src/spawn.cyr"
+include "src/capture.cyr"
+include "src/daimon.cyr"
 
 # ---------------------------------------------------------------- decode, convert_format, encode
 #
@@ -1493,6 +1501,639 @@ fn _par_ai_row(): i64 {
     return _pc_check(str_builder_build(out));
 }
 
+# ---------------------------------------------------------------- system (M5)
+
+# The bytes of h: input token i, NUL-terminated (fresh buffer); stores the length.
+fn _par_in_h(i, len_out): i64 {
+    var n = 0;
+    var b = _par_tok_h(2, i, &n);
+    var c = alloc(n + 1);
+    if (n > 0) { memcpy(c, b, n); }
+    store8(c + n, 0);
+    store64(len_out, n);
+    return c;
+}
+
+# Writes E:<variant> s:<Rust's Display of the error>; with `prefix` 1, the text is cut just after "invalid response"
+# (the rest of that message is serde's, ADR 0002 #14).
+fn _par_put_err_text(sb, code, d, prefix): i64 {
+    str_builder_add_cstr(sb, "E:");
+    str_builder_add_cstr(sb, selah_error_name(code));
+    _pc_sp(sb);
+    var msg = selah_error_display(code, d);
+    var n = str_len(msg);
+    if (prefix == 1) {
+        var p = str_data(msg);
+        var i = 0;
+        while (i + 16 <= n) {
+            if (memeq(p + i, "invalid response", 16) == 1) {
+                n = i + 16;
+                break;
+            }
+            i = i + 1;
+        }
+    }
+    return _pc_put_s(sb, str_data(msg), n);
+}
+
+# Writes a history entry's tokens: h:<id> s:<path> i:<secs> i:<nanos> s:<source> i:<w> i:<h> s:<format>.
+fn _par_put_entry(sb, e: *SlHistoryEntry): i64 {
+    _pc_put_h(sb, e, 16);
+    _pc_sp(sb);
+    _pc_put_sstr(sb, e.path);
+    _pc_sp(sb);
+    _pc_put_i(sb, e.secs);
+    _pc_sp(sb);
+    _pc_put_i(sb, e.nanos);
+    _pc_sp(sb);
+    _pc_put_sstr(sb, e.source);
+    _pc_sp(sb);
+    _pc_put_i(sb, e.width);
+    _pc_sp(sb);
+    _pc_put_i(sb, e.height);
+    _pc_sp(sb);
+    return _pc_put_sstr(sb, e.format);
+}
+
+# A row tagged adr=0002#21 passes as accepted when the port refuses the document (bayan refuses a duplicate key, a lone
+# surrogate or invalid UTF-8 in a member serde ignores). Returns 1 when it handled the row.
+fn _par_adr21(out): i64 {
+    if (_par_adr() != 21) { return 0; }
+    var s = str_builder_build(out);
+    if (str_len(s) >= 7 && memeq(str_data(s), "E:", 2) == 1) {
+        _pc_record(PC_ACCEPTED, "ADR 0002 #21: bayan refuses what serde ignores");
+        return 1;
+    }
+    _pc_record(PC_FAILED, "ADR 0002 #21 row: the port accepted it");
+    return 1;
+}
+
+fn _par_history_line_row(): i64 {
+    var n = 0;
+    var line = _par_in_h(0, &n);
+    var tp, tn = _sl_trim_ascii(line, n);
+    var out = str_builder_new();
+    var t, v = SlHistoryEntry_from_json(tp, tn);
+    if (is_ok(t) == 1) {
+        _par_put_entry(out, v);
+    } else {
+        str_builder_add_cstr(out, "E:serde");
+    }
+    if (_par_adr21(out) == 1) { return 0; }
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_history_id_row(): i64 {
+    var n = 0;
+    var line = _par_in_h(0, &n);
+    var out = str_builder_new();
+    var id: u8[16];
+    if (_sl_history_id_from_value(_sl_json_parse(line, n), &id) == 1) {
+        _pc_put_h(out, &id, 16);
+    } else {
+        str_builder_add_cstr(out, "E:serde");
+    }
+    if (_par_adr21(out) == 1) { return 0; }
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_history_json_row(): i64 {
+    var idn = 0;
+    var id = _par_tok_h(2, 0, &idn);
+    var pl = 0;
+    var path = _pc_tok_s(2, 1, &pl);
+    var sl = 0;
+    var src = _pc_tok_s(2, 4, &sl);
+    var fl = 0;
+    var fmt = _pc_tok_s(2, 7, &fl);
+    var e = SlHistoryEntry_new(id, path, pl, _pc_tok_num(2, 2), _pc_tok_num(2, 3), src, sl, _pc_tok_num(2, 5),
+        _pc_tok_num(2, 6), fmt, fl);
+    var sb = str_builder_new();
+    SlHistoryEntry_to_json(e, sb);
+    var line = str_builder_build(sb);
+    var out = str_builder_new();
+    _pc_put_sstr(out, line);
+    SlHistoryEntry_free(e);
+    return _pc_check(str_builder_build(out));
+}
+
+var _par_hist_path = "build/parity_history.jsonl";
+
+# A store over a file holding the h: input 0 (its lock file beside it).
+fn _par_hist_store(): *SlHistoryStore {
+    sys_mkdir("build", 493);
+    var n = 0;
+    var content = _par_in_h(0, &n);
+    file_write_all(_par_hist_path, content, n);
+    return SlHistoryStore_open(_par_hist_path);
+}
+
+fn _par_history_list_row(): i64 {
+    var s = _par_hist_store();
+    var limit = _pc_tok_num(2, 1);
+    var since: i64[2];
+    var sp = 0;
+    if (_par_tok_is(2, 2, "N") == 0) {
+        since[0] = _pc_tok_num(2, 2);
+        since[1] = _pc_tok_num(2, 3);
+        sp = &since;
+    }
+    var out = str_builder_new();
+    var t, v = SlHistoryStore_list(s, limit, sp);
+    if (is_err_result(t) == 1) {
+        str_builder_add_cstr(out, "E:Io");
+    } else {
+        _pc_put_i(out, vec_len(v));
+        var i = 0;
+        while (i < vec_len(v)) {
+            _pc_sp(out);
+            _pc_put_h(out, vec_get(v, i), 16);
+            i = i + 1;
+        }
+        selah_history_entries_free(v);
+    }
+    SlHistoryStore_free(s);
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_history_get_row(): i64 {
+    var s = _par_hist_store();
+    var idn = 0;
+    var id = _par_tok_h(2, 1, &idn);
+    var out = str_builder_new();
+    var t, v = SlHistoryStore_get(s, id);
+    if (is_ok(t) == 1 && v != 0) {
+        var e: *SlHistoryEntry = _sl_as_history(v);
+        _pc_put_h(out, e, 16);
+        _pc_sp(out);
+        _pc_put_sstr(out, e.source);
+        SlHistoryEntry_free(e);
+    } else {
+        str_builder_add_cstr(out, "N");
+    }
+    SlHistoryStore_free(s);
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_history_delete_row(): i64 {
+    var s = _par_hist_store();
+    var idn = 0;
+    var id = _par_tok_h(2, 1, &idn);
+    var out = str_builder_new();
+    var t, v = SlHistoryStore_delete(s, id);
+    _pc_put_b(out, v);
+    _pc_sp(out);
+    var n = 0;
+    var after = file_read_whole_max(_par_hist_path, 1073741824, &n);
+    if (n > 4096) {
+        _par_put_crc(out, after, n);
+    } else {
+        _pc_put_h(out, after, n);
+    }
+    SlHistoryStore_free(s);
+    return _pc_check(str_builder_build(out));
+}
+
+# The format named by the e:ImageFormat token i.
+fn _par_fmt_at(i): i64 {
+    return _par_enum(i, "e:ImageFormat.", &_par_format_name, SL_FMT_WEBP);
+}
+
+# CaptureClient::capture's request body, or its refusal, without sending: what the client puts on the wire.
+fn _par_capture_out(out, spec_rect: SlRect, has_rect, monitor, fmt): i64 {
+    var d = 0;
+    var spec: i64[4];
+    var sp = 0;
+    if (has_rect == 1) {
+        var rt, rv = _sl_region_spec(spec_rect, &spec, &d);
+        if (is_err_result(rt) == 1) { return _par_put_err_text(out, rv, d, 0); }
+        sp = &spec;
+    }
+    if (monitor != 0 && _sl_blank(monitor, strlen(monitor)) == 1) {
+        return _par_put_err_text(out, SL_ERR_INVALID_REGION, str_from("monitor id must not be empty"), 0);
+    }
+    var ft, fv = _sl_capture_format(fmt, &d);
+    if (is_err_result(ft) == 1) { return _par_put_err_text(out, fv, d, 0); }
+    var bb = str_builder_new();
+    _sl_capture_body(bb, sp, monitor, fv, "selah");
+    return _pc_put_sstr(out, str_builder_build(bb));
+}
+
+# A WebP row (adr=0002#1) passes as accepted when the port refuses it with UnsupportedFormat.
+fn _par_adr1(out): i64 {
+    if (_par_adr() != 1) { return 0; }
+    var s = str_builder_build(out);
+    if (str_len(s) >= 19 && memeq(str_data(s), "E:UnsupportedFormat", 19) == 1) {
+        _pc_record(PC_ACCEPTED, "ADR 0002 #1: no WebP");
+        return 1;
+    }
+    return 0;
+}
+
+fn _par_region_row(): i64 {
+    var out = str_builder_new();
+    _par_capture_out(out, _par_rect(0), 1, 0, _par_fmt_at(4));
+    if (_par_adr1(out) == 1) { return 0; }
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_monitor_req_row(): i64 {
+    var n = 0;
+    var id = _pc_tok_s(2, 0, &n);
+    var out = str_builder_new();
+    _par_capture_out(out, SlRect_default(), 0, id, _par_fmt_at(1));
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_capture_http_row(): i64 {
+    var status = _pc_tok_num(2, 0);
+    var n = 0;
+    var body = _par_in_h(1, &n);
+    var out = str_builder_new();
+    var d = 0;
+    if (status < 200 || status >= 300) {
+        var st, sv = _sl_http_status_err(status, body, n, "daimon capture", &d);
+        _par_put_err_text(out, sv, d, 0);
+        return _pc_check(str_builder_build(out));
+    }
+    var t, v = _sl_capture_from_body(body, n, &d);
+    if (is_err_result(t) == 1) {
+        _par_put_err_text(out, v, d, 1);
+    } else {
+        var r: *SlCaptureResponse = _sl_as_capture_resp(v);
+        _par_put_crc(out, str_data(r.image_data), str_len(r.image_data));
+        _pc_sp(out);
+        _pc_put_i(out, str_len(r.image_data));
+        _pc_sp(out);
+        _pc_put_i(out, r.width);
+        _pc_sp(out);
+        _pc_put_i(out, r.height);
+        _pc_sp(out);
+        _pc_put_sstr(out, r.format);
+        SlCaptureResponse_free(r);
+    }
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_monitors_http_row(): i64 {
+    var status = _pc_tok_num(2, 0);
+    var n = 0;
+    var body = _par_in_h(1, &n);
+    var out = str_builder_new();
+    var d = 0;
+    if (status < 200 || status >= 300) {
+        var st, sv = _sl_http_status_err(status, body, n, "daimon monitors", &d);
+        _par_put_err_text(out, sv, d, 0);
+        return _pc_check(str_builder_build(out));
+    }
+    var t, v = _sl_monitors_from_body(body, n, &d);
+    if (is_err_result(t) == 1) {
+        _par_put_err_text(out, v, d, 1);
+        return _pc_check(str_builder_build(out));
+    }
+    _pc_put_i(out, vec_len(v));
+    var i = 0;
+    while (i < vec_len(v)) {
+        var m: *SlMonitor = _sl_as_monitor(vec_get(v, i));
+        _pc_sp(out);
+        _pc_put_sstr(out, m.id);
+        _pc_sp(out);
+        _pc_put_sstr(out, m.name);
+        _pc_sp(out);
+        _pc_put_i(out, m.width);
+        _pc_sp(out);
+        _pc_put_i(out, m.height);
+        _pc_sp(out);
+        _pc_put_i(out, m.x);
+        _pc_sp(out);
+        _pc_put_i(out, m.y);
+        _pc_sp(out);
+        _pc_put_b(out, m.primary);
+        SlMonitor_free(m);
+        i = i + 1;
+    }
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_ocr_answer_row(): i64 {
+    var n = 0;
+    var body = _par_in_h(0, &n);
+    var out = str_builder_new();
+    var d = 0;
+    var t, v = _sl_ocr_from_answer(body, n, 1.0, 1.0, &d);
+    if (is_err_result(t) == 1) {
+        _par_put_err_text(out, v, d, 1);
+    } else {
+        var o: *SlOcrResult = _sl_as_ocr(v);
+        _pc_put_sstr(out, o.text);
+        _pc_sp(out);
+        _pc_put_f(out, _sl_f64_bits(o.confidence));
+        _pc_sp(out);
+        _pc_put_i(out, vec_len(o.bounding_boxes));
+        var i = 0;
+        while (i < vec_len(o.bounding_boxes)) {
+            var r: *SlRect = _sl_as_rect(vec_get(o.bounding_boxes, i));
+            _pc_sp(out);
+            _pc_put_g(out, _sl_f32_bits(r.min_x));
+            _pc_sp(out);
+            _pc_put_g(out, _sl_f32_bits(r.min_y));
+            _pc_sp(out);
+            _pc_put_g(out, _sl_f32_bits(r.max_x));
+            _pc_sp(out);
+            _pc_put_g(out, _sl_f32_bits(r.max_y));
+            i = i + 1;
+        }
+    }
+    if (_par_adr21(out) == 1) { return 0; }
+    return _pc_check(str_builder_build(out));
+}
+
+# The path part (from the first `/` after the authority) of the http URL u (a Str), as a Str.
+fn _par_url_path(u): i64 {
+    var p = str_data(u);
+    var n = str_len(u);
+    var i = 7;
+    while (i < n && load8(p + i) != 47) { i = i + 1; }
+    var hdr: i64[2];
+    hdr[0] = p + i;
+    hdr[1] = n - i;
+    var sb = str_builder_new();
+    str_builder_add(sb, &hdr);
+    return str_builder_build(sb);
+}
+
+fn _par_agent_path_row(): i64 {
+    var n = 0;
+    var id = _pc_tok_s(2, 0, &n);
+    var out = str_builder_new();
+    var d = 0;
+    var vt, vv = _sl_validate_agent_id(id, n, &d);
+    if (is_err_result(vt) == 1) {
+        _par_put_err_text(out, vv, d, 0);
+        return _pc_check(str_builder_build(out));
+    }
+    var segs = vec_new();
+    vec_push(segs, "v1");
+    vec_push(segs, "agents");
+    vec_push(segs, id);
+    vec_push(segs, "heartbeat");
+    var t, u = _sl_endpoint_url("http://127.0.0.1:1", segs);
+    _pc_put_sstr(out, _par_url_path(u));
+    return _pc_check(str_builder_build(out));
+}
+
+# The s: input token i as a NUL-terminated string, or 0 for `N`.
+fn _par_opt_s(i): i64 {
+    if (_par_tok_is(2, i, "N") == 1) { return 0; }
+    var n = 0;
+    return _pc_tok_s(2, i, &n);
+}
+
+fn _par_session_row(): i64 {
+    var out = str_builder_new();
+    if (_sl_session_type_from(_par_opt_s(0), _par_opt_s(1)) == SL_SESSION_WAYLAND) {
+        str_builder_add_cstr(out, "e:SessionType.Wayland");
+    } else {
+        str_builder_add_cstr(out, "e:SessionType.X11");
+    }
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_mime_row(): i64 {
+    var n = 0;
+    var b = _par_in_h(0, &n);
+    var out = str_builder_new();
+    var m = _sl_guess_mime(b, n);
+    _pc_put_s(out, m, strlen(m));
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_exit_status_row(): i64 {
+    var raw = _pc_tok_num(2, 0);
+    var spb: i64[7];
+    var sp: *SlSpawn = _sl_as_spawn(&spb);
+    sp.code = 0;
+    sp.signal = 0;
+    sp.core = 0;
+    if ((raw & 127) == 0) {
+        sp.code = (raw >> 8) & 255;
+    } else {
+        sp.signal = raw & 127;
+        if ((raw & 128) != 0) { sp.core = 1; }
+    }
+    var sb = str_builder_new();
+    _sl_exit_status_fmt(sb, sp);
+    var out = str_builder_new();
+    _pc_put_sstr(out, str_builder_build(sb));
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_rect_debug_row(): i64 {
+    var sb = str_builder_new();
+    _sl_rect_debug(sb, _par_rect(0));
+    var out = str_builder_new();
+    _pc_put_sstr(out, str_builder_build(sb));
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_daimon_config_row(): i64 {
+    var n = 0;
+    var j = _par_in_h(0, &n);
+    var out = str_builder_new();
+    var t, v = SlDaimonConfig_from_json(j, n);
+    if (is_err_result(t) == 1) {
+        str_builder_add_cstr(out, "E:serde");
+    } else {
+        var c: *SlDaimonConfig = _sl_as_dconf(v);
+        _pc_put_s(out, c.endpoint, strlen(c.endpoint));
+        _pc_sp(out);
+        if (c.api_key == 0) {
+            str_builder_add_cstr(out, "N");
+        } else {
+            _pc_put_s(out, c.api_key, strlen(c.api_key));
+        }
+    }
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_daimon_config_json_row(): i64 {
+    var c = SlDaimonConfig_new(_par_opt_s(0), _par_opt_s(1));
+    var sb = str_builder_new();
+    SlDaimonConfig_to_json(c, sb);
+    var out = str_builder_new();
+    _pc_put_sstr(out, str_builder_build(sb));
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_hoosh_config_row(): i64 {
+    var n = 0;
+    var j = _par_in_h(0, &n);
+    var out = str_builder_new();
+    var t, v = SlHooshConfig_from_json(j, n);
+    if (is_err_result(t) == 1) {
+        str_builder_add_cstr(out, "E:serde");
+    } else {
+        var c: *SlHooshConfig = _sl_as_hconf(v);
+        _pc_put_s(out, c.endpoint, strlen(c.endpoint));
+    }
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_wire_register_row(): i64 {
+    var n = 0;
+    var name = _pc_tok_s(2, 0, &n);
+    var segs = vec_new();
+    vec_push(segs, "v1");
+    vec_push(segs, "agents");
+    var t, u = _sl_endpoint_url("http://127.0.0.1:1", segs);
+    var line = str_builder_new();
+    str_builder_add_cstr(line, "POST ");
+    str_builder_add(line, _par_url_path(u));
+    var body = str_builder_new();
+    _sl_register_body(body, name);
+    var out = str_builder_new();
+    _pc_put_sstr(out, str_builder_build(line));
+    _pc_sp(out);
+    _pc_put_sstr(out, str_builder_build(body));
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_wire_ocr_row(): i64 {
+    var mn = 0;
+    var model = _pc_tok_s(2, 0, &mn);
+    var n = 0;
+    var img = _par_in_h(1, &n);
+    var segs = vec_new();
+    vec_push(segs, "v1");
+    vec_push(segs, "chat");
+    vec_push(segs, "completions");
+    var t, u = _sl_endpoint_url("http://127.0.0.1:1", segs);
+    var line = str_builder_new();
+    str_builder_add_cstr(line, "POST ");
+    str_builder_add(line, _par_url_path(u));
+    var a = _sl_scratch_new();
+    var req = _sl_ocr_request(a, model, _sl_guess_mime(img, n), img, n);
+    var out = str_builder_new();
+    _pc_put_sstr(out, str_builder_build(line));
+    _pc_sp(out);
+    _pc_put_sstr(out, req);
+    _sl_scratch_free(a);
+    return _pc_check(str_builder_build(out));
+}
+
+# Class R for history: history files the port writes, which `oracle --reverse` lists with Rust and compares with
+# the ids the port lists, newest first (build/reverse/history-N.jsonl and .ids).
+var _par_hist_rev = 0;
+
+fn _par_rev_entry(s, id, secs, nanos, path, source, fmt): i64 {
+    var idb: u8[16];
+    var i = 0;
+    while (i < 16) {
+        store8(&idb + i, 0);
+        i = i + 1;
+    }
+    store8(&idb + 15, id);
+    store8(&idb + 6, 64);
+    store8(&idb + 8, 128);
+    var e = SlHistoryEntry_new(&idb, path, strlen(path), secs, nanos, source, strlen(source), id * 100, id * 50, fmt,
+        strlen(fmt));
+    SlHistoryStore_record(s, e);
+    SlHistoryEntry_free(e);
+    return 0;
+}
+
+fn _par_rev_ids(s, path): i64 {
+    var t, v = SlHistoryStore_list(s, -1);
+    var sb = str_builder_new();
+    var i = 0;
+    while (i < vec_len(v)) {
+        _sl_uuid_fmt(sb, vec_get(v, i), 1);
+        str_builder_putc(sb, 10);
+        i = i + 1;
+    }
+    selah_history_entries_free(v);
+    var ids = str_builder_build(sb);
+    file_write_all(path, str_data(ids), str_len(ids));
+    return vec_len(v);
+}
+
+fn _par_reverse_history(): i64 {
+    sys_mkdir("build", 493);
+    sys_mkdir("build/reverse", 493);
+    var k = 0;
+    while (k < 3) {
+        var pb = str_builder_new();
+        str_builder_add_cstr(pb, "build/reverse/history-");
+        str_builder_add_int(pb, k);
+        var stem = str_builder_build(pb);
+        var jb = str_builder_new();
+        str_builder_add(jb, stem);
+        str_builder_add_cstr(jb, ".jsonl");
+        var jp = str_data(str_builder_build(jb));
+        xunlink(jp);
+        var lb = str_builder_new();
+        str_builder_add_cstr(lb, jp);
+        str_builder_add_cstr(lb, ".lock");
+        xunlink(str_data(str_builder_build(lb)));
+        if (k == 1) { file_write_all(jp, "{\"id\":\"0000", 11); }
+        var s = SlHistoryStore_open(jp);
+        _par_rev_entry(s, 1, 1763164800, 0, "/tmp/a.png", "full screen", "png");
+        _par_rev_entry(s, 2, 1763164801, 500000000, "/tmp/\"q\"\\é😀\n.png", "region (5x5 at 1,2)", "jpg");
+        _par_rev_entry(s, 3, 1763164801, 500000000, "", "", "bmp");
+        _par_rev_entry(s, 4, -1, 999999999, "/x", "window 7", "png");
+        _par_rev_entry(s, 5, 253402300799, 123456789, "/y", "s\x01\x7f", "png");
+        if (k == 2) {
+            var gone: u8[16];
+            var i = 0;
+            while (i < 16) {
+                store8(&gone + i, 0);
+                i = i + 1;
+            }
+            store8(&gone + 15, 3);
+            store8(&gone + 6, 64);
+            store8(&gone + 8, 128);
+            SlHistoryStore_delete(s, &gone);
+        }
+        var ib = str_builder_new();
+        str_builder_add(ib, stem);
+        str_builder_add_cstr(ib, ".ids");
+        _par_rev_ids(s, str_data(str_builder_build(ib)));
+        SlHistoryStore_free(s);
+        _par_hist_rev = _par_hist_rev + 1;
+        k = k + 1;
+    }
+    _pc_s("  history: ");
+    _pc_i(_par_hist_rev);
+    _pc_s(" files written for `oracle --reverse` (build/reverse/history-*.jsonl)\n");
+    return 0;
+}
+
+# The system module's row dispatcher.
+fn _par_system_row(): i64 {
+    if (_pc_fn_is("history_line") == 1) { return _par_history_line_row(); }
+    if (_pc_fn_is("history_id") == 1) { return _par_history_id_row(); }
+    if (_pc_fn_is("history_json") == 1) { return _par_history_json_row(); }
+    if (_pc_fn_is("history_list") == 1) { return _par_history_list_row(); }
+    if (_pc_fn_is("history_get") == 1) { return _par_history_get_row(); }
+    if (_pc_fn_is("history_delete") == 1) { return _par_history_delete_row(); }
+    if (_pc_fn_is("region") == 1) { return _par_region_row(); }
+    if (_pc_fn_is("monitor_req") == 1) { return _par_monitor_req_row(); }
+    if (_pc_fn_is("capture_http") == 1) { return _par_capture_http_row(); }
+    if (_pc_fn_is("monitors_http") == 1) { return _par_monitors_http_row(); }
+    if (_pc_fn_is("ocr_answer") == 1) { return _par_ocr_answer_row(); }
+    if (_pc_fn_is("agent_path") == 1) { return _par_agent_path_row(); }
+    if (_pc_fn_is("session") == 1) { return _par_session_row(); }
+    if (_pc_fn_is("mime") == 1) { return _par_mime_row(); }
+    if (_pc_fn_is("exit_status") == 1) { return _par_exit_status_row(); }
+    if (_pc_fn_is("rect_debug") == 1) { return _par_rect_debug_row(); }
+    if (_pc_fn_is("daimon_config") == 1) { return _par_daimon_config_row(); }
+    if (_pc_fn_is("daimon_config_json") == 1) { return _par_daimon_config_json_row(); }
+    if (_pc_fn_is("hoosh_config") == 1) { return _par_hoosh_config_row(); }
+    if (_pc_fn_is("wire_register") == 1) { return _par_wire_register_row(); }
+    if (_pc_fn_is("wire_ocr") == 1) { return _par_wire_ocr_row(); }
+    return _pc_record(PC_PENDING, "no dispatcher");
+}
+
 # ---------------------------------------------------------------- driver
 
 # Replay one module's .tsv. Returns 1 when the module failed.
@@ -1521,6 +2162,7 @@ fn _par_module(name, n): i64 {
     elif (n == 2 && memeq(name, "ai", 2) == 1) { which = 8; }
     elif (n == 5 && memeq(name, "codec", 5) == 1) { which = 9; }
     elif (n == 8 && memeq(name, "annotate", 8) == 1) { which = 10; }
+    elif (n == 6 && memeq(name, "system", 6) == 1) { which = 11; }
     if (which != 1) { _pc_print_limit = 10; }
     var pos = 0;
     while (pos < len) {
@@ -1544,6 +2186,7 @@ fn _par_module(name, n): i64 {
             elif (which == 10 && _pc_fn_is("layer_load") == 1) { _par_layer_load_row(); }
             elif (which == 10 && _pc_fn_is("decode_image_data") == 1) { _par_decode_data_row(); }
             elif (which == 10 && _pc_fn_is("redact_image") == 1) { _par_redact_row(); }
+            elif (which == 11) { _par_system_row(); }
             else { _pc_record(PC_PENDING, "no dispatcher"); }
         }
         pos = e + 1;
@@ -1570,6 +2213,7 @@ fn _par_module(name, n): i64 {
         }
         _pc_s("; reverse files in build/reverse/\n");
     }
+    if (which == 11) { _par_reverse_history(); }
     var modname = alloc(n + 1);
     memcpy(modname, name, n);
     store8(modname + n, 0);

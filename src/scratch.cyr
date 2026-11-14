@@ -1,0 +1,167 @@
+# scratch.cyr — a per-call allocator on the freelist (port plan D10).
+#
+# UPSTREAM(L22): sandhi's buffered client reserves its whole response cap in the allocator it is given.
+#
+# sandhi and bayan take an allocator (their `_a` forms). Their default is the bump heap, which never frees, so every
+# request, response and parse would stay with the process for its lifetime: the shape L16 and L19 describe for chitra
+# and bayan's base64. A scratch allocator is an arena whose memory comes from the freelist and goes back to it:
+#   - small blocks are carved from 64 KiB chunks; `reset_via` rewinds to the first chunk and keeps the chain, so a
+#     loop that resets per item (a history line) settles at its high-water mark and stops allocating;
+#   - a block over 16 KiB gets its own freelist block, a fresh mapping, so a 256 MiB response cap costs only the pages
+#     a response touches; the reset returns those to the OS;
+#   - every block is zeroed (a fresh mapping already is);
+#   - a free is a no-op, as in an arena: sandhi and bayan were written for arenas, so a block they free may still be
+#     read (measured: freeing early corrupted the heap in tests/parity.tcyr);
+#   - `_sl_scratch_free` returns everything.
+# One freelist block holds the Allocator vtable (lib/alloc.cyr's 40-byte layout) and the state after it:
+#   +40 current chunk   +48 position   +56 end   +64 first chunk   +72 big blocks (a freelist array)   +80 count
+#   +88 capacity
+# A chunk is { next, size } then its data. Not thread-safe: one per call, on one thread.
+
+const _SL_SCRATCH_CHUNK = 65536;
+const _SL_SCRATCH_BIG = 16384;
+
+# Records a big block. Returns 1, or 0 when the list cannot grow.
+fn _sl_scratch_track(st, p): i64 {
+    var n = load64(st + 40);
+    var cap = load64(st + 48);
+    if (n == cap) {
+        var ncap = cap * 2;
+        if (ncap < 16) { ncap = 16; }
+        var nb = fl_alloc(ncap * 8);
+        if (nb == 0) { return 0; }
+        var old = load64(st + 32);
+        if (old != 0) {
+            memcpy(nb, old, n * 8);
+            fl_free(old);
+        }
+        store64(st + 32, nb);
+        store64(st + 48, ncap);
+    }
+    store64(load64(st + 32) + n * 8, p);
+    store64(st + 40, n + 1);
+    return 1;
+}
+
+# Moves to the next chunk of the chain, linking a new one when the chain ends. Returns 1, or 0 when out of memory.
+fn _sl_scratch_next(st): i64 {
+    var cur = load64(st);
+    var nxt = 0;
+    if (cur != 0) { nxt = load64(cur); }
+    if (nxt == 0) {
+        nxt = fl_alloc(_SL_SCRATCH_CHUNK + 16);
+        if (nxt == 0) { return 0; }
+        store64(nxt, 0);
+        store64(nxt + 8, _SL_SCRATCH_CHUNK);
+        if (cur == 0) {
+            store64(st + 24, nxt);
+        } else {
+            store64(cur, nxt);
+        }
+    }
+    store64(st, nxt);
+    store64(st + 8, nxt + 16);
+    store64(st + 16, nxt + 16 + _SL_SCRATCH_CHUNK);
+    return 1;
+}
+
+# alloc_fn: a zeroed block of `size` bytes, 8-aligned; 0 when out of memory.
+fn _sl_scratch_alloc(st, size): i64 {
+    if (size <= 0) { return 0; }
+    var sz = (size + 7) & -8;
+    if (sz > _SL_SCRATCH_BIG) {
+        var big = fl_calloc(sz);
+        if (big == 0) { return 0; }
+        if (_sl_scratch_track(st, big) == 0) {
+            fl_free(big);
+            return 0;
+        }
+        return big;
+    }
+    if (load64(st + 8) + sz > load64(st + 16)) {
+        if (_sl_scratch_next(st) == 0) { return 0; }
+    }
+    var p = load64(st + 8);
+    store64(st + 8, p + sz);
+    var z = 0;
+    while (z < sz) {
+        store64(p + z, 0);
+        z = z + 8;
+    }
+    return p;
+}
+
+# free_fn: nothing, as in an arena (see the header).
+fn _sl_scratch_release(st, ptr): i64 {
+    return 0;
+}
+
+# realloc_fn: a new block with the old contents; the old one stays until the reset, as in an arena.
+fn _sl_scratch_realloc(st, old, old_size, new_size): i64 {
+    var p = _sl_scratch_alloc(st, new_size);
+    if (p == 0) { return 0; }
+    if (old != 0) {
+        var m = old_size;
+        if (new_size < m) { m = new_size; }
+        if (m > 0) { memcpy(p, old, m); }
+    }
+    return p;
+}
+
+# reset_fn: frees the big blocks and rewinds to the first chunk (the chain is kept for the next use).
+fn _sl_scratch_reset(st): i64 {
+    var n = load64(st + 40);
+    var arr = load64(st + 32);
+    var i = 0;
+    while (i < n) {
+        fl_free(load64(arr + i * 8));
+        i = i + 1;
+    }
+    store64(st + 40, 0);
+    var first = load64(st + 24);
+    if (first != 0) {
+        store64(st, first);
+        store64(st + 8, first + 16);
+        store64(st + 16, first + 16 + _SL_SCRATCH_CHUNK);
+    }
+    return 0;
+}
+
+# A new scratch allocator, or 0 when out of memory.
+#must_use
+fn _sl_scratch_new(): i64 {
+    var a = fl_calloc(96);
+    if (a == 0) { return 0; }
+    store64(a, &_sl_scratch_alloc);
+    store64(a + 8, &_sl_scratch_realloc);
+    store64(a + 16, &_sl_scratch_release);
+    store64(a + 24, &_sl_scratch_reset);
+    store64(a + 32, a + 40);
+    return a;
+}
+
+# Frees every block the allocator handed out, its chunks, and the allocator.
+fn _sl_scratch_free(a): i64 {
+    if (a == 0) { return 0; }
+    var st = a + 40;
+    _sl_scratch_reset(st);
+    if (load64(st + 32) != 0) { fl_free(load64(st + 32)); }
+    var ch = load64(st + 24);
+    while (ch != 0) {
+        var nx = load64(ch);
+        fl_free(ch);
+        ch = nx;
+    }
+    fl_free(a);
+    return 0;
+}
+
+# A copy of p[0..n) on the freelist, NUL-terminated (free it with fl_free); 0 when out of memory.
+#must_use
+fn _sl_fl_dup(p, n): i64 {
+    var b = fl_alloc(n + 1);
+    if (b == 0) { return 0; }
+    if (n > 0) { memcpy(b, p, n); }
+    store8(b + n, 0);
+    return b;
+}

@@ -62,12 +62,15 @@ stdlib = ["assert", "bench"]
 [lib]
 modules = [
     "src/error.cyr",
+    "src/version_str.cyr",
     "src/log.cyr",
+    "src/scratch.cyr",
     "src/fmtf.cyr",
     "src/json.cyr",
     "src/uuid.cyr",
     "src/rfc3339.cyr",
     "src/geometry.cyr",
+    "src/debug_data.cyr",
     "src/core.cyr",
     "src/ai_data.cyr",
     "src/ai.cyr",
@@ -79,4 +82,9 @@ modules = [
     "src/raster.cyr",
     "src/annotate.cyr",
     "src/selah.cyr",
+    "src/history.cyr",
+    "src/http.cyr",
+    "src/spawn.cyr",
+    "src/capture.cyr",
+    "src/daimon.cyr",
 ]

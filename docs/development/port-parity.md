@@ -238,3 +238,41 @@ The harness output is identical on x86_64 ELF, aarch64 (qemu) and x86_64 PE (win
 Two mutation probes confirmed the gates bite: a highlight opacity of 77 for 76 failed 185 render rows, and one SVG
 radius from the wrong side failed 37.
 
+
+## 8. M5 (2026-11-14): system and clients, all class A (and W for the retargeted wire)
+
+The rows drive Rust's own HistoryStore, CaptureClient, DaimonClient and HooshClient. The clients run on a
+current-thread tokio runtime against a one-shot loopback server, a copy of Rust's `serve_once`, so every expectation
+is what Rust's real client sent or concluded.
+
+| Rows | Result |
+|---|---|
+| `history_line` 47, `history_id` 47 | serde_json's verdict on each line and the entry read, and the private EntryId's read: valid lines, whitespace and `\r`, unknown members, u32 edges (2^32, −1, `-0`, `1.0`, `1e2`, a string), every Uuid form, chrono's relaxed RFC 3339 (`t`, `z`, a space, offsets, 10 fraction digits, a leap second, February 30th, no zone, year 12026), the array form (7, 6 and 1 elements), torn and malformed lines, and invalid UTF-8 in a kept field. 3 lines × 2 rows are accepted under ADR 0002 #21 |
+| `history_json` 11 | serde_json's line byte for byte: escapes and control characters, the fraction's 0 / 3 / 6 / 9 digits, years 0001 to 9999 and outside them, a leap second |
+| `history_list` 160, `history_get` 56, `history_delete` 56 | over Rust-written files (with foreign lines, a torn tail, a missing final newline, duplicates, `\x0c` and `\r`, the array form, 200 entries): every limit (0, 1, 3, 10, unbounded) × `since` (none, before, on a nanosecond, after), every id; the order (newest first, ties in file order) and the rewritten file equal |
+| `region` 39 | CaptureClient::capture's request body, or its InvalidRegion text with the rect's Debug form, over 33 rects (normalized, clipped, fractional edges, ±∞, NaN, 2^32 and past, f32 extremes); the 4 WebP rows are accepted (ADR 0002 #1) |
+| `monitor_req` 12 | the body, and the blank-id refusal over Unicode whitespace (U+3000, U+0085, U+00A0) |
+| `capture_http` 22, `monitors_http` 10 | the answer read (struct, array form, u32 / i32 edges, `-0`, a bool as 1, missing fields), and the status text: reason phrases, an unknown code (599), empty bodies, the 512-byte cut with and without `…`, a multi-byte character at the cut, and invalid UTF-8 decoded lossily as Rust does |
+| `ocr_answer` 28 | the Rust-shape answer read into an OcrResult: the confidence clamp (`7.5`, `-1`, a string, null, `-0`, `-0.0`, subnormal, u64::MAX, `1e400` refusing the document), parse_region over f32 overflow, subnormals, non-objects and extra members, a non-object answer (defaults), invalid JSON; one duplicate-key row is accepted (ADR 0002 #21) |
+| `agent_path` 26 | validate_agent_id's verdict and text (Rust's Debug of the id, C1 controls escaped), and the path the url crate encodes (`%2F`, `%3F`, `%23`, `%25`, UTF-8, the sub-delims it leaves) |
+| `session` 25, `mime` 31, `exit_status` 39, `rect_debug` 33 | detect_session_type under each pair of variables; image 0.25.10's MIME table and its fallback; ExitStatus's Display for codes, the 31 Linux signals and core dumps; `{rect:?}` |
+| `daimon_config` 9, `daimon_config_json` 3, `hoosh_config` 4 | serde's verdicts and JSON, the array forms included |
+| `wire_register` 2, `wire_ocr` 2 (W) | the retargeted requests (ADR 0002 #4, #6), against fixtures from daimon's `api_register_agent` and the OpenAI content-part shape hoosh forwards |
+| `oracle --reverse` | Rust lists all 3 Cyrius-written history files (one with a torn line, one rewritten by delete) and finds the port's order |
+
+662 rows: 654 ok, 8 accepted, 0 failed. The harness output is identical on x86_64 ELF, aarch64 (qemu) and x86_64 PE
+(wine).
+
+**Facts the grid taught:**
+- bayan reads a bare `-0` as the integer 0 and refuses an integer past i64, where serde_json reads the float −0.0 and
+  the nearest double. A token pre-pass in `src/json.cyr` now gives bayan the float spelling, so every JSON reader in
+  selah (layers and annotations included) reads them as serde does. serde_json also refuses a float literal past f64
+  (`1e400`) in a field it reads; bayan reads ∞, which `_sl_json_as_f64` now refuses.
+- serde accepts a defect in a member it ignores (a duplicate key, a lone surrogate, invalid UTF-8) where bayan
+  refuses the document. That is recorded as ADR 0002 #21, not imitated.
+- Rust's `{:?}` escapes every character core does not print (C1 controls, combining marks, unassigned code points).
+  The set is generated from Rust (`src/debug_data.cyr`, 914 ranges, the same at every position in a string), so
+  selah's Debug texts are exact beyond ASCII.
+
+Two mutation probes confirmed the gates bite: a wrong reason phrase for 403 and printing U+0085 raw each failed their
+row.

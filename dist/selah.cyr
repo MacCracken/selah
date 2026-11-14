@@ -5,13 +5,15 @@
 
 # Requires (compile-verified; the leaves of dist/selah.deps):
 include "lib/sakshi.cyr"
+include "lib/io.cyr"
+include "lib/sandhi.cyr"
 include "lib/str.cyr"
 include "lib/result.cyr"
 include "lib/bayan.cyr"
 include "lib/random.cyr"
 include "lib/tagged.cyr"
-include "lib/io.cyr"
 include "lib/chrono.cyr"
+include "lib/syscalls.cyr"
 
 # --- error.cyr ---
 
@@ -104,6 +106,16 @@ fn _sl_fail_cstr(code, detail_out, cmsg): Result {
     return Err(code);
 }
 
+# --- version_str.cyr ---
+
+# version_str.cyr — selah's version at run time, from `VERSION` (sandhi's src/version_str.cyr pattern).
+#
+# `VERSION` is the source of truth; this literal must equal it, and tests/selah.tcyr fails when they disagree. The
+# HTTP User-Agent is `selah/<version>`, as Rust's `concat!("selah/", env!("CARGO_PKG_VERSION"))`.
+# CYRIUS_PKG_VERSION would not do: inside a consumer's build it is the consumer's version.
+
+var SL_VERSION = "0.30.0";
+
 # --- log.cyr ---
 
 # log.cyr — selah's tracing, through sakshi (Rust: `tracing`; port plan D11).
@@ -139,6 +151,176 @@ fn _sl_log_debug(msg): i64 {
 fn _sl_log_kv(level, msg, key, val): i64 {
     sakshi_log_kv(level, msg, strlen(msg), key, strlen(key), val, strlen(val));
     return 0;
+}
+
+# --- scratch.cyr ---
+
+# scratch.cyr — a per-call allocator on the freelist (port plan D10).
+#
+# UPSTREAM(L22): sandhi's buffered client reserves its whole response cap in the allocator it is given.
+#
+# sandhi and bayan take an allocator (their `_a` forms). Their default is the bump heap, which never frees, so every
+# request, response and parse would stay with the process for its lifetime: the shape L16 and L19 describe for chitra
+# and bayan's base64. A scratch allocator is an arena whose memory comes from the freelist and goes back to it:
+#   - small blocks are carved from 64 KiB chunks; `reset_via` rewinds to the first chunk and keeps the chain, so a
+#     loop that resets per item (a history line) settles at its high-water mark and stops allocating;
+#   - a block over 16 KiB gets its own freelist block, a fresh mapping, so a 256 MiB response cap costs only the pages
+#     a response touches; the reset returns those to the OS;
+#   - every block is zeroed (a fresh mapping already is);
+#   - a free is a no-op, as in an arena: sandhi and bayan were written for arenas, so a block they free may still be
+#     read (measured: freeing early corrupted the heap in tests/parity.tcyr);
+#   - `_sl_scratch_free` returns everything.
+# One freelist block holds the Allocator vtable (lib/alloc.cyr's 40-byte layout) and the state after it:
+#   +40 current chunk   +48 position   +56 end   +64 first chunk   +72 big blocks (a freelist array)   +80 count
+#   +88 capacity
+# A chunk is { next, size } then its data. Not thread-safe: one per call, on one thread.
+
+const _SL_SCRATCH_CHUNK = 65536;
+const _SL_SCRATCH_BIG = 16384;
+
+# Records a big block. Returns 1, or 0 when the list cannot grow.
+fn _sl_scratch_track(st, p): i64 {
+    var n = load64(st + 40);
+    var cap = load64(st + 48);
+    if (n == cap) {
+        var ncap = cap * 2;
+        if (ncap < 16) { ncap = 16; }
+        var nb = fl_alloc(ncap * 8);
+        if (nb == 0) { return 0; }
+        var old = load64(st + 32);
+        if (old != 0) {
+            memcpy(nb, old, n * 8);
+            fl_free(old);
+        }
+        store64(st + 32, nb);
+        store64(st + 48, ncap);
+    }
+    store64(load64(st + 32) + n * 8, p);
+    store64(st + 40, n + 1);
+    return 1;
+}
+
+# Moves to the next chunk of the chain, linking a new one when the chain ends. Returns 1, or 0 when out of memory.
+fn _sl_scratch_next(st): i64 {
+    var cur = load64(st);
+    var nxt = 0;
+    if (cur != 0) { nxt = load64(cur); }
+    if (nxt == 0) {
+        nxt = fl_alloc(_SL_SCRATCH_CHUNK + 16);
+        if (nxt == 0) { return 0; }
+        store64(nxt, 0);
+        store64(nxt + 8, _SL_SCRATCH_CHUNK);
+        if (cur == 0) {
+            store64(st + 24, nxt);
+        } else {
+            store64(cur, nxt);
+        }
+    }
+    store64(st, nxt);
+    store64(st + 8, nxt + 16);
+    store64(st + 16, nxt + 16 + _SL_SCRATCH_CHUNK);
+    return 1;
+}
+
+# alloc_fn: a zeroed block of `size` bytes, 8-aligned; 0 when out of memory.
+fn _sl_scratch_alloc(st, size): i64 {
+    if (size <= 0) { return 0; }
+    var sz = (size + 7) & -8;
+    if (sz > _SL_SCRATCH_BIG) {
+        var big = fl_calloc(sz);
+        if (big == 0) { return 0; }
+        if (_sl_scratch_track(st, big) == 0) {
+            fl_free(big);
+            return 0;
+        }
+        return big;
+    }
+    if (load64(st + 8) + sz > load64(st + 16)) {
+        if (_sl_scratch_next(st) == 0) { return 0; }
+    }
+    var p = load64(st + 8);
+    store64(st + 8, p + sz);
+    var z = 0;
+    while (z < sz) {
+        store64(p + z, 0);
+        z = z + 8;
+    }
+    return p;
+}
+
+# free_fn: nothing, as in an arena (see the header).
+fn _sl_scratch_release(st, ptr): i64 {
+    return 0;
+}
+
+# realloc_fn: a new block with the old contents; the old one stays until the reset, as in an arena.
+fn _sl_scratch_realloc(st, old, old_size, new_size): i64 {
+    var p = _sl_scratch_alloc(st, new_size);
+    if (p == 0) { return 0; }
+    if (old != 0) {
+        var m = old_size;
+        if (new_size < m) { m = new_size; }
+        if (m > 0) { memcpy(p, old, m); }
+    }
+    return p;
+}
+
+# reset_fn: frees the big blocks and rewinds to the first chunk (the chain is kept for the next use).
+fn _sl_scratch_reset(st): i64 {
+    var n = load64(st + 40);
+    var arr = load64(st + 32);
+    var i = 0;
+    while (i < n) {
+        fl_free(load64(arr + i * 8));
+        i = i + 1;
+    }
+    store64(st + 40, 0);
+    var first = load64(st + 24);
+    if (first != 0) {
+        store64(st, first);
+        store64(st + 8, first + 16);
+        store64(st + 16, first + 16 + _SL_SCRATCH_CHUNK);
+    }
+    return 0;
+}
+
+# A new scratch allocator, or 0 when out of memory.
+#must_use
+fn _sl_scratch_new(): i64 {
+    var a = fl_calloc(96);
+    if (a == 0) { return 0; }
+    store64(a, &_sl_scratch_alloc);
+    store64(a + 8, &_sl_scratch_realloc);
+    store64(a + 16, &_sl_scratch_release);
+    store64(a + 24, &_sl_scratch_reset);
+    store64(a + 32, a + 40);
+    return a;
+}
+
+# Frees every block the allocator handed out, its chunks, and the allocator.
+fn _sl_scratch_free(a): i64 {
+    if (a == 0) { return 0; }
+    var st = a + 40;
+    _sl_scratch_reset(st);
+    if (load64(st + 32) != 0) { fl_free(load64(st + 32)); }
+    var ch = load64(st + 24);
+    while (ch != 0) {
+        var nx = load64(ch);
+        fl_free(ch);
+        ch = nx;
+    }
+    fl_free(a);
+    return 0;
+}
+
+# A copy of p[0..n) on the freelist, NUL-terminated (free it with fl_free); 0 when out of memory.
+#must_use
+fn _sl_fl_dup(p, n): i64 {
+    var b = fl_alloc(n + 1);
+    if (b == 0) { return 0; }
+    if (n > 0) { memcpy(b, p, n); }
+    store8(b + n, 0);
+    return b;
 }
 
 # --- fmtf.cyr ---
@@ -669,6 +851,39 @@ fn _sl_fmt_f32_json(sb, x: f32): i64 {
     return _sl_sb_json_digits(sb, &digits, n, k, -6, 12);
 }
 
+# Appends x as Rust's `Debug` (`{:?}`) writes an f32: positional with at least one fraction digit (`1.0`, `0.5`)
+# while 1e-4 <= |x| < 1e16 (and for 0, `0.0`), otherwise the shortest exponential form (`1e16`, `1.5e-5`); `NaN`,
+# `inf`, `-inf` (core's float_to_general_debug).
+fn _sl_fmt_f32_debug(sb, x: f32): i64 {
+    var w = _sl_f32_bits(x);
+    var mag = w & 0x7FFFFFFF;
+    if (mag > 0x7F800000) {
+        str_builder_add_cstr(sb, "NaN");
+        return 0;
+    }
+    if (((w >> 31) & 1) == 1) { str_builder_putc(sb, 45); }
+    if (mag == 0x7F800000) {
+        str_builder_add_cstr(sb, "inf");
+        return 0;
+    }
+    if (mag == 0) {
+        str_builder_add_cstr(sb, "0.0");
+        return 0;
+    }
+    var digits[24];
+    var n, k = _sl_f32_digits(mag, &digits, 0);
+    # 0x38D1B717 is the f32 nearest 1e-4 and 0x5A0E1BCA the one nearest 1e16: the bounds Rust compares against.
+    if (mag >= 953267991 && mag < 1510874058) { return _sl_sb_positional(sb, &digits, n, k, 1); }
+    str_builder_putc(sb, load8(&digits));
+    if (n > 1) {
+        str_builder_putc(sb, 46);
+        _sl_sb_bytes(sb, &digits + 1, n - 1);
+    }
+    str_builder_putc(sb, 101);
+    str_builder_add_int(sb, k - 1);
+    return 0;
+}
+
 # --- json.cyr ---
 
 # json.cyr — JSON as selah's Rust crate writes and reads it (serde_json 1.0.154), on bayan.
@@ -738,11 +953,201 @@ fn _sl_json_key(sb, key): i64 {
 
 # ── reading ───────────────────────────────────────────────────────────────────────────
 
-# Parse p[0..n) into a bayan value tree; 0 when it isn't one JSON document.
+# The length of the UTF-8 sequence at p[i] (its first byte 0x80 or above) by Rust's `str::from_utf8` rules (no
+# overlong form, no surrogate, nothing past U+10FFFF), or 0 when no valid sequence starts there.
+#must_use
+fn _sl_utf8_seq(p, i, n): i64 {
+    var c = load8(p + i);
+    var len = 0;
+    var lo = 128;
+    var hi = 191;
+    if (c >= 194 && c <= 223) {
+        len = 2;
+    } elif (c == 224) {
+        len = 3;
+        lo = 160;
+    } elif (c >= 225 && c <= 236) {
+        len = 3;
+    } elif (c == 237) {
+        len = 3;
+        hi = 159;
+    } elif (c >= 238 && c <= 239) {
+        len = 3;
+    } elif (c == 240) {
+        len = 4;
+        lo = 144;
+    } elif (c >= 241 && c <= 243) {
+        len = 4;
+    } elif (c == 244) {
+        len = 4;
+        hi = 143;
+    } else {
+        return 0;
+    }
+    if (i + len > n) { return 0; }
+    var b1 = load8(p + i + 1);
+    if (b1 < lo || b1 > hi) { return 0; }
+    var k = 2;
+    while (k < len) {
+        var b = load8(p + i + k);
+        if (b < 128 || b > 191) { return 0; }
+        k = k + 1;
+    }
+    return len;
+}
+
+# 1 when p[0..n) is UTF-8 (Rust's `str::from_utf8`).
+#must_use
+fn _sl_utf8_valid(p, n): i64 {
+    var i = 0;
+    while (i < n) {
+        if (load8(p + i) < 128) {
+            i = i + 1;
+        } else {
+            var l = _sl_utf8_seq(p, i, n);
+            if (l == 0) { return 0; }
+            i = i + l;
+        }
+    }
+    return 1;
+}
+
+# 1 when the integer token d[0..n) (digits, after any sign) is beyond i64: more than 19 digits, or 19 digits above
+# 9223372036854775807 (9223372036854775808 when negative).
+#must_use
+fn _sl_json_int_wide(d, n, neg): i64 {
+    if (n < 19) { return 0; }
+    if (n > 19) { return 1; }
+    var lim = "9223372036854775807";
+    if (neg == 1) { lim = "9223372036854775808"; }
+    var i = 0;
+    while (i < 19) {
+        var a = load8(d + i);
+        var b = load8(lim + i);
+        if (a != b) {
+            if (a > b) { return 1; }
+            return 0;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The integer token at p[i..): (end index, 1 when serde_json reads it as a float and bayan would not). serde_json
+# reads a bare `-0` as the float -0.0 and an integer beyond i64 as u64 or f64, where bayan reads the integer 0 and
+# refuses the token. A token with a fraction or exponent is a float to both: (end, 0).
+fn _sl_json_num_tok(p, i, n): (i64, i64) {
+    var s = i;
+    var neg = 0;
+    if (load8(p + s) == 45) {
+        neg = 1;
+        s = s + 1;
+    }
+    var j = s;
+    while (j < n && load8(p + j) >= 48 && load8(p + j) <= 57) { j = j + 1; }
+    var e = j;
+    var fl = 0;
+    while (e < n) {
+        var c = load8(p + e);
+        if ((c >= 48 && c <= 57) || c == 46 || c == 101 || c == 69 || c == 43 || c == 45) {
+            if (c == 46 || c == 101 || c == 69) { fl = 1; }
+            e = e + 1;
+        } else {
+            break;
+        }
+    }
+    if (fl == 1 || e != j) { return (e, 0); }
+    if (neg == 1 && j - s == 1 && load8(p + s) == 48) { return (j, 1); }
+    return (j, _sl_json_int_wide(p + s, j - s, neg));
+}
+
+# The index just past the JSON string whose opening quote is at p[i0 - 1], scanning from i0; -1 when a byte inside it
+# is not UTF-8 (Rust's `str::from_utf8` rules). Plain ASCII is skipped a word at a time: a word with no byte that is
+# non-ASCII, a quote or a backslash (a SWAR test) has nothing to look at. An unterminated string ends at n (bayan
+# refuses it).
+fn _sl_json_str_end(p, i0, n): i64 {
+    var i = i0;
+    while (i < n) {
+        if (i + 8 <= n) {
+            var w = load64(p + i);
+            var q = w ^ 0x2222222222222222;
+            var bs = w ^ 0x5C5C5C5C5C5C5C5C;
+            var zq = (q - 0x0101010101010101) & (-1 ^ q);
+            var zb = (bs - 0x0101010101010101) & (-1 ^ bs);
+            if (((w | zq | zb) & 0x8080808080808080) == 0) {
+                i = i + 8;
+                continue;
+            }
+        }
+        var d = load8(p + i);
+        if (d == 34) { return i + 1; }
+        if (d == 92) {
+            i = i + 2;
+        } elif (d >= 128) {
+            var l = _sl_utf8_seq(p, i, n);
+            if (l == 0) { return -1; }
+            i = i + l;
+        } else {
+            i = i + 1;
+        }
+    }
+    return n;
+}
+
+# p[0..n) made ready for bayan to read as serde_json reads it, in one pass: (buffer, length), or (0, 0) when a string
+# in it is not UTF-8 (serde_json requires that of every string it keeps; ADR 0002 #21) or a non-ASCII byte stands
+# outside a string (not JSON). An integer token serde_json reads as a float gets `.0` appended so bayan reads a float
+# too: a bare `-0` keeps its sign, and an integer past i64 is read as the nearest double instead of refused. The input
+# comes back unchanged when no token needs it; a rewritten copy is allocated from `a`.
+fn _sl_json_prep(a, p, n): (i64, i64) {
+    var sb = 0;
+    var from = 0;
+    var i = 0;
+    var hdr: i64[2];
+    while (i < n) {
+        var c = load8(p + i);
+        if (c == 34) {
+            i = _sl_json_str_end(p, i + 1, n);
+            if (i < 0) { return (0, 0); }
+        } elif (c == 45 || (c >= 48 && c <= 57)) {
+            var e, wide = _sl_json_num_tok(p, i, n);
+            if (wide == 1) {
+                if (sb == 0) { sb = str_builder_new_a(a); }
+                if (sb == 0) { return (0, 0); }
+                hdr[0] = p + from;
+                hdr[1] = e - from;
+                str_builder_add_a(a, sb, &hdr);
+                str_builder_add_cstr_a(a, sb, ".0");
+                from = e;
+            }
+            i = e;
+        } elif (c >= 128) {
+            return (0, 0);
+        } else {
+            i = i + 1;
+        }
+    }
+    if (sb == 0) { return (p, n); }
+    hdr[0] = p + from;
+    hdr[1] = n - from;
+    str_builder_add_a(a, sb, &hdr);
+    var s = str_builder_build_a(a, sb);
+    return (str_data(s), str_len(s));
+}
+
+# Parse p[0..n) into a bayan value tree, prepared by _sl_json_prep; 0 when it isn't one JSON document.
 #must_use
 fn _sl_json_parse(p, n): i64 {
-    if (n < 0) { return 0; }
-    return bayan_json_v_parse_buf(p, n);
+    return _sl_json_parse_a(default_alloc(), p, n);
+}
+
+# As _sl_json_parse, with the value tree (and any rewritten copy) allocated from `a`.
+#must_use
+fn _sl_json_parse_a(a, p, n): i64 {
+    if (n < 0 || a == 0) { return 0; }
+    var q, qn = _sl_json_prep(a, p, n);
+    if (q == 0) { return 0; }
+    return bayan_json_v_parse_buf_a(a, q, qn);
 }
 
 # The member `key` of object v: 0 when v is not an object or has no such member.
@@ -754,7 +1159,9 @@ fn _sl_json_member(v, key): i64 {
 }
 
 # A JSON number as serde reads it into an f64 field: an integer converts (Rust `as f64`), a float is the parse's
-# correctly rounded double. Writes the value through `out` and returns 1, or returns 0 for anything else.
+# correctly rounded double. A literal past the f64 range (`1e400`), which bayan reads as infinity, is refused, as
+# serde_json refuses it (NumberOutOfRange). Writes the value through `out` and returns 1, or returns 0 for anything
+# else.
 fn _sl_json_as_f64(v, out): i64 {
     if (v == 0) { return 0; }
     var tag = bayan_json_v_tag(v);
@@ -764,10 +1171,23 @@ fn _sl_json_as_f64(v, out): i64 {
         return 1;
     }
     if (tag == JTAG_FLOAT) {
-        store64(out, bayan_json_v_float(v));
+        var bits = bayan_json_v_float(v);
+        if (((bits >> 52) & 2047) == 2047) { return 0; }
+        store64(out, bits);
         return 1;
     }
     return 0;
+}
+
+# A JSON number as serde reads it into an unsigned integer field of at most `max`: an integer 0..=max only (a float,
+# even 1.0 or -0, is refused, as serde_json refuses it). Returns the value, or -1.
+#must_use
+fn _sl_json_as_uint(v, max): i64 {
+    if (v == 0) { return -1; }
+    if (bayan_json_v_tag(v) != JTAG_INT) { return -1; }
+    var x = bayan_json_v_int(v);
+    if (x < 0 || x > max) { return -1; }
+    return x;
 }
 
 # A JSON number as serde reads it into a u8 field: an integer 0..=255 only (a float, even 1.0, is refused, as
@@ -1421,6 +1841,21 @@ impl SlRect {
     }
 }
 
+# Appends Rust's Debug of a rect (derived on selah's `Rect(hisab::Rect)`, glam's Vec2 Debug inside):
+# `Rect(Rect { min: Vec2(x, y), max: Vec2(x, y) })`, each coordinate as f32 Debug.
+fn _sl_rect_debug(sb, r: SlRect): i64 {
+    str_builder_add_cstr(sb, "Rect(Rect { min: Vec2(");
+    _sl_fmt_f32_debug(sb, r.min_x);
+    str_builder_add_cstr(sb, ", ");
+    _sl_fmt_f32_debug(sb, r.min_y);
+    str_builder_add_cstr(sb, "), max: Vec2(");
+    _sl_fmt_f32_debug(sb, r.max_x);
+    str_builder_add_cstr(sb, ", ");
+    _sl_fmt_f32_debug(sb, r.max_y);
+    str_builder_add_cstr(sb, ") })");
+    return 0;
+}
+
 # Rust's Rect::default(): new(0, 0, 0, 0).
 #must_use
 fn SlRect_default(): SlRect {
@@ -1464,6 +1899,251 @@ fn SlRect_from_json(p, n, out: *SlRect, detail_out = 0): Result {
     if (v == 0) { return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "rect: not a JSON document"); }
     return _sl_rect_from_value(v, out, detail_out);
 }
+
+# --- debug_data.cyr ---
+
+# debug_data.cyr — GENERATED by scripts/oracle (src/t_debug.rs). Do not edit: regenerate with
+#   cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml
+# The non-ASCII characters Rust's Debug for str escapes as \u{…} (Unicode 18.0.0, rustc 1.100.0),
+# as 914 inclusive code-point ranges, sorted, for core.cyr's binary search. Surrogates are never in a range.
+
+var _SL_DBGESC_N = 914;
+
+var _SL_DBGESC_LO: u32[914] = {
+    0x80, 0xAD, 0x300, 0x378, 0x380, 0x38B, 0x38D, 0x3A2,
+    0x483, 0x530, 0x557, 0x590, 0x5BF, 0x5C1, 0x5C4, 0x5C7,
+    0x5EB, 0x5F5, 0x610, 0x61C, 0x64B, 0x670, 0x6D6, 0x6DF,
+    0x6E7, 0x6EA, 0x70E, 0x711, 0x730, 0x7A6, 0x7B2, 0x7EB,
+    0x7FB, 0x816, 0x81B, 0x825, 0x829, 0x83F, 0x859, 0x85F,
+    0x86B, 0x890, 0x8CA, 0x93A, 0x93C, 0x941, 0x94D, 0x951,
+    0x962, 0x981, 0x984, 0x98D, 0x991, 0x9A9, 0x9B1, 0x9B3,
+    0x9BA, 0x9BE, 0x9C1, 0x9C9, 0x9CD, 0x9CF, 0x9DE, 0x9E2,
+    0x9FE, 0xA04, 0xA0B, 0xA11, 0xA29, 0xA31, 0xA34, 0xA37,
+    0xA3A, 0xA41, 0xA5D, 0xA5F, 0xA70, 0xA75, 0xA77, 0xA84,
+    0xA8E, 0xA92, 0xAA9, 0xAB1, 0xAB4, 0xABA, 0xAC1, 0xACA,
+    0xACD, 0xAD1, 0xAE2, 0xAF2, 0xAFA, 0xB04, 0xB0D, 0xB11,
+    0xB29, 0xB31, 0xB34, 0xB3A, 0xB3E, 0xB41, 0xB49, 0xB4D,
+    0xB5E, 0xB62, 0xB78, 0xB84, 0xB8B, 0xB91, 0xB96, 0xB9B,
+    0xB9D, 0xBA0, 0xBA5, 0xBAB, 0xBBA, 0xBC0, 0xBC3, 0xBC9,
+    0xBCD, 0xBD1, 0xBFB, 0xC04, 0xC0D, 0xC11, 0xC29, 0xC3A,
+    0xC3E, 0xC45, 0xC5B, 0xC5E, 0xC62, 0xC70, 0xC81, 0xC8D,
+    0xC91, 0xCA9, 0xCB4, 0xCBA, 0xCBF, 0xCC2, 0xCC5, 0xCDF,
+    0xCE2, 0xCF0, 0xCF4, 0xD0D, 0xD11, 0xD3B, 0xD3E, 0xD41,
+    0xD49, 0xD4D, 0xD50, 0xD57, 0xD62, 0xD80, 0xD84, 0xD97,
+    0xDB2, 0xDBC, 0xDBE, 0xDC7, 0xDD2, 0xDDF, 0xDF0, 0xDF5,
+    0xE31, 0xE34, 0xE47, 0xE5C, 0xE83, 0xE85, 0xE8B, 0xEA4,
+    0xEA6, 0xEB1, 0xEB4, 0xEBE, 0xEC5, 0xEC7, 0xEDA, 0xEE0,
+    0xF18, 0xF35, 0xF37, 0xF39, 0xF48, 0xF6D, 0xF80, 0xF86,
+    0xF8D, 0xFC6, 0xFCD, 0xFDB, 0x102D, 0x1032, 0x1039, 0x103D,
+    0x1058, 0x105E, 0x1071, 0x1082, 0x1085, 0x108D, 0x109D, 0x10C6,
+    0x10C8, 0x10CE, 0x115F, 0x1249, 0x124E, 0x1257, 0x1259, 0x125E,
+    0x1289, 0x128E, 0x12B1, 0x12B6, 0x12BF, 0x12C1, 0x12C6, 0x12D7,
+    0x1311, 0x1316, 0x135B, 0x137D, 0x139A, 0x13F6, 0x13FE, 0x1680,
+    0x169D, 0x16F9, 0x1712, 0x1732, 0x1737, 0x1752, 0x176D, 0x1771,
+    0x17B4, 0x17B7, 0x17C6, 0x17C9, 0x17DD, 0x17EA, 0x17FA, 0x180B,
+    0x181A, 0x1879, 0x1885, 0x18A9, 0x18AB, 0x18F6, 0x191F, 0x1927,
+    0x192C, 0x1932, 0x1939, 0x1941, 0x196E, 0x1975, 0x19AC, 0x19CA,
+    0x19DB, 0x1A17, 0x1A1B, 0x1A56, 0x1A58, 0x1A62, 0x1A65, 0x1A73,
+    0x1A8A, 0x1A9A, 0x1AAE, 0x1B34, 0x1B42, 0x1B4D, 0x1B6B, 0x1B80,
+    0x1BA2, 0x1BA8, 0x1BE6, 0x1BE8, 0x1BED, 0x1BEF, 0x1C2C, 0x1C36,
+    0x1C4A, 0x1C8B, 0x1CBB, 0x1CC8, 0x1CD4, 0x1CE2, 0x1CED, 0x1CF4,
+    0x1CF8, 0x1CFB, 0x1DC0, 0x1F16, 0x1F1E, 0x1F46, 0x1F4E, 0x1F58,
+    0x1F5A, 0x1F5C, 0x1F5E, 0x1F7E, 0x1FB5, 0x1FC5, 0x1FD4, 0x1FDC,
+    0x1FF0, 0x1FF5, 0x1FFF, 0x2028, 0x205F, 0x2072, 0x20C5, 0x218C,
+    0x242A, 0x244B, 0x2B74, 0x2CEF, 0x2CF4, 0x2D26, 0x2D28, 0x2D2E,
+    0x2D68, 0x2D71, 0x2D97, 0x2DA7, 0x2DAF, 0x2DB7, 0x2DBF, 0x2DC7,
+    0x2DCF, 0x2DD7, 0x2DDF, 0x2E5E, 0x2E64, 0x2E9A, 0x2EF4, 0x2FD6,
+    0x3000, 0x302A, 0x3040, 0x3097, 0x3100, 0x3130, 0x3164, 0x318F,
+    0x31E6, 0x321F, 0xA48D, 0xA4C7, 0xA62C, 0xA66F, 0xA674, 0xA69E,
+    0xA6F0, 0xA6F8, 0xA7DE, 0xA7E3, 0xA802, 0xA806, 0xA80B, 0xA825,
+    0xA82C, 0xA83A, 0xA878, 0xA8C4, 0xA8DA, 0xA8FF, 0xA926, 0xA947,
+    0xA953, 0xA97D, 0xA9B3, 0xA9B6, 0xA9BC, 0xA9C0, 0xA9CE, 0xA9DA,
+    0xA9E5, 0xA9FF, 0xAA29, 0xAA31, 0xAA35, 0xAA43, 0xAA4C, 0xAA4E,
+    0xAA5A, 0xAA7C, 0xAAB0, 0xAAB2, 0xAAB7, 0xAABE, 0xAAC1, 0xAAC3,
+    0xAAEC, 0xAAF6, 0xAB07, 0xAB0F, 0xAB17, 0xAB27, 0xAB2F, 0xAB6E,
+    0xABE5, 0xABE8, 0xABED, 0xABFA, 0xD7A4, 0xD7C7, 0xD7FC, 0xE000,
+    0xFA6E, 0xFADA, 0xFB07, 0xFB18, 0xFB1E, 0xFB37, 0xFB3D, 0xFB3F,
+    0xFB42, 0xFB45, 0xFDD0, 0xFE00, 0xFE1A, 0xFE53, 0xFE67, 0xFE6C,
+    0xFE75, 0xFEFD, 0xFFA0, 0xFFBF, 0xFFC8, 0xFFD0, 0xFFD8, 0xFFDD,
+    0xFFE7, 0xFFEF, 0xFFFE, 0x1000C, 0x10027, 0x1003B, 0x1003E, 0x1004E,
+    0x1005E, 0x100FB, 0x10103, 0x10134, 0x1018F, 0x1019D, 0x101A1, 0x101FD,
+    0x1029D, 0x102D1, 0x102FC, 0x10324, 0x1034B, 0x10376, 0x1039E, 0x103C4,
+    0x103D6, 0x1049E, 0x104AA, 0x104D4, 0x104FC, 0x10528, 0x10564, 0x1057B,
+    0x1058B, 0x10593, 0x10596, 0x105A2, 0x105B2, 0x105BA, 0x105BD, 0x105F4,
+    0x10737, 0x10756, 0x10768, 0x10786, 0x107B1, 0x107C0, 0x10806, 0x10809,
+    0x10836, 0x10839, 0x1083D, 0x10856, 0x1089F, 0x108B0, 0x108F3, 0x108F6,
+    0x1091C, 0x1093A, 0x1095A, 0x109B8, 0x109D0, 0x10A01, 0x10A14, 0x10A18,
+    0x10A36, 0x10A49, 0x10A59, 0x10AA0, 0x10AE5, 0x10AF7, 0x10B36, 0x10B56,
+    0x10B73, 0x10B92, 0x10B9D, 0x10BB0, 0x10C49, 0x10CB3, 0x10CF3, 0x10D24,
+    0x10D3A, 0x10D66, 0x10D86, 0x10D90, 0x10E7F, 0x10EAA, 0x10EAE, 0x10EB2,
+    0x10EC8, 0x10ECB, 0x10EEF, 0x10F28, 0x10F46, 0x10F5A, 0x10F82, 0x10F8A,
+    0x10FCC, 0x10FF7, 0x11001, 0x11038, 0x1104E, 0x11070, 0x11073, 0x11076,
+    0x110B3, 0x110B9, 0x110BD, 0x110C2, 0x110E9, 0x110FA, 0x11127, 0x1112D,
+    0x11148, 0x11173, 0x11177, 0x111B6, 0x111C0, 0x111C9, 0x111CF, 0x111E0,
+    0x111F5, 0x11212, 0x1122F, 0x11234, 0x1123E, 0x11241, 0x11287, 0x11289,
+    0x1128E, 0x1129E, 0x112AA, 0x112DF, 0x112E3, 0x112FA, 0x11304, 0x1130D,
+    0x11311, 0x11329, 0x11331, 0x11334, 0x1133A, 0x1133E, 0x11340, 0x11345,
+    0x11349, 0x1134D, 0x11351, 0x11364, 0x1138A, 0x1138C, 0x1138F, 0x113B6,
+    0x113B8, 0x113BB, 0x113CB, 0x113CE, 0x113D2, 0x113D6, 0x113D9, 0x11438,
+    0x11442, 0x11446, 0x1145C, 0x1145E, 0x11462, 0x114B0, 0x114B3, 0x114BA,
+    0x114BD, 0x114BF, 0x114C2, 0x114C8, 0x114DA, 0x115AF, 0x115B2, 0x115BC,
+    0x115BF, 0x115DC, 0x11633, 0x1163D, 0x1163F, 0x11645, 0x1165A, 0x1166D,
+    0x116AB, 0x116AD, 0x116B0, 0x116BA, 0x116CA, 0x116E4, 0x1171B, 0x1171F,
+    0x11722, 0x11727, 0x11747, 0x1182F, 0x11839, 0x1183C, 0x118F3, 0x11907,
+    0x1190A, 0x11914, 0x11917, 0x11930, 0x11936, 0x11939, 0x11943, 0x11947,
+    0x1195A, 0x119A8, 0x119D4, 0x119E0, 0x119E5, 0x11A01, 0x11A33, 0x11A3B,
+    0x11A47, 0x11A51, 0x11A59, 0x11A8A, 0x11A98, 0x11AA3, 0x11AF9, 0x11B0B,
+    0x11B62, 0x11B66, 0x11B68, 0x11BE2, 0x11BFA, 0x11C09, 0x11C30, 0x11C3F,
+    0x11C46, 0x11C6D, 0x11C90, 0x11CAA, 0x11CB2, 0x11CB5, 0x11D07, 0x11D0A,
+    0x11D31, 0x11D47, 0x11D5A, 0x11D66, 0x11D69, 0x11D8F, 0x11D95, 0x11D97,
+    0x11D99, 0x11DAA, 0x11DDC, 0x11DEA, 0x11DF2, 0x11EF3, 0x11EF9, 0x11F11,
+    0x11F36, 0x11F40, 0x11F5A, 0x11FB1, 0x11FF2, 0x1239A, 0x12544, 0x12687,
+    0x12FF3, 0x13430, 0x13447, 0x143FB, 0x14647, 0x1611E, 0x1612D, 0x1613A,
+    0x16A39, 0x16A5F, 0x16A6A, 0x16ABF, 0x16ACA, 0x16AEE, 0x16AF6, 0x16B30,
+    0x16B46, 0x16B5A, 0x16B62, 0x16B78, 0x16B90, 0x16D7A, 0x16E9B, 0x16EB9,
+    0x16ED4, 0x16F4B, 0x16F88, 0x16FA0, 0x16FE4, 0x16FF7, 0x18CDB, 0x18D21,
+    0x18DF3, 0x19192, 0x191D3, 0x1AFF4, 0x1AFFC, 0x1AFFF, 0x1B129, 0x1B133,
+    0x1B153, 0x1B156, 0x1B169, 0x1B2FC, 0x1BC6B, 0x1BC7D, 0x1BC89, 0x1BC9A,
+    0x1BC9D, 0x1BCA0, 0x1CCFD, 0x1CEB4, 0x1CED1, 0x1CED5, 0x1CEFE, 0x1CFC4,
+    0x1D0F6, 0x1D127, 0x1D165, 0x1D16D, 0x1D185, 0x1D1AA, 0x1D242, 0x1D246,
+    0x1D25B, 0x1D25F, 0x1D280, 0x1D2D4, 0x1D2F4, 0x1D357, 0x1D379, 0x1D455,
+    0x1D49D, 0x1D4A0, 0x1D4A3, 0x1D4A7, 0x1D4AD, 0x1D4BA, 0x1D4BC, 0x1D4C4,
+    0x1D506, 0x1D50B, 0x1D515, 0x1D51D, 0x1D53A, 0x1D53F, 0x1D545, 0x1D547,
+    0x1D551, 0x1D6A7, 0x1D7CC, 0x1DA00, 0x1DA3B, 0x1DA75, 0x1DA84, 0x1DA8C,
+    0x1DB1D, 0x1DF82, 0x1DF97, 0x1E000, 0x1E06E, 0x1E12D, 0x1E13E, 0x1E14A,
+    0x1E150, 0x1E2AE, 0x1E2EC, 0x1E2FA, 0x1E300, 0x1E4EC, 0x1E4FA, 0x1E5EE,
+    0x1E5FB, 0x1E600, 0x1E6DF, 0x1E6E3, 0x1E6E6, 0x1E6EE, 0x1E6F5, 0x1E700,
+    0x1E7E7, 0x1E7EC, 0x1E7EF, 0x1E7FF, 0x1E8C5, 0x1E8D0, 0x1E944, 0x1E94C,
+    0x1E95A, 0x1E960, 0x1ECB5, 0x1ED3E, 0x1EE04, 0x1EE20, 0x1EE23, 0x1EE25,
+    0x1EE28, 0x1EE33, 0x1EE38, 0x1EE3A, 0x1EE3C, 0x1EE43, 0x1EE48, 0x1EE4A,
+    0x1EE4C, 0x1EE50, 0x1EE53, 0x1EE55, 0x1EE58, 0x1EE5A, 0x1EE5C, 0x1EE5E,
+    0x1EE60, 0x1EE63, 0x1EE65, 0x1EE6B, 0x1EE73, 0x1EE78, 0x1EE7D, 0x1EE7F,
+    0x1EE8A, 0x1EE9C, 0x1EEA4, 0x1EEAA, 0x1EEBC, 0x1EEF2, 0x1F02C, 0x1F094,
+    0x1F0AF, 0x1F0C0, 0x1F0D0, 0x1F0F6, 0x1F1AF, 0x1F203, 0x1F23C, 0x1F249,
+    0x1F252, 0x1F266, 0x1F6DA, 0x1F6ED, 0x1F6FD, 0x1F7DC, 0x1F7EC, 0x1F80C,
+    0x1F848, 0x1F85A, 0x1F888, 0x1F8AE, 0x1F8BC, 0x1F8C2, 0x1F8D9, 0x1FA58,
+    0x1FA6E, 0x1FA7D, 0x1FAC7, 0x1FAC9, 0x1FADE, 0x1FAEC, 0x1FAFB, 0x1FB93,
+    0x1FBFB, 0x2A6E0, 0x2B81F, 0x2CEAE, 0x2EBE1, 0x2EE5E, 0x2FA1E, 0x3134B,
+    0x3347A, 0x3FC40,
+};
+
+var _SL_DBGESC_HI: u32[914] = {
+    0xA0, 0xAD, 0x36F, 0x379, 0x383, 0x38B, 0x38D, 0x3A2,
+    0x489, 0x530, 0x557, 0x5BD, 0x5BF, 0x5C2, 0x5C5, 0x5CF,
+    0x5EE, 0x605, 0x61A, 0x61C, 0x65F, 0x670, 0x6DD, 0x6E4,
+    0x6E8, 0x6ED, 0x70F, 0x711, 0x74C, 0x7B0, 0x7BF, 0x7F3,
+    0x7FD, 0x819, 0x823, 0x827, 0x82F, 0x83F, 0x85D, 0x85F,
+    0x86F, 0x89F, 0x902, 0x93A, 0x93C, 0x948, 0x94D, 0x957,
+    0x963, 0x981, 0x984, 0x98E, 0x992, 0x9A9, 0x9B1, 0x9B5,
+    0x9BC, 0x9BE, 0x9C6, 0x9CA, 0x9CD, 0x9DB, 0x9DE, 0x9E5,
+    0xA02, 0xA04, 0xA0E, 0xA12, 0xA29, 0xA31, 0xA34, 0xA37,
+    0xA3D, 0xA58, 0xA5D, 0xA65, 0xA71, 0xA75, 0xA82, 0xA84,
+    0xA8E, 0xA92, 0xAA9, 0xAB1, 0xAB4, 0xABC, 0xAC8, 0xACA,
+    0xACF, 0xADF, 0xAE5, 0xAF8, 0xB01, 0xB04, 0xB0E, 0xB12,
+    0xB29, 0xB31, 0xB34, 0xB3C, 0xB3F, 0xB46, 0xB4A, 0xB5B,
+    0xB5E, 0xB65, 0xB82, 0xB84, 0xB8D, 0xB91, 0xB98, 0xB9B,
+    0xB9D, 0xBA2, 0xBA7, 0xBAD, 0xBBE, 0xBC0, 0xBC5, 0xBC9,
+    0xBCF, 0xBE5, 0xC00, 0xC04, 0xC0D, 0xC11, 0xC29, 0xC3C,
+    0xC40, 0xC57, 0xC5B, 0xC5F, 0xC65, 0xC76, 0xC81, 0xC8D,
+    0xC91, 0xCA9, 0xCB4, 0xCBC, 0xCC0, 0xCC2, 0xCDB, 0xCDF,
+    0xCE5, 0xCF0, 0xD01, 0xD0D, 0xD11, 0xD3C, 0xD3E, 0xD45,
+    0xD49, 0xD4D, 0xD53, 0xD57, 0xD65, 0xD81, 0xD84, 0xD99,
+    0xDB2, 0xDBC, 0xDBF, 0xDCF, 0xDD7, 0xDE5, 0xDF1, 0xE00,
+    0xE31, 0xE3E, 0xE4E, 0xE80, 0xE83, 0xE85, 0xE8B, 0xEA4,
+    0xEA6, 0xEB1, 0xEBC, 0xEBF, 0xEC5, 0xECF, 0xEDB, 0xEFF,
+    0xF19, 0xF35, 0xF37, 0xF39, 0xF48, 0xF7E, 0xF84, 0xF87,
+    0xFBD, 0xFC6, 0xFCD, 0xFFF, 0x1030, 0x1037, 0x103A, 0x103E,
+    0x1059, 0x1060, 0x1074, 0x1082, 0x1086, 0x108D, 0x109D, 0x10C6,
+    0x10CC, 0x10CF, 0x1160, 0x1249, 0x124F, 0x1257, 0x1259, 0x125F,
+    0x1289, 0x128F, 0x12B1, 0x12B7, 0x12BF, 0x12C1, 0x12C7, 0x12D7,
+    0x1311, 0x1317, 0x135F, 0x137F, 0x139F, 0x13F7, 0x13FF, 0x1680,
+    0x169F, 0x16FF, 0x171E, 0x1734, 0x173F, 0x175F, 0x176D, 0x177F,
+    0x17B5, 0x17BD, 0x17C6, 0x17D3, 0x17DF, 0x17EF, 0x17FF, 0x180F,
+    0x181F, 0x187F, 0x1886, 0x18A9, 0x18AF, 0x18FF, 0x1922, 0x1928,
+    0x192F, 0x1932, 0x193F, 0x1943, 0x196F, 0x197F, 0x19AF, 0x19CF,
+    0x19DD, 0x1A18, 0x1A1D, 0x1A56, 0x1A60, 0x1A62, 0x1A6C, 0x1A7F,
+    0x1A8F, 0x1A9F, 0x1B03, 0x1B3D, 0x1B44, 0x1B4D, 0x1B73, 0x1B81,
+    0x1BA5, 0x1BAD, 0x1BE6, 0x1BE9, 0x1BED, 0x1BFB, 0x1C33, 0x1C3A,
+    0x1C4C, 0x1C8F, 0x1CBC, 0x1CD2, 0x1CE0, 0x1CE8, 0x1CED, 0x1CF4,
+    0x1CF9, 0x1CFF, 0x1DFF, 0x1F17, 0x1F1F, 0x1F47, 0x1F4F, 0x1F58,
+    0x1F5A, 0x1F5C, 0x1F5E, 0x1F7F, 0x1FB5, 0x1FC5, 0x1FD5, 0x1FDC,
+    0x1FF1, 0x1FF5, 0x200F, 0x202F, 0x206F, 0x2073, 0x20FF, 0x218F,
+    0x243F, 0x245F, 0x2B75, 0x2CF1, 0x2CF8, 0x2D26, 0x2D2C, 0x2D2F,
+    0x2D6E, 0x2D7F, 0x2D9F, 0x2DA7, 0x2DAF, 0x2DB7, 0x2DBF, 0x2DC7,
+    0x2DCF, 0x2DD7, 0x2DFF, 0x2E5F, 0x2E7F, 0x2E9A, 0x2EFF, 0x2FEF,
+    0x3000, 0x302F, 0x3040, 0x309A, 0x3104, 0x3130, 0x3164, 0x318F,
+    0x31EE, 0x321F, 0xA48F, 0xA4CF, 0xA63F, 0xA672, 0xA67D, 0xA69F,
+    0xA6F1, 0xA6FF, 0xA7E1, 0xA7F0, 0xA802, 0xA806, 0xA80B, 0xA826,
+    0xA82F, 0xA83F, 0xA87F, 0xA8CD, 0xA8F1, 0xA8FF, 0xA92D, 0xA951,
+    0xA95E, 0xA982, 0xA9B3, 0xA9B9, 0xA9BD, 0xA9C0, 0xA9CE, 0xA9DD,
+    0xA9E5, 0xA9FF, 0xAA2E, 0xAA32, 0xAA3F, 0xAA43, 0xAA4C, 0xAA4F,
+    0xAA5B, 0xAA7C, 0xAAB0, 0xAAB4, 0xAAB8, 0xAABF, 0xAAC1, 0xAADA,
+    0xAAED, 0xAB00, 0xAB08, 0xAB10, 0xAB1F, 0xAB27, 0xAB2F, 0xAB6F,
+    0xABE5, 0xABE8, 0xABEF, 0xABFF, 0xD7AF, 0xD7CA, 0xD7FF, 0xF8FF,
+    0xFA6F, 0xFAFF, 0xFB12, 0xFB1C, 0xFB1E, 0xFB37, 0xFB3D, 0xFB3F,
+    0xFB42, 0xFB45, 0xFDEF, 0xFE0F, 0xFE2F, 0xFE53, 0xFE67, 0xFE6F,
+    0xFE75, 0xFF00, 0xFFA0, 0xFFC1, 0xFFC9, 0xFFD1, 0xFFD9, 0xFFDF,
+    0xFFE7, 0xFFFB, 0xFFFF, 0x1000C, 0x10027, 0x1003B, 0x1003E, 0x1004F,
+    0x1007F, 0x100FF, 0x10106, 0x10136, 0x1018F, 0x1019F, 0x101CF, 0x1027F,
+    0x1029F, 0x102E0, 0x102FF, 0x1032C, 0x1034F, 0x1037F, 0x1039E, 0x103C7,
+    0x103FF, 0x1049F, 0x104AF, 0x104D7, 0x104FF, 0x1052F, 0x1056E, 0x1057B,
+    0x1058B, 0x10593, 0x10596, 0x105A2, 0x105B2, 0x105BA, 0x105BF, 0x105FF,
+    0x1073F, 0x1075F, 0x1077F, 0x10786, 0x107B1, 0x107FF, 0x10807, 0x10809,
+    0x10836, 0x1083B, 0x1083E, 0x10856, 0x108A6, 0x108DF, 0x108F3, 0x108FA,
+    0x1091E, 0x1093E, 0x1097F, 0x109BB, 0x109D1, 0x10A0F, 0x10A14, 0x10A18,
+    0x10A3F, 0x10A4F, 0x10A5F, 0x10ABF, 0x10AEA, 0x10AFF, 0x10B38, 0x10B57,
+    0x10B77, 0x10B98, 0x10BA8, 0x10BFF, 0x10C7F, 0x10CBF, 0x10CF9, 0x10D2F,
+    0x10D3F, 0x10D6D, 0x10D8D, 0x10E5F, 0x10E7F, 0x10EAC, 0x10EAF, 0x10EC1,
+    0x10EC8, 0x10ECF, 0x10EFF, 0x10F2F, 0x10F50, 0x10F6F, 0x10F85, 0x10FAF,
+    0x10FDF, 0x10FFF, 0x11001, 0x11046, 0x11051, 0x11070, 0x11074, 0x11081,
+    0x110B6, 0x110BA, 0x110BD, 0x110CF, 0x110EF, 0x11102, 0x1112B, 0x11135,
+    0x1114F, 0x11173, 0x11181, 0x111BE, 0x111C0, 0x111CC, 0x111CF, 0x111E0,
+    0x111FF, 0x11212, 0x11231, 0x11237, 0x1123E, 0x1127F, 0x11287, 0x11289,
+    0x1128E, 0x1129E, 0x112AF, 0x112DF, 0x112EF, 0x11301, 0x11304, 0x1130E,
+    0x11312, 0x11329, 0x11331, 0x11334, 0x1133C, 0x1133E, 0x11340, 0x11346,
+    0x1134A, 0x1134F, 0x1135C, 0x1137F, 0x1138A, 0x1138D, 0x1138F, 0x113B6,
+    0x113B8, 0x113C9, 0x113CB, 0x113D0, 0x113D2, 0x113D6, 0x113FF, 0x1143F,
+    0x11444, 0x11446, 0x1145C, 0x1145E, 0x1147F, 0x114B0, 0x114B8, 0x114BA,
+    0x114BD, 0x114C0, 0x114C3, 0x114CF, 0x1157F, 0x115AF, 0x115B7, 0x115BD,
+    0x115C0, 0x115FF, 0x1163A, 0x1163D, 0x11640, 0x1164F, 0x1165F, 0x1167F,
+    0x116AB, 0x116AD, 0x116B7, 0x116BF, 0x116CF, 0x116FF, 0x1171D, 0x1171F,
+    0x11725, 0x1172F, 0x117FF, 0x11837, 0x1183A, 0x1189F, 0x118FE, 0x11908,
+    0x1190B, 0x11914, 0x11917, 0x11930, 0x11936, 0x1193E, 0x11943, 0x1194F,
+    0x1199F, 0x119A9, 0x119DB, 0x119E0, 0x119FF, 0x11A0A, 0x11A38, 0x11A3E,
+    0x11A4F, 0x11A56, 0x11A5B, 0x11A96, 0x11A99, 0x11AAF, 0x11AFF, 0x11B60,
+    0x11B64, 0x11B66, 0x11BBF, 0x11BEF, 0x11BFF, 0x11C09, 0x11C3D, 0x11C3F,
+    0x11C4F, 0x11C6F, 0x11CA8, 0x11CB0, 0x11CB3, 0x11CFF, 0x11D07, 0x11D0A,
+    0x11D45, 0x11D4F, 0x11D5F, 0x11D66, 0x11D69, 0x11D92, 0x11D95, 0x11D97,
+    0x11D9F, 0x11DAF, 0x11DDF, 0x11DF0, 0x11EDF, 0x11EF4, 0x11F01, 0x11F11,
+    0x11F3D, 0x11F42, 0x11FAF, 0x11FBF, 0x11FFE, 0x123FF, 0x1254F, 0x12F8F,
+    0x12FFF, 0x13440, 0x1345F, 0x143FF, 0x160FF, 0x16129, 0x1612F, 0x167FF,
+    0x16A3F, 0x16A5F, 0x16A6D, 0x16ABF, 0x16ACF, 0x16AF4, 0x16AFF, 0x16B36,
+    0x16B4F, 0x16B5A, 0x16B62, 0x16B7C, 0x16D3F, 0x16E3F, 0x16E9F, 0x16EBA,
+    0x16EFF, 0x16F4F, 0x16F92, 0x16FDF, 0x16FF1, 0x16FFF, 0x18CFE, 0x18D7F,
+    0x18DFF, 0x1919F, 0x1AFEF, 0x1AFF4, 0x1AFFC, 0x1AFFF, 0x1B131, 0x1B14F,
+    0x1B154, 0x1B163, 0x1B16F, 0x1BBFF, 0x1BC6F, 0x1BC7F, 0x1BC8F, 0x1BC9B,
+    0x1BC9E, 0x1CBFF, 0x1CCFF, 0x1CEB9, 0x1CED1, 0x1CEDC, 0x1CF4F, 0x1CFFF,
+    0x1D0FF, 0x1D128, 0x1D169, 0x1D182, 0x1D18B, 0x1D1AD, 0x1D244, 0x1D252,
+    0x1D25C, 0x1D25F, 0x1D2BF, 0x1D2DF, 0x1D2FF, 0x1D35F, 0x1D3FF, 0x1D455,
+    0x1D49D, 0x1D4A1, 0x1D4A4, 0x1D4A8, 0x1D4AD, 0x1D4BA, 0x1D4BC, 0x1D4C4,
+    0x1D506, 0x1D50C, 0x1D515, 0x1D51D, 0x1D53A, 0x1D53F, 0x1D545, 0x1D549,
+    0x1D551, 0x1D6A7, 0x1D7CD, 0x1DA36, 0x1DA6C, 0x1DA75, 0x1DA84, 0x1DAFF,
+    0x1DEFF, 0x1DF8F, 0x1DFCC, 0x1E02F, 0x1E0FF, 0x1E136, 0x1E13F, 0x1E14D,
+    0x1E28F, 0x1E2BF, 0x1E2EF, 0x1E2FE, 0x1E4CF, 0x1E4EF, 0x1E5CF, 0x1E5EF,
+    0x1E5FE, 0x1E6BF, 0x1E6DF, 0x1E6E3, 0x1E6E6, 0x1E6EF, 0x1E6FD, 0x1E7DF,
+    0x1E7E7, 0x1E7EC, 0x1E7EF, 0x1E7FF, 0x1E8C6, 0x1E8FF, 0x1E94A, 0x1E94F,
+    0x1E95D, 0x1EC70, 0x1ED00, 0x1EDFF, 0x1EE04, 0x1EE20, 0x1EE23, 0x1EE26,
+    0x1EE28, 0x1EE33, 0x1EE38, 0x1EE3A, 0x1EE41, 0x1EE46, 0x1EE48, 0x1EE4A,
+    0x1EE4C, 0x1EE50, 0x1EE53, 0x1EE56, 0x1EE58, 0x1EE5A, 0x1EE5C, 0x1EE5E,
+    0x1EE60, 0x1EE63, 0x1EE66, 0x1EE6B, 0x1EE73, 0x1EE78, 0x1EE7D, 0x1EE7F,
+    0x1EE8A, 0x1EEA0, 0x1EEA4, 0x1EEAA, 0x1EEEF, 0x1EFFF, 0x1F02F, 0x1F09F,
+    0x1F0B0, 0x1F0C0, 0x1F0D0, 0x1F0FF, 0x1F1E5, 0x1F20F, 0x1F23F, 0x1F24F,
+    0x1F25F, 0x1F2FF, 0x1F6DB, 0x1F6EF, 0x1F6FF, 0x1F7DF, 0x1F7EF, 0x1F80F,
+    0x1F84F, 0x1F85F, 0x1F88F, 0x1F8AF, 0x1F8BF, 0x1F8CF, 0x1F8FF, 0x1FA5F,
+    0x1FA6F, 0x1FA7F, 0x1FAC7, 0x1FACB, 0x1FADE, 0x1FAEE, 0x1FAFF, 0x1FB93,
+    0x1FFFF, 0x2A6FF, 0x2B81F, 0x2CEAF, 0x2EBEF, 0x2F7FF, 0x2FFFF, 0x3134F,
+    0x3CFFF, 0x10FFFF,
+};
 
 # --- core.cyr ---
 
@@ -1553,26 +2233,79 @@ fn _sl_ascii_lower(a, n): i64 {
     return out;
 }
 
-# Appends Rust's Debug of a str (`"…"`): `\t \r \n \\ \" \0` escaped, other ASCII controls and DEL as `\u{x}`.
+# 1 when Rust's Debug for str writes the non-ASCII code point cp as `\u{…}` (not printable, or a grapheme extender),
+# from the generated table (src/debug_data.cyr).
+#must_use
+fn _sl_debug_escaped(cp): i64 {
+    var lo = 0;
+    var hi = _SL_DBGESC_N - 1;
+    while (lo <= hi) {
+        var mid = (lo + hi) / 2;
+        if (cp < _SL_DBGESC_LO[mid]) {
+            hi = mid - 1;
+        } elif (cp > _SL_DBGESC_HI[mid]) {
+            lo = mid + 1;
+        } else {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+# Appends `\u{x}`: the code point in lowercase hex without leading zeros.
+fn _sl_debug_u(sb, cp): i64 {
+    str_builder_add_cstr(sb, "\\u{");
+    var started = 0;
+    var sh = 20;
+    while (sh >= 0) {
+        var d = (cp >> sh) & 15;
+        if (d != 0 || started == 1 || sh == 0) {
+            str_builder_putc(sb, load8(_SL_HEX + d));
+            started = 1;
+        }
+        sh = sh - 4;
+    }
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+# Appends Rust's Debug of a str (`"…"`): `\t \r \n \\ \" \0` escaped, other C0 controls, DEL and every non-ASCII
+# character Rust does not print (src/debug_data.cyr) as `\u{x}`, the rest as it is. A byte that starts no valid
+# UTF-8 sequence (never in a Rust str) is written as it is.
 fn _sl_debug_str(sb, p, n): i64 {
     str_builder_putc(sb, 34);
     var i = 0;
     while (i < n) {
         var c = load8(p + i);
+        if (c >= 128) {
+            var l = _sl_utf8_seq(p, i, n);
+            if (l == 0) {
+                str_builder_putc(sb, c);
+                i = i + 1;
+            } else {
+                var cp = c & (127 >> l);
+                var k = 1;
+                while (k < l) {
+                    cp = (cp << 6) | (load8(p + i + k) & 63);
+                    k = k + 1;
+                }
+                if (_sl_debug_escaped(cp) == 1) {
+                    _sl_debug_u(sb, cp);
+                } else {
+                    _sl_sb_bytes(sb, p + i, l);
+                }
+                i = i + l;
+            }
+            continue;
+        }
         if (c == 9) { str_builder_add_cstr(sb, "\\t"); }
         elif (c == 13) { str_builder_add_cstr(sb, "\\r"); }
         elif (c == 10) { str_builder_add_cstr(sb, "\\n"); }
         elif (c == 92) { str_builder_add_cstr(sb, "\\\\"); }
         elif (c == 34) { str_builder_add_cstr(sb, "\\\""); }
         elif (c == 0) { str_builder_add_cstr(sb, "\\0"); }
-        elif (c < 32 || c == 127) {
-            str_builder_add_cstr(sb, "\\u{");
-            if (c >= 16) { str_builder_putc(sb, load8(_SL_HEX + (c >> 4))); }
-            str_builder_putc(sb, load8(_SL_HEX + (c & 15)));
-            str_builder_putc(sb, 125);
-        } else {
-            str_builder_putc(sb, c);
-        }
+        elif (c < 32 || c == 127) { _sl_debug_u(sb, c); }
+        else { str_builder_putc(sb, c); }
         i = i + 1;
     }
     str_builder_putc(sb, 34);
@@ -2251,6 +2984,133 @@ fn SlAnnotation_from_json(p, n, detail_out = 0): Result {
     var v = _sl_json_parse(p, n);
     if (v == 0) { return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "annotation: not a JSON document"); }
     return _sl_annotation_from_value(v, detail_out);
+}
+
+# ── CaptureRegion ─────────────────────────────────────────────────────────────────────
+
+enum SlCaptureRegionKind {
+    SL_REGION_FULL_SCREEN = 0;
+    SL_REGION_RECT = 1;
+    SL_REGION_WINDOW = 2;
+}
+
+# What to capture (Rust: CaptureRegion): the whole screen, a rect, or a window by id (a NUL-terminated string).
+struct SlCaptureRegion { kind: i64; rect: SlRect; window: i64; }
+
+# ── Monitor ───────────────────────────────────────────────────────────────────────────
+
+# A connected monitor (Rust: core::Monitor): its id ("HDMI-A-1") and name as Strs, its size, its offset in the
+# virtual layout (i32), and whether it is the primary one. One freelist block holds it and its strings.
+struct SlMonitor { id: i64; name: i64; width: i64; height: i64; x: i64; y: i64; primary: i64; }
+
+#must_use
+fn _sl_as_monitor(p): *SlMonitor {
+    return p;
+}
+
+# A new monitor; `id` and `name` are (pointer, length) pairs. 0 when out of memory.
+#must_use
+fn SlMonitor_new(id, idlen, name, namelen, width, height, x, y, primary): *SlMonitor {
+    var m: *SlMonitor = _sl_as_monitor(fl_alloc(sizeof(SlMonitor) + 32 + idlen + namelen + 2));
+    if (m == 0) { return 0; }
+    var h = _sl_addr(m) + sizeof(SlMonitor);
+    var d = h + 32;
+    if (idlen > 0) { memcpy(d, id, idlen); }
+    store8(d + idlen, 0);
+    store64(h, d);
+    store64(h + 8, idlen);
+    var d2 = d + idlen + 1;
+    if (namelen > 0) { memcpy(d2, name, namelen); }
+    store8(d2 + namelen, 0);
+    store64(h + 16, d2);
+    store64(h + 24, namelen);
+    m.id = h;
+    m.name = h + 16;
+    m.width = width;
+    m.height = height;
+    m.x = x;
+    m.y = y;
+    m.primary = primary;
+    return m;
+}
+
+# Frees a monitor (one block: the struct and its strings).
+fn SlMonitor_free(m: *SlMonitor): i64 {
+    if (m != 0) { fl_free(m); }
+    return 0;
+}
+
+# Appends serde's JSON for the monitor: {"id":…,"name":…,"width":…,"height":…,"x":…,"y":…,"primary":…}.
+fn SlMonitor_to_json(m: *SlMonitor, sb): i64 {
+    str_builder_add_cstr(sb, "{\"id\":");
+    _sl_json_str_s(sb, m.id);
+    str_builder_add_cstr(sb, ",\"name\":");
+    _sl_json_str_s(sb, m.name);
+    str_builder_add_cstr(sb, ",\"width\":");
+    str_builder_add_int(sb, m.width);
+    str_builder_add_cstr(sb, ",\"height\":");
+    str_builder_add_int(sb, m.height);
+    str_builder_add_cstr(sb, ",\"x\":");
+    str_builder_add_int(sb, m.x);
+    str_builder_add_cstr(sb, ",\"y\":");
+    str_builder_add_int(sb, m.y);
+    if (m.primary == 1) {
+        str_builder_add_cstr(sb, ",\"primary\":true}");
+    } else {
+        str_builder_add_cstr(sb, ",\"primary\":false}");
+    }
+    return 0;
+}
+
+# A JSON number as serde reads it into an i32 field: an integer in i32's range only (a float, even -0, is refused).
+# Writes it at out and returns 1, or returns 0.
+fn _sl_json_as_i32(v, out): i64 {
+    if (v == 0 || bayan_json_v_tag(v) != JTAG_INT) { return 0; }
+    var x = bayan_json_v_int(v);
+    if (x < -2147483648 || x > 2147483647) { return 0; }
+    store64(out, x);
+    return 1;
+}
+
+# A monitor from a bayan value, as serde's derive reads one (an object, or the array of its seven fields).
+# Ok(*SlMonitor) or Err(SL_ERR_SERDE).
+fn _sl_monitor_from_value(v, detail_out): Result {
+    if (v == 0 || (bayan_json_v_is_obj(v) == false && bayan_json_v_is_arr(v) == false)) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "monitor: invalid type: expected struct Monitor");
+    }
+    var id = _sl_json_as_str(_sl_json_field(v, "id", 7, 0));
+    var name = _sl_json_as_str(_sl_json_field(v, "name", 7, 1));
+    if (id == 0 || name == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "monitor: `id` and `name` must be strings");
+    }
+    var w = _sl_json_as_uint(_sl_json_field(v, "width", 7, 2), 4294967295);
+    var h = _sl_json_as_uint(_sl_json_field(v, "height", 7, 3), 4294967295);
+    var x = 0;
+    var y = 0;
+    var okx = _sl_json_as_i32(_sl_json_field(v, "x", 7, 4), &x);
+    var oky = _sl_json_as_i32(_sl_json_field(v, "y", 7, 5), &y);
+    if (w < 0 || h < 0 || okx == 0 || oky == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "monitor: `width`, `height` (u32), `x`, `y` (i32) required");
+    }
+    var pv = _sl_json_field(v, "primary", 7, 6);
+    if (pv == 0 || bayan_json_v_tag(pv) != JTAG_BOOL) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "monitor: `primary` must be a bool");
+    }
+    var prim = 0;
+    if (bayan_json_v_bool(pv) != 0) { prim = 1; }
+    var m = SlMonitor_new(str_data(id), str_len(id), str_data(name), str_len(name), w, h, x, y, prim);
+    if (m == 0) { return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "monitor: out of memory"); }
+    return Ok(m);
+}
+
+# A monitor from JSON p[0..n). Ok(*SlMonitor) or Err(SL_ERR_SERDE).
+fn SlMonitor_from_json(p, n, detail_out = 0): Result {
+    var a = _sl_scratch_new();
+    if (a == 0) { return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "monitor: out of memory"); }
+    var t, v = _sl_monitor_from_value(_sl_json_parse_a(a, p, n), detail_out);
+    _sl_scratch_free(a);
+    if (is_err_result(t) == 1) { return Err(v); }
+    return Ok(v);
 }
 
 # --- ai_data.cyr ---
@@ -4467,6 +5327,12 @@ fn _sl_errno_text(sb, err): i64 {
     var m = 0;
     if (e == 1) { m = "Operation not permitted"; }
     if (e == 2) { m = "No such file or directory"; }
+    if (e == 4) { m = "Interrupted system call"; }
+    if (e == 5) { m = "Input/output error"; }
+    if (e == 9) { m = "Bad file descriptor"; }
+    if (e == 10) { m = "No child processes"; }
+    if (e == 11) { m = "Resource temporarily unavailable"; }
+    if (e == 12) { m = "Cannot allocate memory"; }
     if (e == 13) { m = "Permission denied"; }
     if (e == 17) { m = "File exists"; }
     if (e == 20) { m = "Not a directory"; }
@@ -4474,7 +5340,9 @@ fn _sl_errno_text(sb, err): i64 {
     if (e == 27) { m = "File too large"; }
     if (e == 28) { m = "No space left on device"; }
     if (e == 30) { m = "Read-only file system"; }
+    if (e == 32) { m = "Broken pipe"; }
     if (e == 36) { m = "File name too long"; }
+    if (e == 38) { m = "Function not implemented"; }
     if (m != 0) {
         str_builder_add_cstr(sb, m);
         str_builder_add_cstr(sb, " ");
@@ -5728,4 +6596,2938 @@ fn selah_redact_image(src, n, targets, fmt, len_out, suggestions_out, detail_out
     if (is_err_result(t) == 1) { return Err(v); }
     store64(suggestions_out, kept);
     return Ok(v);
+}
+
+# --- history.cyr ---
+
+# history.cyr — the screenshot history, one JSON line per capture (Rust: rust-old/src/history.rs).
+#
+# Port plan M5. Each line is a HistoryEntry as serde_json writes it ({"id","path","timestamp","source","width",
+# "height","format"}), read back as serde reads it. A line that doesn't read is skipped, never fatal.
+#   - Writers (record, delete) hold an exclusive OS lock on `<history>.lock`: flock(LOCK_EX | LOCK_NB), retried every
+#     10 ms for at most 5 s (Rust: File::try_lock). The kernel drops it when the descriptor closes or the process
+#     dies, so a crash leaves no stale lock; the lock file itself stays, and only a live lock blocks.
+#   - Readers don't lock: a rewrite is an atomic rename and an append is one write, so a reader sees a consistent
+#     file, at worst with a torn last line, which it skips.
+#   - record terminates a torn last line before appending, so the new entry is not glued onto it and lost.
+#   - list keeps only the `limit` newest entries in memory, in a heap keyed on (timestamp, line number) (L4): newest
+#     first, equal timestamps in file order. Each line is parsed in a scratch allocator, reset per line.
+#   - delete rewrites the file atomically (fsutil) and keeps every line it cannot read, byte for byte.
+# Paths are NUL-terminated strings. The history file is 0600 and the default directory 0700.
+
+# How long a writer waits for the lock (Rust's LOCK_TIMEOUT, 5 s); a variable only so the tests can reach the
+# deadline branch quickly.
+var _sl_history_lock_timeout_ms = 5000;
+const _SL_HISTORY_LOCK_RETRY_MS = 10;
+const _SL_LINE_CHUNK = 65536;
+
+# O_CLOEXEC where the target has it (Rust's std opens every file close-on-exec); Windows has no exec to close on.
+#ifdef CYRIUS_TARGET_WIN
+var _SL_O_CLOEXEC = 0;
+#endif
+#ifndef CYRIUS_TARGET_WIN
+var _SL_O_CLOEXEC = O_CLOEXEC;
+#endif
+
+# A history entry: the id's 16 bytes (id_a, id_b), the timestamp as unix seconds and nanoseconds (chrono's: a leap
+# second is second 59 with 10^9 added), the dimensions, and three Strs. One freelist block holds the struct and its
+# strings; free it with SlHistoryEntry_free.
+struct SlHistoryEntry {
+    id_a: i64;
+    id_b: i64;
+    path: i64;
+    secs: i64;
+    nanos: i64;
+    source: i64;
+    width: i64;
+    height: i64;
+    format: i64;
+}
+
+# The store: the history file's path and its lock file's (`<path>.lock`), NUL-terminated, on the freelist.
+struct SlHistoryStore { path: i64; lock: i64; }
+
+#must_use
+fn _sl_as_history(p): *SlHistoryEntry {
+    return p;
+}
+
+#must_use
+fn _sl_as_store(p): *SlHistoryStore {
+    return p;
+}
+
+# Writes a Str header for p[0..n) at h, and copies the bytes to dst (NUL-terminated). Returns the byte after them.
+fn _sl_history_put(h, dst, p, n): i64 {
+    if (n > 0) { memcpy(dst, p, n); }
+    store8(dst + n, 0);
+    store64(h, dst);
+    store64(h + 8, n);
+    return dst + n + 1;
+}
+
+# A new entry: id16 is the id's 16 bytes; path, source and format are (pointer, length) pairs. 0 when out of memory.
+#must_use
+fn SlHistoryEntry_new(id16, path, plen, secs, nanos, source, slen, width, height, format, flen): *SlHistoryEntry {
+    var size = sizeof(SlHistoryEntry) + 48 + plen + slen + flen + 3;
+    var e: *SlHistoryEntry = _sl_as_history(fl_alloc(size));
+    if (e == 0) { return 0; }
+    memcpy(e, id16, 16);
+    var h = _sl_addr(e) + sizeof(SlHistoryEntry);
+    var d = h + 48;
+    d = _sl_history_put(h, d, path, plen);
+    d = _sl_history_put(h + 16, d, source, slen);
+    _sl_history_put(h + 32, d, format, flen);
+    e.path = h;
+    e.source = h + 16;
+    e.format = h + 32;
+    e.secs = secs;
+    e.nanos = nanos;
+    e.width = width;
+    e.height = height;
+    return e;
+}
+
+# Frees an entry (one block: the struct and its strings).
+fn SlHistoryEntry_free(e: *SlHistoryEntry): i64 {
+    if (e != 0) { fl_free(e); }
+    return 0;
+}
+
+# Appends serde's JSON for the entry, on one line: {"id":…,"path":…,"timestamp":…,"source":…,"width":…,…}.
+fn SlHistoryEntry_to_json(e: *SlHistoryEntry, sb): i64 {
+    str_builder_add_cstr(sb, "{\"id\":\"");
+    _sl_uuid_fmt(sb, e, 1);
+    str_builder_add_cstr(sb, "\",\"path\":");
+    _sl_json_str_s(sb, e.path);
+    str_builder_add_cstr(sb, ",\"timestamp\":\"");
+    _sl_rfc3339_fmt(sb, e.secs, e.nanos);
+    str_builder_add_cstr(sb, "\",\"source\":");
+    _sl_json_str_s(sb, e.source);
+    str_builder_add_cstr(sb, ",\"width\":");
+    str_builder_add_int(sb, e.width);
+    str_builder_add_cstr(sb, ",\"height\":");
+    str_builder_add_int(sb, e.height);
+    str_builder_add_cstr(sb, ",\"format\":");
+    _sl_json_str_s(sb, e.format);
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+# Err(SL_ERR_SERDE) with "history entry: <what>".
+fn _sl_history_bad(detail_out, what): Result {
+    if (detail_out == 0) { return Err(SL_ERR_SERDE); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "history entry: ");
+    str_builder_add_cstr(sb, what);
+    return _sl_fail(SL_ERR_SERDE, detail_out, str_builder_build(sb));
+}
+
+# A HistoryEntry from a bayan value, as serde's derive reads one: an object (unknown members ignored) or the array of
+# its seven fields; `id` a Uuid in any of its forms, `timestamp` RFC 3339 as chrono reads it, the dimensions u32.
+# Ok(*SlHistoryEntry) or Err(SL_ERR_SERDE).
+fn _sl_history_from_value(v, detail_out): Result {
+    if (v == 0) { return _sl_history_bad(detail_out, "not a JSON document"); }
+    if (bayan_json_v_is_obj(v) == false && bayan_json_v_is_arr(v) == false) {
+        return _sl_history_bad(detail_out, "invalid type: expected struct HistoryEntry");
+    }
+    var ids = _sl_json_as_str(_sl_json_field(v, "id", 7, 0));
+    var id: u8[16];
+    if (ids == 0 || _sl_uuid_parse(str_data(ids), str_len(ids), &id) == 0) {
+        return _sl_history_bad(detail_out, "`id` is missing or not a UUID");
+    }
+    var path = _sl_json_as_str(_sl_json_field(v, "path", 7, 1));
+    var ts = _sl_json_as_str(_sl_json_field(v, "timestamp", 7, 2));
+    var source = _sl_json_as_str(_sl_json_field(v, "source", 7, 3));
+    var format = _sl_json_as_str(_sl_json_field(v, "format", 7, 6));
+    if (path == 0 || ts == 0 || source == 0 || format == 0) {
+        return _sl_history_bad(detail_out, "`path`, `timestamp`, `source` and `format` must be strings");
+    }
+    var secs = 0;
+    var nanos = 0;
+    if (_sl_rfc3339_parse(str_data(ts), str_len(ts), &secs, &nanos) == 0) {
+        return _sl_history_bad(detail_out, "`timestamp` is not an RFC 3339 date-time");
+    }
+    var w = _sl_json_as_uint(_sl_json_field(v, "width", 7, 4), 4294967295);
+    var h = _sl_json_as_uint(_sl_json_field(v, "height", 7, 5), 4294967295);
+    if (w < 0 || h < 0) { return _sl_history_bad(detail_out, "`width` and `height` must be u32 integers"); }
+    var e = SlHistoryEntry_new(&id, str_data(path), str_len(path), secs, nanos, str_data(source), str_len(source),
+        w, h, str_data(format), str_len(format));
+    if (e == 0) { return _sl_history_bad(detail_out, "out of memory"); }
+    return Ok(e);
+}
+
+# A HistoryEntry from JSON p[0..n), as serde_json::from_slice reads one. Ok(*SlHistoryEntry) or Err(SL_ERR_SERDE).
+fn SlHistoryEntry_from_json(p, n, detail_out = 0): Result {
+    var a = _sl_scratch_new();
+    if (a == 0) { return _sl_history_bad(detail_out, "out of memory"); }
+    var t, v = _sl_history_from_value(_sl_json_parse_a(a, p, n), detail_out);
+    _sl_scratch_free(a);
+    if (is_err_result(t) == 1) { return Err(v); }
+    return Ok(v);
+}
+
+# Rust's private EntryId: only the `id` (an object's member, or the one element of an array). Stores the 16 bytes
+# at out and returns 1, or returns 0 when serde would refuse it.
+fn _sl_history_id_from_value(v, out): i64 {
+    if (v == 0) { return 0; }
+    var f = 0;
+    if (bayan_json_v_is_obj(v) == true) {
+        f = _sl_json_member(v, "id");
+    } elif (bayan_json_v_is_arr(v) == true) {
+        f = _sl_json_seq_elem(v, 1, 0);
+    }
+    var s = _sl_json_as_str(f);
+    if (s == 0) { return 0; }
+    return _sl_uuid_parse(str_data(s), str_len(s), out);
+}
+
+# ── the store ────────────────────────────────────────────────────────────────────────
+
+# A store for the history file at `path` (Rust: HistoryStore::open; nothing is touched until used). 0 when out of
+# memory.
+#must_use
+fn SlHistoryStore_open(path): *SlHistoryStore {
+    var s: *SlHistoryStore = _sl_as_store(fl_calloc(sizeof(SlHistoryStore)));
+    if (s == 0) { return 0; }
+    var n = strlen(path);
+    s.path = _sl_fl_dup(path, n);
+    s.lock = fl_alloc(n + 6);
+    if (s.path == 0 || s.lock == 0) {
+        SlHistoryStore_free(s);
+        return 0;
+    }
+    memcpy(s.lock, path, n);
+    memcpy(s.lock + n, ".lock", 6);
+    return s;
+}
+
+# Frees a store (the history file is untouched).
+fn SlHistoryStore_free(s: *SlHistoryStore): i64 {
+    if (s == 0) { return 0; }
+    if (s.path != 0) { fl_free(s.path); }
+    if (s.lock != 0) { fl_free(s.lock); }
+    fl_free(s);
+    return 0;
+}
+
+# The history file's path (NUL-terminated, owned by the store).
+#must_use
+fn SlHistoryStore_path(s: *SlHistoryStore): i64 {
+    return s.path;
+}
+
+# 1 when the NUL-terminated `p` is an absolute path (Unix: it starts with `/`; an empty one is not).
+#must_use
+fn _sl_path_absolute(p): i64 {
+    if (p == 0) { return 0; }
+    if (load8(p) == 47) { return 1; }
+    return 0;
+}
+
+# Appends `name` (NUL-terminated) to the path p[0..n) as PathBuf::push does for a relative name: a separator only
+# when the path does not already end with one. Returns the new path as a NUL-terminated Str.
+#must_use
+fn _sl_path_push(p, n, name): i64 {
+    var sb = str_builder_new();
+    _sl_sb_bytes(sb, p, n);
+    if (n > 0 && load8(p + n - 1) != 47) { str_builder_putc(sb, 47); }
+    str_builder_add_cstr(sb, name);
+    return str_builder_build(sb);
+}
+
+# Rust's default_data_dir: `$XDG_DATA_HOME/selah`, else `$HOME/.local/share/selah`, where an unset, empty or relative
+# value is ignored (the XDG rule). A NUL-terminated Str, or 0 when neither is usable.
+#must_use
+fn _sl_default_data_dir(xdg, home): i64 {
+    var base = 0;
+    if (_sl_path_absolute(xdg) == 1) {
+        base = str_from(xdg);
+    } elif (_sl_path_absolute(home) == 1) {
+        base = _sl_path_push(home, strlen(home), ".local/share");
+    } else {
+        return 0;
+    }
+    return _sl_path_push(str_data(base), str_len(base), "selah");
+}
+
+# A store at the default location: `$XDG_DATA_HOME/selah/history.jsonl` or `~/.local/share/selah/history.jsonl`, the
+# directory created 0700 (Rust: HistoryStore::open_default). Ok(*SlHistoryStore) or Err(SL_ERR_IO).
+fn SlHistoryStore_open_default(detail_out = 0): Result {
+    var dir = _sl_default_data_dir(getenv("XDG_DATA_HOME"), getenv("HOME"));
+    if (dir == 0) {
+        return _sl_fail_cstr(SL_ERR_IO, detail_out,
+            "cannot locate data directory: neither XDG_DATA_HOME nor HOME is an absolute path");
+    }
+    var t, v = _sl_create_private_dir_all(str_data(dir), detail_out);
+    if (is_err_result(t) == 1) { return Err(v); }
+    var file = _sl_path_push(str_data(dir), str_len(dir), "history.jsonl");
+    var s = SlHistoryStore_open(str_data(file));
+    if (s == 0) { return _sl_io_errno(detail_out, -12); }
+    return Ok(s);
+}
+
+# The lock file's path: the history path with `.lock` appended (a Str over the store's own copy).
+#must_use
+fn _sl_history_lock_path(s: *SlHistoryStore): i64 {
+    return str_from(s.lock);
+}
+
+# Takes the writers' lock (HistoryLock::acquire): the lock file opened (created 0600), then a non-blocking exclusive
+# flock retried every 10 ms until 5 s have passed. Ok(fd; closing it releases the lock) or Err(SL_ERR_IO).
+fn _sl_history_lock(s: *SlHistoryStore, detail_out): Result {
+    var fd = file_open(s.lock, O_WRONLY | O_CREAT | _SL_O_CLOEXEC, 384);
+    if (fd < 0) { return _sl_io_errno(detail_out, fd); }
+    var deadline = clock_now_ms() + _sl_history_lock_timeout_ms;
+    while (1 == 1) {
+        var r = xflock(fd, LOCK_EX | LOCK_NB);
+        if (r == 0) { return Ok(fd); }
+        if (r != -11) {
+            file_close(fd);
+            return _sl_io_errno(detail_out, r);
+        }
+        if (clock_now_ms() >= deadline) {
+            file_close(fd);
+            return _sl_fail_cstr(SL_ERR_IO, detail_out, "timed out waiting for history lock");
+        }
+        sleep_ms(_SL_HISTORY_LOCK_RETRY_MS);
+    }
+    return Err(SL_ERR_IO);
+}
+
+# Writes all of data[0..n) to fd. 0, or a negative errno.
+fn _sl_write_all(fd, data, n): i64 {
+    var off = 0;
+    while (off < n) {
+        var w = file_write(fd, data + off, n - off);
+        if (w < 0) { return w; }
+        if (w == 0) { return -5; }
+        off = off + w;
+    }
+    return 0;
+}
+
+# Records an entry: its line appended under the lock, after a newline when the file's last line is torn (Rust:
+# HistoryStore::record). Ok(0) or Err(SL_ERR_IO).
+fn SlHistoryStore_record(s: *SlHistoryStore, e: *SlHistoryEntry, detail_out = 0): Result {
+    var sb = str_builder_new();
+    SlHistoryEntry_to_json(e, sb);
+    str_builder_putc(sb, 10);
+    var line = str_builder_build(sb);
+    var lt, lfd = _sl_history_lock(s, detail_out);
+    if (is_err_result(lt) == 1) { return Err(lfd); }
+    var fd = file_open(s.path, O_RDWR | O_APPEND | O_CREAT | _SL_O_CLOEXEC, 384);
+    if (fd < 0) {
+        file_close(lfd);
+        return _sl_io_errno(detail_out, fd);
+    }
+    var err = 0;
+    var size = sys_lseek(fd, 0, 2);
+    if (size < 0) { err = size; }
+    if (err == 0 && size > 0) {
+        var last: u8[8];
+        var sr = sys_lseek(fd, -1, 2);
+        var rr = 0;
+        if (sr >= 0) { rr = file_read(fd, &last, 1); }
+        if (sr < 0) {
+            err = sr;
+        } elif (rr < 0) {
+            err = rr;
+        } elif (rr == 0) {
+            err = -5;
+        } elif (load8(&last) != 10) {
+            var nb = str_builder_new();
+            str_builder_putc(nb, 10);
+            str_builder_add(nb, line);
+            line = str_builder_build(nb);
+        }
+    }
+    # Append mode: the write lands at the end whatever the seek above left.
+    if (err == 0) { err = _sl_write_all(fd, str_data(line), str_len(line)); }
+    file_close(fd);
+    file_close(lfd);
+    if (err < 0) { return _sl_io_errno(detail_out, err); }
+    _sl_log_kv(SK_DEBUG, "recorded history entry", "path", str_data(e.path));
+    return Ok(0);
+}
+
+# ── reading lines ────────────────────────────────────────────────────────────────────
+
+# A line reader over a file: { fd, chunk, chunk length, position, line buffer, its length, its capacity, eof }.
+struct SlLines { fd: i64; buf: i64; len: i64; pos: i64; line: i64; llen: i64; lcap: i64; eof: i64; }
+
+#must_use
+fn _sl_as_lines(p): *SlLines {
+    return p;
+}
+
+# Opens the history file for reading. Ok(*SlLines), Ok(0) when the file does not exist yet, or Err(SL_ERR_IO).
+fn _sl_lines_open(path, detail_out): Result {
+    var fd = file_open(path, O_RDONLY | _SL_O_CLOEXEC, 0);
+    if (fd == -2) { return Ok(0); }
+    if (fd < 0) { return _sl_io_errno(detail_out, fd); }
+    var r: *SlLines = _sl_as_lines(fl_calloc(sizeof(SlLines)));
+    var buf = fl_alloc(_SL_LINE_CHUNK);
+    if (r == 0 || buf == 0) {
+        file_close(fd);
+        if (r != 0) { fl_free(r); }
+        return _sl_io_errno(detail_out, -12);
+    }
+    r.fd = fd;
+    r.buf = buf;
+    return Ok(r);
+}
+
+fn _sl_lines_close(r: *SlLines): i64 {
+    if (r == 0) { return 0; }
+    file_close(r.fd);
+    fl_free(r.buf);
+    if (r.line != 0) { fl_free(r.line); }
+    fl_free(r);
+    return 0;
+}
+
+# Appends p[0..n) to the reader's line buffer. 0, or -12 when out of memory.
+fn _sl_lines_keep(r: *SlLines, p, n): i64 {
+    if (r.llen + n > r.lcap) {
+        var cap = r.lcap * 2;
+        if (cap < 256) { cap = 256; }
+        while (cap < r.llen + n) { cap = cap * 2; }
+        var nb = fl_alloc(cap);
+        if (nb == 0) { return -12; }
+        if (r.line != 0) {
+            memcpy(nb, r.line, r.llen);
+            fl_free(r.line);
+        }
+        r.line = nb;
+        r.lcap = cap;
+    }
+    memcpy(r.line + r.llen, p, n);
+    r.llen = r.llen + n;
+    return 0;
+}
+
+# The next line, without its `\n` (Rust: read_until(b'\n')): stores where it is and its length (valid until the next
+# call) and returns 1; returns 0 at the end of the file, or a negative errno.
+fn _sl_lines_next(r: *SlLines, p_out, n_out): i64 {
+    r.llen = 0;
+    while (1 == 1) {
+        if (r.pos < r.len) {
+            var start = r.buf + r.pos;
+            var avail = r.len - r.pos;
+            var k = 0;
+            while (k < avail && load8(start + k) != 10) { k = k + 1; }
+            if (k < avail) {
+                r.pos = r.pos + k + 1;
+                if (r.llen == 0) {
+                    store64(p_out, start);
+                    store64(n_out, k);
+                    return 1;
+                }
+                if (_sl_lines_keep(r, start, k) < 0) { return -12; }
+                store64(p_out, r.line);
+                store64(n_out, r.llen);
+                return 1;
+            }
+            if (_sl_lines_keep(r, start, avail) < 0) { return -12; }
+            r.pos = r.len;
+        }
+        if (r.eof == 1) {
+            if (r.llen == 0) { return 0; }
+            store64(p_out, r.line);
+            store64(n_out, r.llen);
+            return 1;
+        }
+        var got = file_read(r.fd, r.buf, _SL_LINE_CHUNK);
+        if (got < 0) { return got; }
+        if (got == 0) {
+            r.eof = 1;
+        } else {
+            r.len = got;
+            r.pos = 0;
+        }
+    }
+    return 0;
+}
+
+# 1 for the bytes Rust's `u8::is_ascii_whitespace` (and so `trim_ascii`) strips: space, \t, \n, \x0C, \r.
+#must_use
+fn _sl_ascii_ws(c): i64 {
+    if (c == 32 || c == 9 || c == 10 || c == 12 || c == 13) { return 1; }
+    return 0;
+}
+
+# p[0..n) with ASCII whitespace trimmed from both ends: (start, length).
+fn _sl_trim_ascii(p, n): (i64, i64) {
+    var s = 0;
+    var e = n;
+    while (s < e && _sl_ascii_ws(load8(p + s)) == 1) { s = s + 1; }
+    while (e > s && _sl_ascii_ws(load8(p + e - 1)) == 1) { e = e - 1; }
+    return (p + s, e - s);
+}
+
+# ── list ─────────────────────────────────────────────────────────────────────────────
+
+# A bounded min-heap of entries keyed on (timestamp, line number), the "worst" at the root: the oldest timestamp,
+# and among equal timestamps the later line. Four i64 slots per item: secs, nanos, line number, entry.
+struct SlTopN { items: i64; n: i64; cap: i64; }
+
+#must_use
+fn _sl_as_topn(p): *SlTopN {
+    return p;
+}
+
+# 1 when item i ranks below item j (it is dropped first).
+#must_use
+fn _sl_topn_less(h: *SlTopN, i, j): i64 {
+    var a = h.items + i * 32;
+    var b = h.items + j * 32;
+    var xs = load64(a);
+    var ys = load64(b);
+    if (xs != ys) {
+        if (xs < ys) { return 1; }
+        return 0;
+    }
+    var xn = load64(a + 8);
+    var yn = load64(b + 8);
+    if (xn != yn) {
+        if (xn < yn) { return 1; }
+        return 0;
+    }
+    if (load64(a + 16) > load64(b + 16)) { return 1; }
+    return 0;
+}
+
+fn _sl_topn_swap(h: *SlTopN, i, j): i64 {
+    var a = h.items + i * 32;
+    var b = h.items + j * 32;
+    var k = 0;
+    while (k < 32) {
+        var t = load64(a + k);
+        store64(a + k, load64(b + k));
+        store64(b + k, t);
+        k = k + 8;
+    }
+    return 0;
+}
+
+fn _sl_topn_down(h: *SlTopN, i0): i64 {
+    var i = i0;
+    while (1 == 1) {
+        var l = i * 2 + 1;
+        if (l >= h.n) { return 0; }
+        var m = l;
+        if (l + 1 < h.n && _sl_topn_less(h, l + 1, l) == 1) { m = l + 1; }
+        if (_sl_topn_less(h, m, i) == 0) { return 0; }
+        _sl_topn_swap(h, i, m);
+        i = m;
+    }
+    return 0;
+}
+
+# Pushes an entry. 0, or -12 when out of memory (the entry is then freed).
+fn _sl_topn_push(h: *SlTopN, e: *SlHistoryEntry, seq): i64 {
+    if (h.n == h.cap) {
+        var cap = h.cap * 2;
+        if (cap < 16) { cap = 16; }
+        var nb = fl_alloc(cap * 32);
+        if (nb == 0) {
+            SlHistoryEntry_free(e);
+            return -12;
+        }
+        if (h.items != 0) {
+            memcpy(nb, h.items, h.n * 32);
+            fl_free(h.items);
+        }
+        h.items = nb;
+        h.cap = cap;
+    }
+    var it = h.items + h.n * 32;
+    store64(it, e.secs);
+    store64(it + 8, e.nanos);
+    store64(it + 16, seq);
+    store64(it + 24, e);
+    var i = h.n;
+    h.n = h.n + 1;
+    while (i > 0) {
+        var parent = (i - 1) / 2;
+        if (_sl_topn_less(h, i, parent) == 0) { break; }
+        _sl_topn_swap(h, i, parent);
+        i = parent;
+    }
+    return 0;
+}
+
+# Removes the lowest-ranked item and returns its entry.
+fn _sl_topn_pop(h: *SlTopN): i64 {
+    var e = load64(h.items + 24);
+    h.n = h.n - 1;
+    if (h.n > 0) {
+        _sl_topn_swap(h, 0, h.n);
+        _sl_topn_down(h, 0);
+    }
+    return e;
+}
+
+fn _sl_topn_free(h: *SlTopN): i64 {
+    while (h.n > 0) { SlHistoryEntry_free(_sl_topn_pop(h)); }
+    if (h.items != 0) { fl_free(h.items); }
+    return 0;
+}
+
+# The newest captures, newest first, at most `limit` of them (a negative limit is unbounded, as usize::MAX), only
+# those at or after `since` when it is non-zero (a pointer to two i64 slots: unix seconds, nanoseconds). Malformed
+# lines are skipped and counted in a warning (Rust: HistoryStore::list). Ok(vec of *SlHistoryEntry, each freed with
+# SlHistoryEntry_free) or Err(SL_ERR_IO).
+fn SlHistoryStore_list(s: *SlHistoryStore, limit, since = 0, detail_out = 0): Result {
+    var out = vec_new();
+    if (limit == 0) { return Ok(out); }
+    var ot, rd = _sl_lines_open(s.path, detail_out);
+    if (is_err_result(ot) == 1) { return Err(rd); }
+    if (rd == 0) { return Ok(out); }
+    var r: *SlLines = _sl_as_lines(rd);
+    var a = _sl_scratch_new();
+    var h: *SlTopN = _sl_as_topn(fl_calloc(sizeof(SlTopN)));
+    var seq = 0;
+    var skipped = 0;
+    var err = 0;
+    if (a == 0 || h == 0) { err = -12; }
+    while (err == 0) {
+        var lp = 0;
+        var ln = 0;
+        var got = _sl_lines_next(r, &lp, &ln);
+        if (got < 0) { err = got; }
+        if (got != 1) { break; }
+        var tp, tn = _sl_trim_ascii(lp, ln);
+        if (tn == 0) { continue; }
+        seq = seq + 1;
+        var t, e = _sl_history_from_value(_sl_json_parse_a(a, tp, tn), 0);
+        reset_via(a);
+        if (is_err_result(t) == 1) {
+            skipped = skipped + 1;
+            continue;
+        }
+        var en: *SlHistoryEntry = _sl_as_history(e);
+        if (since != 0) {
+            var ss = load64(since);
+            var sn = load64(since + 8);
+            if (en.secs < ss || (en.secs == ss && en.nanos < sn)) {
+                SlHistoryEntry_free(en);
+                continue;
+            }
+        }
+        if (_sl_topn_push(h, en, seq) < 0) {
+            err = -12;
+            break;
+        }
+        if (limit > 0 && h.n > limit) { SlHistoryEntry_free(_sl_topn_pop(h)); }
+    }
+    _sl_lines_close(r);
+    _sl_scratch_free(a);
+    if (err < 0) {
+        if (h != 0) {
+            _sl_topn_free(h);
+            fl_free(h);
+        }
+        return _sl_io_errno(detail_out, err);
+    }
+    if (skipped > 0) {
+        var sb = str_builder_new();
+        str_builder_add_int(sb, skipped);
+        _sl_log_kv(SK_WARN, "skipped malformed history lines", "skipped", str_data(str_builder_build(sb)));
+    }
+    # Popping yields the lowest rank first: fill from the back so the newest comes first.
+    var cnt = h.n;
+    var i = 0;
+    while (i < cnt) {
+        vec_push(out, 0);
+        i = i + 1;
+    }
+    var j = cnt - 1;
+    while (j >= 0) {
+        vec_set(out, j, _sl_topn_pop(h));
+        j = j - 1;
+    }
+    _sl_topn_free(h);
+    fl_free(h);
+    return Ok(out);
+}
+
+# Frees a vec of entries from SlHistoryStore_list.
+fn selah_history_entries_free(v): i64 {
+    if (v == 0) { return 0; }
+    var i = 0;
+    while (i < vec_len(v)) {
+        SlHistoryEntry_free(vec_get(v, i));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# ── get and delete ───────────────────────────────────────────────────────────────────
+
+# The entry with id `id16` (16 bytes): the first line whose id matches and which reads whole (Rust:
+# HistoryStore::get). Ok(*SlHistoryEntry), Ok(0) when there is none, or Err(SL_ERR_IO).
+fn SlHistoryStore_get(s: *SlHistoryStore, id16, detail_out = 0): Result {
+    var ot, rd = _sl_lines_open(s.path, detail_out);
+    if (is_err_result(ot) == 1) { return Err(rd); }
+    if (rd == 0) { return Ok(0); }
+    var r: *SlLines = _sl_as_lines(rd);
+    var a = _sl_scratch_new();
+    var found = 0;
+    var err = 0;
+    if (a == 0) { err = -12; }
+    while (err == 0 && found == 0) {
+        var lp = 0;
+        var ln = 0;
+        var got = _sl_lines_next(r, &lp, &ln);
+        if (got < 0) { err = got; }
+        if (got != 1) { break; }
+        var tp, tn = _sl_trim_ascii(lp, ln);
+        if (tn == 0) { continue; }
+        var v = _sl_json_parse_a(a, tp, tn);
+        var id: u8[16];
+        if (_sl_history_id_from_value(v, &id) == 1 && memeq(&id, id16, 16) == 1) {
+            var t, e = _sl_history_from_value(v, 0);
+            if (is_ok(t) == 1) { found = e; }
+        }
+        reset_via(a);
+    }
+    _sl_lines_close(r);
+    _sl_scratch_free(a);
+    if (err < 0) { return _sl_io_errno(detail_out, err); }
+    return Ok(found);
+}
+
+# Deletes the entry with id `id16`: under the lock, every line whose id matches is dropped and the rest (lines it
+# cannot read included, byte for byte, each with its `\n`) written back atomically; nothing is written when none
+# matched (Rust: HistoryStore::delete). Ok(1) when one was removed, Ok(0) when none, or Err(SL_ERR_IO).
+fn SlHistoryStore_delete(s: *SlHistoryStore, id16, detail_out = 0): Result {
+    var lt, lfd = _sl_history_lock(s, detail_out);
+    if (is_err_result(lt) == 1) { return Err(lfd); }
+    # Rust reads the file whole, and a file that is not there yet deletes nothing.
+    var probe = file_open(s.path, O_RDONLY | _SL_O_CLOEXEC, 0);
+    if (probe == -2) {
+        file_close(lfd);
+        return Ok(0);
+    }
+    if (probe >= 0) { file_close(probe); }
+    var size = 0;
+    var rt, content = _sl_read_limited(s.path, 9223372036854775806, &size, detail_out);
+    if (is_err_result(rt) == 1) {
+        file_close(lfd);
+        return Err(content);
+    }
+    var a = _sl_scratch_new();
+    if (a == 0) {
+        fl_free(content);
+        file_close(lfd);
+        return _sl_io_errno(detail_out, -12);
+    }
+    # What stays: every kept line with its `\n` (one more byte at most than the file).
+    var rest = fl_alloc(size + 2);
+    if (rest == 0) {
+        _sl_scratch_free(a);
+        fl_free(content);
+        file_close(lfd);
+        return _sl_io_errno(detail_out, -12);
+    }
+    var rn = 0;
+    var found = 0;
+    var start = 0;
+    while (start <= size) {
+        var end = start;
+        while (end < size && load8(content + end) != 10) { end = end + 1; }
+        var lp = content + start;
+        var ln = end - start;
+        var tp, tn = _sl_trim_ascii(lp, ln);
+        if (tn > 0) {
+            var id: u8[16];
+            var v = _sl_json_parse_a(a, lp, ln);
+            if (_sl_history_id_from_value(v, &id) == 1 && memeq(&id, id16, 16) == 1) {
+                found = 1;
+            } else {
+                memcpy(rest + rn, lp, ln);
+                store8(rest + rn + ln, 10);
+                rn = rn + ln + 1;
+            }
+            reset_via(a);
+        }
+        start = end + 1;
+    }
+    _sl_scratch_free(a);
+    fl_free(content);
+    if (found == 1) {
+        var wt, wv = _sl_write_atomic(s.path, rest, rn, detail_out);
+        if (is_err_result(wt) == 1) {
+            fl_free(rest);
+            file_close(lfd);
+            return Err(wv);
+        }
+        _sl_log_debug("deleted history entry");
+    }
+    fl_free(rest);
+    file_close(lfd);
+    return Ok(found);
+}
+
+# --- http.cyr ---
+
+# http.cyr — the HTTP layer over sandhi: requests with deadlines and capped bodies, status checks, endpoint URLs
+# (Rust: rust-old/src/http.rs and daimon.rs's endpoint_url).
+#
+# Port plan M5, D6 (blocking), D10 (memory), L10.
+#   - Every request runs in a scratch allocator (scratch.cyr): sandhi reserves the whole response cap up front, and
+#     on the bump heap that would stay with the process. The body is copied to the freelist and the rest freed.
+#   - Every request sets `read_ms` and `write_ms` beside `total_ms` (L10: `total_ms` alone does not bound a blocked
+#     read), and `connect_ms` (Rust's 10 s connect timeout, never past the total).
+#   - UPSTREAM(L22): sandhi's buffer covers the head as well as the body, so the cap is the body limit plus 64 KiB.
+#     A body over the limit is refused with Rust's "too large" text; a response past the buffer is sandhi's PROTOCOL
+#     error, which does not say whether it was malformed, cut short or too large (ADR 0002 #22).
+#   - A non-2xx status is SL_ERR_API with Rust's text: `<context> <code> <reason>: <body>`, the body's first 513
+#     bytes decoded lossily (U+FFFD for each maximal invalid subpart, as Rust's from_utf8_lossy), cut to 512 bytes on
+#     a character boundary, `…` when anything was cut.
+#   - Transport failures are SL_ERR_API too; their text names sandhi's error kind, not reqwest's (ADR 0002 #22).
+
+const _SL_MAX_ERROR_BODY = 512;
+const _SL_MAX_CAPTURE_RESPONSE_BYTES = 268435456;
+const _SL_MAX_API_RESPONSE_BYTES = 16777216;
+const _SL_CONNECT_TIMEOUT_MS = 10000;
+const _SL_HTTP_HEADROOM = 65536;
+
+# A response: the status code, and the body on the freelist (NUL-terminated; free it with fl_free) with its length.
+struct SlHttpResponse { status: i64; body: i64; len: i64; }
+
+#must_use
+fn _sl_as_resp(p): *SlHttpResponse {
+    return p;
+}
+
+# The length of the longest prefix of the UTF-8 text p[0..n) that is at most `max` bytes and ends on a character
+# boundary (Rust: `&s[..s.floor_char_boundary(max)]`).
+#must_use
+fn _sl_truncate(p, n, max): i64 {
+    if (n <= max) { return n; }
+    var i = max;
+    while (i > 0 && load8(p + i) >= 128 && load8(p + i) < 192) { i = i - 1; }
+    return i;
+}
+
+# The length of the maximal invalid subpart at p[i] (its first byte starts no valid sequence there): the bytes Rust's
+# from_utf8_lossy replaces with one U+FFFD. 1 to 3.
+#must_use
+fn _sl_utf8_bad_len(p, i, n): i64 {
+    var c = load8(p + i);
+    var w = 0;
+    if (c >= 194 && c <= 223) { w = 2; }
+    if (c >= 224 && c <= 239) { w = 3; }
+    if (c >= 240 && c <= 244) { w = 4; }
+    if (w == 0 || i + 1 >= n) { return 1; }
+    var b = load8(p + i + 1);
+    if (w == 2) { return 1; }
+    var lo = 128;
+    var hi = 191;
+    if (c == 224) { lo = 160; }
+    if (c == 237) { hi = 159; }
+    if (c == 240) { lo = 144; }
+    if (c == 244) { hi = 143; }
+    if (b < lo || b > hi) { return 1; }
+    if (i + 2 >= n) { return 2; }
+    var b2 = load8(p + i + 2);
+    if (b2 < 128 || b2 > 191) { return 2; }
+    return 3;
+}
+
+# Appends p[0..n) decoded as Rust's String::from_utf8_lossy does: valid UTF-8 as it is, each maximal invalid subpart
+# as U+FFFD.
+fn _sl_utf8_lossy(sb, p, n): i64 {
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        if (c < 128) {
+            str_builder_putc(sb, c);
+            i = i + 1;
+        } else {
+            var l = _sl_utf8_seq(p, i, n);
+            if (l > 0) {
+                _sl_sb_bytes(sb, p + i, l);
+                i = i + l;
+            } else {
+                str_builder_putc(sb, 239);
+                str_builder_putc(sb, 191);
+                str_builder_putc(sb, 189);
+                i = i + _sl_utf8_bad_len(p, i, n);
+            }
+        }
+    }
+    return 0;
+}
+
+# The canonical reason phrase for a status code (Rust's http 1.5 StatusCode::canonical_reason), or 0.
+#must_use
+fn _sl_status_reason(code): i64 {
+    match code {
+        100 => { return "Continue"; }
+        101 => { return "Switching Protocols"; }
+        102 => { return "Processing"; }
+        103 => { return "Early Hints"; }
+        200 => { return "OK"; }
+        201 => { return "Created"; }
+        202 => { return "Accepted"; }
+        203 => { return "Non Authoritative Information"; }
+        204 => { return "No Content"; }
+        205 => { return "Reset Content"; }
+        206 => { return "Partial Content"; }
+        207 => { return "Multi-Status"; }
+        208 => { return "Already Reported"; }
+        226 => { return "IM Used"; }
+        300 => { return "Multiple Choices"; }
+        301 => { return "Moved Permanently"; }
+        302 => { return "Found"; }
+        303 => { return "See Other"; }
+        304 => { return "Not Modified"; }
+        305 => { return "Use Proxy"; }
+        307 => { return "Temporary Redirect"; }
+        308 => { return "Permanent Redirect"; }
+        400 => { return "Bad Request"; }
+        401 => { return "Unauthorized"; }
+        402 => { return "Payment Required"; }
+        403 => { return "Forbidden"; }
+        404 => { return "Not Found"; }
+        405 => { return "Method Not Allowed"; }
+        406 => { return "Not Acceptable"; }
+        407 => { return "Proxy Authentication Required"; }
+        408 => { return "Request Timeout"; }
+        409 => { return "Conflict"; }
+        410 => { return "Gone"; }
+        411 => { return "Length Required"; }
+        412 => { return "Precondition Failed"; }
+        413 => { return "Payload Too Large"; }
+        414 => { return "URI Too Long"; }
+        415 => { return "Unsupported Media Type"; }
+        416 => { return "Range Not Satisfiable"; }
+        417 => { return "Expectation Failed"; }
+        418 => { return "I'm a teapot"; }
+        421 => { return "Misdirected Request"; }
+        422 => { return "Unprocessable Entity"; }
+        423 => { return "Locked"; }
+        424 => { return "Failed Dependency"; }
+        425 => { return "Too Early"; }
+        426 => { return "Upgrade Required"; }
+        428 => { return "Precondition Required"; }
+        429 => { return "Too Many Requests"; }
+        431 => { return "Request Header Fields Too Large"; }
+        451 => { return "Unavailable For Legal Reasons"; }
+        500 => { return "Internal Server Error"; }
+        501 => { return "Not Implemented"; }
+        502 => { return "Bad Gateway"; }
+        503 => { return "Service Unavailable"; }
+        504 => { return "Gateway Timeout"; }
+        505 => { return "HTTP Version Not Supported"; }
+        506 => { return "Variant Also Negotiates"; }
+        507 => { return "Insufficient Storage"; }
+        508 => { return "Loop Detected"; }
+        510 => { return "Not Extended"; }
+        511 => { return "Network Authentication Required"; }
+        _ => { return 0; }
+    }
+    return 0;
+}
+
+# The SL_ERR_API error for a non-2xx response (Rust: http::check_status): `<context> <code> <reason>: <body>[…]`.
+fn _sl_http_status_err(code, body, blen, context, detail_out): Result {
+    if (detail_out == 0) { return Err(SL_ERR_API); }
+    var take = blen;
+    if (take > _SL_MAX_ERROR_BODY + 1) { take = _SL_MAX_ERROR_BODY + 1; }
+    var tb = str_builder_new();
+    _sl_utf8_lossy(tb, body, take);
+    var text = str_builder_build(tb);
+    var shown = _sl_truncate(str_data(text), str_len(text), _SL_MAX_ERROR_BODY);
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, context);
+    str_builder_putc(sb, 32);
+    str_builder_add_int(sb, code);
+    str_builder_putc(sb, 32);
+    var reason = _sl_status_reason(code);
+    if (reason == 0) { reason = "<unknown status code>"; }
+    str_builder_add_cstr(sb, reason);
+    str_builder_add_cstr(sb, ": ");
+    _sl_sb_bytes(sb, str_data(text), shown);
+    if (shown < str_len(text)) { str_builder_add_cstr(sb, "…"); }
+    _sl_log_kv(SK_WARN, "API request failed", "context", context);
+    return _sl_fail(SL_ERR_API, detail_out, str_builder_build(sb));
+}
+
+# Ok(0) for a 2xx response, else the status error.
+fn _sl_http_check_status(r: *SlHttpResponse, context, detail_out = 0): Result {
+    if (r.status >= 200 && r.status < 300) { return Ok(0); }
+    return _sl_http_status_err(r.status, r.body, r.len, context, detail_out);
+}
+
+# Err(SL_ERR_API): "<prefix>: <what>".
+fn _sl_api_fail(detail_out, prefix, what): Result {
+    if (detail_out == 0) { return Err(SL_ERR_API); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, prefix);
+    str_builder_add_cstr(sb, ": ");
+    str_builder_add_cstr(sb, what);
+    return _sl_fail(SL_ERR_API, detail_out, str_builder_build(sb));
+}
+
+# Err(SL_ERR_API): "<context>: response too large (<len> bytes, limit <max>)" (Rust: http::read_json).
+fn _sl_http_too_large(detail_out, context, len, max): Result {
+    if (detail_out == 0) { return Err(SL_ERR_API); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, context);
+    str_builder_add_cstr(sb, ": response too large (");
+    str_builder_add_int(sb, len);
+    str_builder_add_cstr(sb, " bytes, limit ");
+    str_builder_add_int(sb, max);
+    str_builder_add_cstr(sb, ")");
+    return _sl_fail(SL_ERR_API, detail_out, str_builder_build(sb));
+}
+
+# Err(SL_ERR_API): "<context>: invalid response: <why>" (Rust: http::read_json's JSON refusal).
+fn _sl_http_invalid(detail_out, context, why): Result {
+    if (detail_out == 0) { return Err(SL_ERR_API); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, context);
+    str_builder_add_cstr(sb, ": invalid response: ");
+    str_builder_add_cstr(sb, why);
+    return _sl_fail(SL_ERR_API, detail_out, str_builder_build(sb));
+}
+
+# The response body parsed as JSON in allocator `a` (Rust: http::read_json's parse; _sl_http_call applied the size
+# limit). Ok(bayan value) or Err(SL_ERR_API): "<context>: invalid response: not a JSON document".
+fn _sl_http_json(a, r: *SlHttpResponse, context, detail_out = 0): Result {
+    var v = _sl_json_parse_a(a, r.body, r.len);
+    if (v == 0) { return _sl_http_invalid(detail_out, context, "not a JSON document"); }
+    return Ok(v);
+}
+
+# What a sandhi error kind means, for the message.
+#must_use
+fn _sl_sandhi_err_text(kind): i64 {
+    if (kind == SANDHI_ERR_PARSE) { return "the URL could not be parsed"; }
+    if (kind == SANDHI_ERR_CONNECT) { return "the connection failed"; }
+    if (kind == SANDHI_ERR_TLS) { return "the TLS handshake failed"; }
+    if (kind == SANDHI_ERR_TIMEOUT) { return "timed out"; }
+    if (kind == SANDHI_ERR_PROTOCOL) { return "the response was malformed, cut short, or larger than the limit"; }
+    if (kind == SANDHI_ERR_DISCOVERY) { return "the host name did not resolve"; }
+    if (kind == SANDHI_ERR_INTERNAL) { return "out of memory"; }
+    return "the request failed";
+}
+
+# One request (method "GET" or "POST"): `body` p[0..blen) is sent as JSON when blen > 0 (Content-Type
+# application/json); `api_key`, when non-zero, as `Authorization: Bearer <key>`. Every deadline is `timeout_ms`, the
+# connect at most 10 s. A body over `limit` is refused. On success the response is stored at `out` (its body freed
+# by the caller with fl_free) and the status is not yet checked. Failures are SL_ERR_API: "<sendctx>: <why>", or
+# Rust's too-large text under `context`.
+fn _sl_http_call(method, url, api_key, body, blen, timeout_ms, limit, sendctx, context, out: *SlHttpResponse,
+    detail_out = 0): Result {
+    out.status = 0;
+    out.body = 0;
+    out.len = 0;
+    var a = _sl_scratch_new();
+    if (a == 0) { return _sl_api_fail(detail_out, sendctx, "out of memory"); }
+    var h = sandhi_headers_new_a(a);
+    var ua = str_builder_new_a(a);
+    str_builder_add_cstr_a(a, ua, "selah/");
+    str_builder_add_cstr_a(a, ua, SL_VERSION);
+    var uas = str_builder_build_a(a, ua);
+    sandhi_headers_set_a(a, h, "User-Agent", str_data(uas));
+    if (blen > 0) { sandhi_headers_set_a(a, h, "Content-Type", "application/json"); }
+    sandhi_headers_set_a(a, h, "Accept", "*/*");
+    if (api_key != 0) {
+        var ab = str_builder_new_a(a);
+        str_builder_add_cstr_a(a, ab, "Bearer ");
+        str_builder_add_cstr_a(a, ab, api_key);
+        var auth = str_builder_build_a(a, ab);
+        sandhi_headers_set_a(a, h, "Authorization", str_data(auth));
+    }
+    var opts = sandhi_http_options_new_a(a);
+    sandhi_http_options_max_response_bytes(opts, limit + _SL_HTTP_HEADROOM);
+    var cms = _SL_CONNECT_TIMEOUT_MS;
+    if (timeout_ms < cms) { cms = timeout_ms; }
+    sandhi_http_options_connect_ms(opts, cms);
+    sandhi_http_options_read_ms(opts, timeout_ms);
+    sandhi_http_options_write_ms(opts, timeout_ms);
+    sandhi_http_options_total_ms(opts, timeout_ms);
+    var r = 0;
+    if (blen > 0 || streq(method, "POST") == 1) {
+        r = sandhi_http_post_opts_a(a, url, h, body, blen, opts);
+    } else {
+        r = sandhi_http_get_opts_a(a, url, h, opts);
+    }
+    var kind = sandhi_http_err_kind(r);
+    if (kind != SANDHI_OK) {
+        _sl_scratch_free(a);
+        return _sl_api_fail(detail_out, sendctx, _sl_sandhi_err_text(kind));
+    }
+    var n = sandhi_http_body_len(r);
+    if (n > limit) {
+        _sl_scratch_free(a);
+        return _sl_http_too_large(detail_out, context, n, limit);
+    }
+    var copy = _sl_fl_dup(sandhi_http_body(r), n);
+    out.status = sandhi_http_status(r);
+    _sl_scratch_free(a);
+    if (copy == 0) { return _sl_api_fail(detail_out, sendctx, "out of memory"); }
+    out.body = copy;
+    out.len = n;
+    return Ok(0);
+}
+
+# ── endpoint URLs ────────────────────────────────────────────────────────────────────
+
+# The length of the NUL-terminated `p` with every trailing `/` removed (Rust: trim_end_matches('/')).
+#must_use
+fn _sl_trim_slashes(p): i64 {
+    var n = strlen(p);
+    while (n > 0 && load8(p + n - 1) == 47) { n = n - 1; }
+    return n;
+}
+
+# 1 for the bytes the url crate percent-encodes in a path segment of an http(s) URL (SPECIAL_PATH_SEGMENT): C0
+# controls, space, `"`, `#`, `%`, `/`, `<`, `>`, `?`, `\`, `` ` ``, `{`, `}`, DEL and every byte of a non-ASCII
+# character.
+#must_use
+fn _sl_seg_encoded(c): i64 {
+    if (c < 33 || c > 126) { return 1; }
+    if (c == 34 || c == 35 || c == 37 || c == 47 || c == 60 || c == 62 || c == 63) { return 1; }
+    if (c == 92 || c == 96 || c == 123 || c == 125) { return 1; }
+    return 0;
+}
+
+# The index just past the scheme's `://` when the NUL-terminated `p` starts with http:// or https:// (the scheme in
+# any case), else 0.
+#must_use
+fn _sl_http_scheme_end(p, n): i64 {
+    var k = 0;
+    if (n >= 7) {
+        var lo = _sl_ascii_lower(p, 7);
+        if (memeq(lo, "http://", 7) == 1) { k = 7; }
+    }
+    if (k == 0 && n >= 8) {
+        var lo2 = _sl_ascii_lower(p, 8);
+        if (memeq(lo2, "https://", 8) == 1) { k = 8; }
+    }
+    return k;
+}
+
+# The URL `cur` (a Str, its path from `path_start`) with one segment appended as PathSegmentsMut::extend does:
+# ASCII tab, LF and CR are dropped and the rest percent-encoded (uppercase hex); a segment that is then `.` leaves an
+# empty segment, and `..` removes the last one (keeping its slash). Returns a new Str.
+#must_use
+fn _sl_url_push_seg(cur, path_start, seg): Str {
+    var raw = str_builder_new();
+    var n = strlen(seg);
+    var i = 0;
+    while (i < n) {
+        var c = load8(seg + i);
+        if (c != 9 && c != 10 && c != 13) { str_builder_putc(raw, c); }
+        i = i + 1;
+    }
+    var s = str_builder_build(raw);
+    var len = str_len(cur);
+    var d = str_data(cur);
+    var ob = str_builder_new();
+    if (str_len(s) == 2 && memeq(str_data(s), "..", 2) == 1) {
+        var keep = len;
+        while (keep > path_start + 1 && load8(d + keep - 1) != 47) { keep = keep - 1; }
+        _sl_sb_bytes(ob, d, keep);
+        return str_builder_build(ob);
+    }
+    _sl_sb_bytes(ob, d, len);
+    if (len > path_start + 1 || len == path_start) { str_builder_putc(ob, 47); }
+    if (str_len(s) == 1 && load8(str_data(s)) == 46) { return str_builder_build(ob); }
+    var j = 0;
+    while (j < str_len(s)) {
+        var b = load8(str_data(s) + j);
+        if (_sl_seg_encoded(b) == 1) {
+            str_builder_putc(ob, 37);
+            str_builder_putc(ob, load8("0123456789ABCDEF" + (b >> 4)));
+            str_builder_putc(ob, load8("0123456789ABCDEF" + (b & 15)));
+        } else {
+            str_builder_putc(ob, b);
+        }
+        j = j + 1;
+    }
+    return str_builder_build(ob);
+}
+
+# Rust's endpoint_url: `endpoint` with the path `segments` (a vec of NUL-terminated strings) appended, each
+# percent-encoded so a caller's value cannot change the path; `.` and `..` segments are skipped, an empty last
+# segment of the endpoint's path is dropped first, and any query stays after the path. The endpoint must be an
+# http(s) URL with a host; its text is otherwise kept as given (Rust re-serializes it; ADR 0002 #22).
+# Ok(NUL-terminated Str) or Err(SL_ERR_API).
+fn _sl_endpoint_url(endpoint, segments, detail_out = 0): Result {
+    var n = strlen(endpoint);
+    var se = _sl_http_scheme_end(endpoint, n);
+    var hs = se;
+    while (hs < n && load8(endpoint + hs) != 47 && load8(endpoint + hs) != 63 && load8(endpoint + hs) != 35) {
+        hs = hs + 1;
+    }
+    if (se == 0 || hs == se) {
+        if (detail_out == 0) { return Err(SL_ERR_API); }
+        var eb = str_builder_new();
+        str_builder_add_cstr(eb, "invalid endpoint ");
+        _sl_debug_str(eb, endpoint, n);
+        str_builder_add_cstr(eb, ": not an http(s) URL with a host");
+        return _sl_fail(SL_ERR_API, detail_out, str_builder_build(eb));
+    }
+    var pe = hs;
+    while (pe < n && load8(endpoint + pe) != 63 && load8(endpoint + pe) != 35) { pe = pe + 1; }
+    var sb = str_builder_new();
+    _sl_sb_bytes(sb, endpoint, hs);
+    var path_start = hs;
+    if (pe == hs) {
+        str_builder_putc(sb, 47);
+    } else {
+        var plen = pe - hs;
+        # pop_if_empty: a trailing `/` after the first one goes.
+        if (plen > 1 && load8(endpoint + pe - 1) == 47) { plen = plen - 1; }
+        _sl_sb_bytes(sb, endpoint + hs, plen);
+    }
+    var cur = str_builder_build(sb);
+    var k = 0;
+    while (k < vec_len(segments)) {
+        var seg = vec_get(segments, k);
+        var sl = strlen(seg);
+        var dot = 0;
+        if (sl == 1 && load8(seg) == 46) { dot = 1; }
+        if (sl == 2 && load8(seg) == 46 && load8(seg + 1) == 46) { dot = 1; }
+        if (dot == 0) { cur = _sl_url_push_seg(cur, path_start, seg); }
+        k = k + 1;
+    }
+    var fb = str_builder_new();
+    str_builder_add(fb, cur);
+    _sl_sb_bytes(fb, endpoint + pe, n - pe);
+    return Ok(str_builder_build(fb));
+}
+
+# --- spawn.cyr ---
+
+# spawn.cyr — run a tool with bytes on its stdin, its stderr kept (port plan D12; ledger L3).
+#
+# UPSTREAM(L3): lib/process.cyr has `run`, `spawn` and `exec_capture`, but none feeds the child's stdin, which the
+# clipboard tools (wl-copy, xclip) read the image from. Filed with cyrius; until it lands, this is selah's own.
+#
+# What Rust's copy_to_clipboard does with std::process::Command, and how it is done here:
+#   - The program is found on PATH as Command finds a bare name (the PATH of this process, else /bin:/usr/bin), and
+#     runs with this process's environment, stdin a pipe, stdout /dev/null, stderr a pipe. In the child the signal
+#     mask is emptied and SIGPIPE set back to its default before execve, as Command does.
+#   - Rust feeds stdin from a second thread so a tool that fills its stderr pipe cannot deadlock it, and awaits only
+#     the exit status: both tools fork a background process that keeps serving the selection and may hold the
+#     inherited pipes open. Here one poll loop writes stdin, drains stderr (keeping the first 64 KiB) and checks for
+#     the exit; stdin is closed when written, and stderr is read only until the tool has exited (never to EOF).
+#   - Writing to a tool that has gone raises SIGPIPE, which would end this process. SIGPIPE is blocked in this thread
+#     while writing, and one the writes raised is taken off the pending set (through a signalfd) before the mask is
+#     restored.
+#   - A tool that exits successfully before taking all of its input is a write failure (Rust's writer thread would
+#     wait on it for ever when a background process holds the pipe).
+# Linux only (x86_64 and aarch64); on Windows the spawn reports that it cannot run the tool.
+
+const _SL_STDERR_KEEP = 65536;
+
+# The spawn's outcome: `ran` 1 once the tool was started; its exit `code` (0..255) or `signal`, `core` 1 for a core
+# dump; `werr` the first stdin write error (a negative errno, or -1 for input left unread); the kept stderr on the
+# freelist (`err`, `errlen`).
+struct SlSpawn { ran: i64; code: i64; signal: i64; core: i64; werr: i64; err: i64; errlen: i64; }
+
+#must_use
+fn _sl_as_spawn(p): *SlSpawn {
+    return p;
+}
+
+# The full path of the executable `name` (NUL-terminated): `name` itself when it holds a `/`, else the first
+# `<dir>/<name>` on PATH that is a regular file with an execute bit. A NUL-terminated Str, or 0.
+#must_use
+fn _sl_which(name): i64 {
+    var n = strlen(name);
+    var i = 0;
+    while (i < n) {
+        if (load8(name + i) == 47) { return str_from(name); }
+        i = i + 1;
+    }
+    var path = getenv("PATH");
+    if (path == 0) { path = "/bin:/usr/bin"; }
+    var pn = strlen(path);
+    var s = 0;
+    while (s <= pn) {
+        var e = s;
+        while (e < pn && load8(path + e) != 58) { e = e + 1; }
+        var sb = str_builder_new();
+        if (e == s) {
+            str_builder_add_cstr(sb, ".");
+        } else {
+            _sl_sb_bytes(sb, path + s, e - s);
+        }
+        str_builder_putc(sb, 47);
+        str_builder_add_cstr(sb, name);
+        var full = str_builder_build(sb);
+        #ifndef CYRIUS_TARGET_WIN
+        var st[256];
+        var fp = str_data(full);
+        if (xstat(fp, &st) == 0) {
+            var mode = load32(&st + STAT_MODE);
+            if ((mode & 61440) == 32768 && (mode & 73) != 0) { return full; }
+        }
+        #endif
+        s = e + 1;
+    }
+    return 0;
+}
+
+# This process's environment as the NULL-terminated array execve takes (lib/io.cyr's env_block), or an empty one.
+#must_use
+fn _sl_envp(): i64 {
+    var lenb: i64[1];
+    var blob = env_block(&lenb);
+    var n = lenb[0];
+    var count = 0;
+    var i = 0;
+    while (blob != 0 && i < n) {
+        if (load8(blob + i) == 0) { count = count + 1; }
+        i = i + 1;
+    }
+    var envp = alloc((count + 1) * 8);
+    if (envp == 0) { return 0; }
+    var ei = 0;
+    var start = 0;
+    i = 0;
+    while (blob != 0 && i < n) {
+        if (load8(blob + i) == 0) {
+            store64(envp + ei * 8, blob + start);
+            ei = ei + 1;
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    store64(envp + ei * 8, 0);
+    return envp;
+}
+
+#ifndef CYRIUS_TARGET_WIN
+
+# The signal set holding only SIGPIPE (bit 12 of the 64-bit set).
+const _SL_SIGPIPE_SET = 4096;
+
+# Takes one pending SIGPIPE off the calling thread without waiting: a signalfd for SIGPIPE (the stdlib wrapper, so
+# the syscall is right on x86_64 and aarch64), read once without blocking, closed. Raw rt_sigtimedwait numbers would
+# be renumbered on aarch64.
+fn _sl_sigpipe_consume(): i64 {
+    var set: i64[1];
+    set[0] = _SL_SIGPIPE_SET;
+    var fd = sys_signalfd(-1, &set, 0);
+    if (fd < 0) { return fd; }
+    fd_set_nonblocking(fd);
+    var info: u8[128];
+    file_read(fd, &info, 128);
+    sys_close(fd);
+    return 0;
+}
+
+# Appends what the stderr pipe has now, without blocking: up to the keep limit, the rest read and dropped. Returns 1
+# at EOF, else 0.
+fn _sl_drain_stderr(fd, sp: *SlSpawn): i64 {
+    var tmp: u8[4096];
+    while (1 == 1) {
+        var r = file_read(fd, &tmp, 4096);
+        if (r == 0) { return 1; }
+        if (r < 0) { return 0; }
+        var keep = r;
+        if (sp.errlen + keep > _SL_STDERR_KEEP) { keep = _SL_STDERR_KEEP - sp.errlen; }
+        if (keep > 0) {
+            memcpy(sp.err + sp.errlen, &tmp, keep);
+            sp.errlen = sp.errlen + keep;
+        }
+    }
+    return 0;
+}
+
+# The child, between fork and execve: signals as Command leaves them, then stdin, stdout and stderr, then execve.
+fn _sl_spawn_child(path, argv, envp, in_r, in_w, err_r, err_w): i64 {
+    var empty: i64[1];
+    empty[0] = 0;
+    sys_sigprocmask(SIG_SETMASK, &empty, 0);
+    signal_default(SIGPIPE);
+    sys_close(in_w);
+    sys_close(err_r);
+    sys_dup2(in_r, 0);
+    if (in_r != 0) { sys_close(in_r); }
+    var devnull = sys_open("/dev/null", 1, 0);
+    if (devnull >= 0) {
+        sys_dup2(devnull, 1);
+        if (devnull != 1) { sys_close(devnull); }
+    }
+    sys_dup2(err_w, 2);
+    if (err_w != 2) { sys_close(err_w); }
+    sys_execve(path, argv, envp);
+    sys_exit(127);
+    return 0;
+}
+
+#endif
+
+# Runs the program at `path` (resolved; argv a NULL-terminated array of NUL-terminated strings) with data[0..n) on
+# its stdin, and fills `sp`. Ok(0) once the tool has been waited for; Err(negative errno) when it could not be started
+# or waited for.
+fn _sl_spawn_feed(path, argv, data, n, sp: *SlSpawn): (i64, i64) {
+    sp.ran = 0;
+    sp.code = 0;
+    sp.signal = 0;
+    sp.core = 0;
+    sp.werr = 0;
+    sp.errlen = 0;
+    sp.err = fl_alloc(_SL_STDERR_KEEP + 1);
+    if (sp.err == 0) { return (0, -12); }
+    #ifdef CYRIUS_TARGET_WIN
+    return (0, -38);
+    #endif
+    #ifndef CYRIUS_TARGET_WIN
+    var envp = _sl_envp();
+    if (envp == 0) { return (0, -12); }
+    var ip: u8[16];
+    var ep: u8[16];
+    var pr = sys_pipe(&ip);
+    if (pr < 0) { return (0, pr); }
+    var pr2 = sys_pipe(&ep);
+    if (pr2 < 0) {
+        sys_close(load32(&ip));
+        sys_close(load32(&ip + 4));
+        return (0, pr2);
+    }
+    var in_r = load32(&ip);
+    var in_w = load32(&ip + 4);
+    var err_r = load32(&ep);
+    var err_w = load32(&ep + 4);
+    var pid = sys_fork();
+    if (pid < 0) {
+        sys_close(in_r);
+        sys_close(in_w);
+        sys_close(err_r);
+        sys_close(err_w);
+        return (0, pid);
+    }
+    if (pid == 0) { _sl_spawn_child(path, argv, envp, in_r, in_w, err_r, err_w); }
+    sys_close(in_r);
+    sys_close(err_w);
+    sp.ran = 1;
+    fd_set_nonblocking(in_w);
+    fd_set_nonblocking(err_r);
+
+    # SIGPIPE blocked while writing. When the caller had blocked it already, a SIGPIPE pending now may be theirs, so
+    # none is taken off afterwards; otherwise none can have been pending, and one the writes raised is ours.
+    var block: i64[1];
+    block[0] = _SL_SIGPIPE_SET;
+    var old: i64[1];
+    old[0] = 0;
+    sys_sigprocmask(SIG_BLOCK, &block, &old);
+    var ours = 1;
+    if ((old[0] & _SL_SIGPIPE_SET) != 0) { ours = 0; }
+
+    var off = 0;
+    var wfd = in_w;
+    if (n == 0) {
+        sys_close(wfd);
+        wfd = -1;
+    }
+    var st: u8[8];
+    var exited = 0;
+    var werr = 0;
+    var epipe = 0;
+    while (exited == 0) {
+        var pfd: u8[16];
+        store32(&pfd, err_r);
+        store16(&pfd + 4, 1);
+        store16(&pfd + 6, 0);
+        var nfds = 1;
+        if (wfd >= 0) {
+            store32(&pfd + 8, wfd);
+            store16(&pfd + 12, 4);
+            store16(&pfd + 14, 0);
+            nfds = 2;
+        }
+        var ts: i64[2];
+        ts[0] = 0;
+        ts[1] = 50000000;
+        sys_ppoll(&pfd, nfds, &ts, 0, 8);
+        _sl_drain_stderr(err_r, sp);
+        if (wfd >= 0) {
+            var w = file_write(wfd, data + off, n - off);
+            if (w > 0) { off = off + w; }
+            if (w < 0 && w != -11) {
+                if (w == -32) { epipe = 1; }
+                if (werr == 0) { werr = w; }
+                sys_close(wfd);
+                wfd = -1;
+            }
+            if (wfd >= 0 && off >= n) {
+                sys_close(wfd);
+                wfd = -1;
+            }
+        }
+        var rp = sys_waitpid(pid, &st, 1);
+        if (rp == pid) { exited = 1; }
+        if (rp < 0 && rp != -4) {
+            if (wfd >= 0) { sys_close(wfd); }
+            sys_close(err_r);
+            sys_sigprocmask(SIG_SETMASK, &old, 0);
+            return (0, rp);
+        }
+    }
+    if (wfd >= 0) {
+        # The tool ended before taking all of its input.
+        sys_close(wfd);
+        if (werr == 0) { werr = -1; }
+    }
+    _sl_drain_stderr(err_r, sp);
+    sys_close(err_r);
+    if (epipe == 1 && ours == 1) { _sl_sigpipe_consume(); }
+    sys_sigprocmask(SIG_SETMASK, &old, 0);
+    store8(sp.err + sp.errlen, 0);
+    var status = load32(&st);
+    if (WIFEXITED(status) == 1) {
+        sp.code = WEXITSTATUS(status);
+    } else {
+        sp.signal = status & 127;
+        if ((status & 128) != 0) { sp.core = 1; }
+    }
+    sp.werr = werr;
+    return (1, 0);
+    #endif
+}
+
+# --- capture.cyr ---
+
+# capture.cyr — the screen capture client for daimon, the clipboard, and the session type (Rust:
+# rust-old/src/capture.rs).
+#
+# Port plan M5, D2, D6. CaptureClient keeps Rust's contract: `POST <base>/v1/screen/capture` with
+# {"region"?, "monitor"?, "format", "agent_id"} and `GET <base>/v1/screen/monitors`. daimon has no such routes yet
+# (ledger L9, filed), so the client is tested against the loopback mock server only. What changed, each in ADR 0002:
+#   - `agent_id` is a field, Rust's constant "selah" by default, set to the id daimon registered (D2);
+#   - a WebP capture is refused (ADR 0002 #1: the port has no WebP codec);
+#   - the client takes a timeout, not a caller's reqwest client (#9);
+#   - save_to_file writes atomically, 0600 (#18).
+# Regions are normalized, clipped to the non-negative quadrant and rounded outward to whole pixels, and a non-finite
+# or empty one is refused before any request is sent; so is a window target, which the daimon API has no selector
+# for (a full-screen fallback would expose every other window).
+
+const _SL_CAPTURE_TIMEOUT_MS = 30000;
+
+struct SlCaptureClient { base_url: i64; agent_id: i64; timeout_ms: i64; }
+
+# A capture's answer (Rust: CaptureResponse): the image as base64 (a Str), its size, and its format's name (a Str).
+# One freelist block; free it with SlCaptureResponse_free.
+struct SlCaptureResponse { image_data: i64; width: i64; height: i64; format: i64; }
+
+enum SlSessionType {
+    SL_SESSION_WAYLAND = 0;
+    SL_SESSION_X11 = 1;
+}
+
+#must_use
+fn _sl_as_capture(p): *SlCaptureClient {
+    return p;
+}
+
+#must_use
+fn _sl_as_capture_resp(p): *SlCaptureResponse {
+    return p;
+}
+
+#must_use
+fn _sl_as_region(p): *SlCaptureRegion {
+    return p;
+}
+
+# ── the client ───────────────────────────────────────────────────────────────────────
+
+# A client for daimon at `base_url` (every trailing `/` dropped), with Rust's 30 s timeout and agent id "selah".
+# 0 when out of memory.
+#must_use
+fn SlCaptureClient_new(base_url): *SlCaptureClient {
+    return SlCaptureClient_with_timeout(base_url, _SL_CAPTURE_TIMEOUT_MS);
+}
+
+# As SlCaptureClient_new, with a request timeout in milliseconds (Rust: with_client and a configured reqwest
+# client; ADR 0002 #9).
+#must_use
+fn SlCaptureClient_with_timeout(base_url, timeout_ms): *SlCaptureClient {
+    var c: *SlCaptureClient = _sl_as_capture(fl_alloc(sizeof(SlCaptureClient)));
+    if (c == 0) { return 0; }
+    c.base_url = _sl_fl_dup(base_url, _sl_trim_slashes(base_url));
+    c.agent_id = _sl_fl_dup("selah", 5);
+    c.timeout_ms = timeout_ms;
+    if (c.base_url == 0 || c.agent_id == 0) {
+        SlCaptureClient_free(c);
+        return 0;
+    }
+    return c;
+}
+
+# Frees a client.
+fn SlCaptureClient_free(c: *SlCaptureClient): i64 {
+    if (c == 0) { return 0; }
+    if (c.base_url != 0) { fl_free(c.base_url); }
+    if (c.agent_id != 0) { fl_free(c.agent_id); }
+    fl_free(c);
+    return 0;
+}
+
+# The base URL, without trailing slashes (NUL-terminated, owned by the client).
+#must_use
+fn SlCaptureClient_base_url(c: *SlCaptureClient): i64 {
+    return c.base_url;
+}
+
+# Sets the agent id sent with captures (D2: the id daimon's `POST /v1/agents` returned). Returns 1, or 0 when out of
+# memory (the old id is kept).
+fn SlCaptureClient_set_agent_id(c: *SlCaptureClient, agent_id): i64 {
+    var d = _sl_fl_dup(agent_id, strlen(agent_id));
+    if (d == 0) { return 0; }
+    fl_free(c.agent_id);
+    c.agent_id = d;
+    return 1;
+}
+
+# The agent id sent with captures (NUL-terminated, owned by the client).
+#must_use
+fn SlCaptureClient_agent_id(c: *SlCaptureClient): i64 {
+    return c.agent_id;
+}
+
+# Frees a capture answer (one block: the struct and its strings).
+fn SlCaptureResponse_free(r: *SlCaptureResponse): i64 {
+    if (r != 0) { fl_free(r); }
+    return 0;
+}
+
+# ── RegionSpec ───────────────────────────────────────────────────────────────────────
+
+# Rust's clamp_to_u32 (`val as u32`): saturating, NaN and negatives to 0.
+#must_use
+fn _sl_clamp_to_u32(x: f64): i64 {
+    return _sl_clamp_i64(_sl_sat_i64(x), 0, 4294967295);
+}
+
+# Rust's RegionSpec::from_rect: the rect normalized, clipped to the non-negative quadrant, its fractional edges
+# rounded outward. Writes x, y, width and height to out[0..4) and returns Ok(0), or Err(SL_ERR_INVALID_REGION) with
+# Rust's text for a non-finite rect or one that covers no on-screen pixel.
+fn _sl_region_spec(rect: SlRect, out, detail_out = 0): Result {
+    if (rect.is_finite() == false) {
+        if (detail_out == 0) { return Err(SL_ERR_INVALID_REGION); }
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "region coordinates must be finite (got ");
+        _sl_rect_debug(sb, rect);
+        str_builder_putc(sb, 41);
+        return _sl_fail(SL_ERR_INVALID_REGION, detail_out, str_builder_build(sb));
+    }
+    var r: SlRect = rect.normalized();
+    var a: f64 = f32_to(r.min_x);
+    var b: f64 = f32_to(r.min_y);
+    var c: f64 = f32_to(r.max_x);
+    var d: f64 = f32_to(r.max_y);
+    var fa: f64 = f64_floor(a);
+    var fb: f64 = f64_floor(b);
+    var cc: f64 = f64_ceil(c);
+    var cd: f64 = f64_ceil(d);
+    var x0 = _sl_clamp_to_u32(fa);
+    var y0 = _sl_clamp_to_u32(fb);
+    var x1 = _sl_clamp_to_u32(cc);
+    var y1 = _sl_clamp_to_u32(cd);
+    var w = x1 - x0;
+    var h = y1 - y0;
+    if (w < 0) { w = 0; }
+    if (h < 0) { h = 0; }
+    if (w == 0 || h == 0) {
+        if (detail_out == 0) { return Err(SL_ERR_INVALID_REGION); }
+        var wf: f32 = rect.max_x - rect.min_x;
+        var hf: f32 = rect.max_y - rect.min_y;
+        var eb = str_builder_new();
+        str_builder_add_cstr(eb, "region must cover at least 1x1 on-screen pixel (got ");
+        _sl_fmt_f32_display(eb, wf);
+        str_builder_putc(eb, 120);
+        _sl_fmt_f32_display(eb, hf);
+        str_builder_add_cstr(eb, " at ");
+        _sl_fmt_f32_display(eb, rect.min_x);
+        str_builder_putc(eb, 44);
+        _sl_fmt_f32_display(eb, rect.min_y);
+        str_builder_putc(eb, 41);
+        return _sl_fail(SL_ERR_INVALID_REGION, detail_out, str_builder_build(eb));
+    }
+    store64(out, x0);
+    store64(out + 8, y0);
+    store64(out + 16, w);
+    store64(out + 24, h);
+    return Ok(0);
+}
+
+# Appends the capture request body, as serde_json writes Rust's CaptureRequest: `region` (when `spec` is non-zero,
+# its four u32) and `monitor` (when non-zero) only when present, then `format` and `agent_id`.
+fn _sl_capture_body(sb, spec, monitor, format, agent_id): i64 {
+    str_builder_putc(sb, 123);
+    if (spec != 0) {
+        str_builder_add_cstr(sb, "\"region\":{\"x\":");
+        str_builder_add_int(sb, load64(spec));
+        str_builder_add_cstr(sb, ",\"y\":");
+        str_builder_add_int(sb, load64(spec + 8));
+        str_builder_add_cstr(sb, ",\"width\":");
+        str_builder_add_int(sb, load64(spec + 16));
+        str_builder_add_cstr(sb, ",\"height\":");
+        str_builder_add_int(sb, load64(spec + 24));
+        str_builder_add_cstr(sb, "},");
+    }
+    if (monitor != 0) {
+        str_builder_add_cstr(sb, "\"monitor\":");
+        _sl_json_str(sb, monitor, strlen(monitor));
+        str_builder_putc(sb, 44);
+    }
+    str_builder_add_cstr(sb, "\"format\":");
+    _sl_json_str(sb, format, strlen(format));
+    str_builder_add_cstr(sb, ",\"agent_id\":");
+    _sl_json_str(sb, agent_id, strlen(agent_id));
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+# A CaptureResponse from a bayan value, as serde's derive reads one. Ok(*SlCaptureResponse) or Err(SL_ERR_SERDE).
+fn _sl_capture_resp_from_value(v, detail_out): Result {
+    if (v == 0 || (bayan_json_v_is_obj(v) == false && bayan_json_v_is_arr(v) == false)) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "invalid type: expected struct CaptureResponse");
+    }
+    var data = _sl_json_as_str(_sl_json_field(v, "image_data", 4, 0));
+    var fmt = _sl_json_as_str(_sl_json_field(v, "format", 4, 3));
+    var w = _sl_json_as_uint(_sl_json_field(v, "width", 4, 1), 4294967295);
+    var h = _sl_json_as_uint(_sl_json_field(v, "height", 4, 2), 4294967295);
+    if (data == 0 || fmt == 0 || w < 0 || h < 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out,
+            "`image_data` and `format` must be strings, `width` and `height` u32 integers");
+    }
+    var dl = str_len(data);
+    var fl = str_len(fmt);
+    var r: *SlCaptureResponse = _sl_as_capture_resp(fl_alloc(sizeof(SlCaptureResponse) + 32 + dl + fl + 2));
+    if (r == 0) { return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "out of memory"); }
+    var hd = _sl_addr(r) + sizeof(SlCaptureResponse);
+    var p = hd + 32;
+    memcpy(p, str_data(data), dl);
+    store8(p + dl, 0);
+    store64(hd, p);
+    store64(hd + 8, dl);
+    var q = p + dl + 1;
+    memcpy(q, str_data(fmt), fl);
+    store8(q + fl, 0);
+    store64(hd + 16, q);
+    store64(hd + 24, fl);
+    r.image_data = hd;
+    r.format = hd + 16;
+    r.width = w;
+    r.height = h;
+    return Ok(r);
+}
+
+# A capture answer's body read as Rust's read_json::<CaptureResponse> reads it. Ok(*SlCaptureResponse) or
+# Err(SL_ERR_API): "daimon capture: invalid response: <why>".
+fn _sl_capture_from_body(p, n, detail_out = 0): Result {
+    var a = _sl_scratch_new();
+    var d = 0;
+    var ct, cv = _sl_capture_resp_from_value(_sl_json_parse_a(a, p, n), &d);
+    _sl_scratch_free(a);
+    if (is_err_result(ct) == 1) {
+        var why = "not a JSON document";
+        if (d != 0) { why = str_data(d); }
+        return _sl_http_invalid(detail_out, "daimon capture", why);
+    }
+    return Ok(cv);
+}
+
+# POSTs a capture request and reads the answer (Rust: post_capture). Ok(*SlCaptureResponse) or Err(SL_ERR_API).
+fn _sl_post_capture(c: *SlCaptureClient, spec, monitor, format, detail_out): Result {
+    var ub = str_builder_new();
+    str_builder_add_cstr(ub, c.base_url);
+    str_builder_add_cstr(ub, "/v1/screen/capture");
+    var url = str_data(str_builder_build(ub));
+    var bb = str_builder_new();
+    _sl_capture_body(bb, spec, monitor, format, c.agent_id);
+    var body = str_builder_build(bb);
+    _sl_log_kv(SK_DEBUG, "requesting screen capture", "format", format);
+    var resp: SlHttpResponse = SlHttpResponse { 0, 0, 0 };
+    var rp: *SlHttpResponse = _sl_as_resp(&resp);
+    var t, v = _sl_http_call("POST", url, 0, str_data(body), str_len(body), c.timeout_ms,
+        _SL_MAX_CAPTURE_RESPONSE_BYTES, "daimon capture request failed", "daimon capture", rp, detail_out);
+    if (is_err_result(t) == 1) { return Err(v); }
+    var st, sv = _sl_http_check_status(rp, "daimon capture", detail_out);
+    if (is_err_result(st) == 1) {
+        fl_free(rp.body);
+        return Err(sv);
+    }
+    var ct, cv = _sl_capture_from_body(rp.body, rp.len, detail_out);
+    fl_free(rp.body);
+    if (is_err_result(ct) == 1) { return Err(cv); }
+    var r: *SlCaptureResponse = _sl_as_capture_resp(cv);
+    var sb = str_builder_new();
+    str_builder_add_int(sb, r.width);
+    str_builder_putc(sb, 120);
+    str_builder_add_int(sb, r.height);
+    _sl_log_kv(SK_INFO, "captured screenshot", "size", str_data(str_builder_build(sb)));
+    return Ok(r);
+}
+
+# Err(SL_ERR_UNSUPPORTED_FORMAT) for WebP (ADR 0002 #1), else Ok(the format's extension).
+fn _sl_capture_format(format, detail_out): Result {
+    if (format == SL_FMT_WEBP) {
+        return _sl_fail_cstr(SL_ERR_UNSUPPORTED_FORMAT, detail_out,
+            "WebP is not supported by the Cyrius port (encode and decode)");
+    }
+    return Ok(selah_image_format_extension(format));
+}
+
+# Captures `region` (*SlCaptureRegion) in `format` (Rust: CaptureClient::capture). Ok(*SlCaptureResponse), or
+# Err(SL_ERR_INVALID_REGION) for a window, a non-finite or an empty region (nothing is sent), Err(SL_ERR_API), or
+# Err(SL_ERR_UNSUPPORTED_FORMAT) for WebP.
+fn SlCaptureClient_capture(c: *SlCaptureClient, region: *SlCaptureRegion, format, detail_out = 0): Result {
+    var spec: i64[4];
+    var sp = 0;
+    if (region.kind == SL_REGION_RECT) {
+        var rt, rv = _sl_region_spec(region.rect, &spec, detail_out);
+        if (is_err_result(rt) == 1) { return Err(rv); }
+        sp = &spec;
+    } elif (region.kind != SL_REGION_FULL_SCREEN) {
+        if (detail_out == 0) { return Err(SL_ERR_INVALID_REGION); }
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "window capture (");
+        if (region.window != 0) { str_builder_add_cstr(sb, region.window); }
+        str_builder_add_cstr(sb, ") is not supported by the daimon capture API; ");
+        str_builder_add_cstr(sb, "capture the full screen or a region instead");
+        return _sl_fail(SL_ERR_INVALID_REGION, detail_out, str_builder_build(sb));
+    }
+    var ft, fv = _sl_capture_format(format, detail_out);
+    if (is_err_result(ft) == 1) { return Err(fv); }
+    return _sl_post_capture(c, sp, 0, fv, detail_out);
+}
+
+# Captures the full screen as PNG (Rust: capture_full).
+fn SlCaptureClient_capture_full(c: *SlCaptureClient, detail_out = 0): Result {
+    var rb: i64[4];
+    var r: *SlCaptureRegion = _sl_as_region(&rb);
+    r.kind = SL_REGION_FULL_SCREEN;
+    r.rect = SlRect_default();
+    r.window = 0;
+    return SlCaptureClient_capture(c, r, SL_FMT_PNG, detail_out);
+}
+
+# Captures `rect` as PNG (Rust: capture_region).
+fn SlCaptureClient_capture_region(c: *SlCaptureClient, rect: SlRect, detail_out = 0): Result {
+    var rb: i64[4];
+    var r: *SlCaptureRegion = _sl_as_region(&rb);
+    r.kind = SL_REGION_RECT;
+    r.rect = rect;
+    r.window = 0;
+    return SlCaptureClient_capture(c, r, SL_FMT_PNG, detail_out);
+}
+
+# 1 when the UTF-8 text p[0..n) is only Unicode whitespace (Rust: `s.trim().is_empty()`).
+#must_use
+fn _sl_blank(p, n): i64 {
+    var i = 0;
+    while (i < n) {
+        var l = _sl_ws_len(p, i, n);
+        if (l == 0) { return 0; }
+        i = i + l;
+    }
+    return 1;
+}
+
+# Captures the monitor `monitor_id` (NUL-terminated) in `format` (Rust: capture_monitor). A blank id is
+# Err(SL_ERR_INVALID_REGION) and nothing is sent.
+fn SlCaptureClient_capture_monitor(c: *SlCaptureClient, monitor_id, format, detail_out = 0): Result {
+    if (_sl_blank(monitor_id, strlen(monitor_id)) == 1) {
+        return _sl_fail_cstr(SL_ERR_INVALID_REGION, detail_out, "monitor id must not be empty");
+    }
+    var ft, fv = _sl_capture_format(format, detail_out);
+    if (is_err_result(ft) == 1) { return Err(fv); }
+    return _sl_post_capture(c, 0, monitor_id, fv, detail_out);
+}
+
+# The monitors daimon reports (Rust: list_monitors). Ok(vec of *SlMonitor, each freed with SlMonitor_free) or
+# Err(SL_ERR_API).
+fn SlCaptureClient_list_monitors(c: *SlCaptureClient, detail_out = 0): Result {
+    var ub = str_builder_new();
+    str_builder_add_cstr(ub, c.base_url);
+    str_builder_add_cstr(ub, "/v1/screen/monitors");
+    var url = str_data(str_builder_build(ub));
+    var resp: SlHttpResponse = SlHttpResponse { 0, 0, 0 };
+    var rp: *SlHttpResponse = _sl_as_resp(&resp);
+    var t, v = _sl_http_call("GET", url, 0, 0, 0, c.timeout_ms, _SL_MAX_API_RESPONSE_BYTES,
+        "daimon monitors request failed", "daimon monitors", rp, detail_out);
+    if (is_err_result(t) == 1) { return Err(v); }
+    var st, sv = _sl_http_check_status(rp, "daimon monitors", detail_out);
+    if (is_err_result(st) == 1) {
+        fl_free(rp.body);
+        return Err(sv);
+    }
+    var mt, mv = _sl_monitors_from_body(rp.body, rp.len, detail_out);
+    fl_free(rp.body);
+    if (is_err_result(mt) == 1) { return Err(mv); }
+    return Ok(mv);
+}
+
+# A monitor list's body read as Rust's read_json::<Vec<Monitor>> reads it. Ok(vec of *SlMonitor) or Err(SL_ERR_API):
+# "daimon monitors: invalid response: <why>".
+fn _sl_monitors_from_body(p, n, detail_out = 0): Result {
+    var a = _sl_scratch_new();
+    var arr = _sl_json_parse_a(a, p, n);
+    var out = vec_new();
+    var why = 0;
+    if (arr == 0) {
+        why = "not a JSON document";
+    } elif (bayan_json_v_is_arr(arr) == false) {
+        why = "invalid type: expected a sequence";
+    } else {
+        var cnt = bayan_json_v_arr_len(arr);
+        var i = 0;
+        while (i < cnt && why == 0) {
+            var d = 0;
+            var mt, mv = _sl_monitor_from_value(bayan_json_v_arr_get(arr, i), &d);
+            if (is_err_result(mt) == 1) {
+                why = str_data(d);
+            } else {
+                vec_push(out, mv);
+            }
+            i = i + 1;
+        }
+    }
+    _sl_scratch_free(a);
+    if (why != 0) {
+        var j = 0;
+        while (j < vec_len(out)) {
+            SlMonitor_free(vec_get(out, j));
+            j = j + 1;
+        }
+        return _sl_http_invalid(detail_out, "daimon monitors", why);
+    }
+    return Ok(out);
+}
+
+# Writes data[0..n) to the file at `path` (Rust: CaptureClient::save_to_file): atomically and 0600 here, as the layer
+# file is (ADR 0002 #18). Ok(0) or Err(SL_ERR_IO).
+fn SlCaptureClient_save_to_file(data, n, path, detail_out = 0): Result {
+    var t, v = _sl_write_atomic(path, data, n, detail_out);
+    if (is_err_result(t) == 1) { return Err(v); }
+    _sl_log_kv(SK_DEBUG, "saved capture", "path", path);
+    return Ok(0);
+}
+
+# ── session type ─────────────────────────────────────────────────────────────────────
+
+# 1 when the NUL-terminated `s` equals `lower` ignoring ASCII case (`lower` all lowercase).
+#must_use
+fn _sl_ieq(s, lower): i64 {
+    var n = strlen(s);
+    if (n != strlen(lower)) { return 0; }
+    var i = 0;
+    while (i < n) {
+        var c = load8(s + i);
+        if (c >= 65 && c <= 90) { c = c + 32; }
+        if (c != load8(lower + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Rust's session_type_from: Wayland when WAYLAND_DISPLAY is set and non-empty, or XDG_SESSION_TYPE is "wayland" in
+# any ASCII case; X11 otherwise. Either argument may be 0 (unset).
+#must_use
+fn _sl_session_type_from(wayland_display, xdg_session_type): i64 {
+    if (wayland_display != 0 && load8(wayland_display) != 0) { return SL_SESSION_WAYLAND; }
+    if (xdg_session_type != 0 && _sl_ieq(xdg_session_type, "wayland") == 1) { return SL_SESSION_WAYLAND; }
+    return SL_SESSION_X11;
+}
+
+# The display session this process runs under (Rust: detect_session_type).
+#must_use
+fn selah_detect_session_type(): i64 {
+    return _sl_session_type_from(getenv("WAYLAND_DISPLAY"), getenv("XDG_SESSION_TYPE"));
+}
+
+# ── clipboard ────────────────────────────────────────────────────────────────────────
+
+# 1 when data[0..n) starts with sig[0..sn).
+#must_use
+fn _sl_starts(data, n, sig, sn): i64 {
+    if (n < sn) { return 0; }
+    return memeq(data, sig, sn);
+}
+
+# The MIME type of data[0..n) as image 0.25.10's guess_format and ImageFormat::to_mime_type name it, checked in its
+# table's order; "image/png" when nothing matches (Rust's fallback).
+#must_use
+fn _sl_guess_mime(data, n): i64 {
+    if (_sl_starts(data, n, "\x89PNG\r\n\x1a\n", 8) == 1) { return "image/png"; }
+    if (n >= 3 && load8(data) == 255 && load8(data + 1) == 216 && load8(data + 2) == 255) { return "image/jpeg"; }
+    if (_sl_starts(data, n, "GIF89a", 6) == 1 || _sl_starts(data, n, "GIF87a", 6) == 1) { return "image/gif"; }
+    if (n >= 12 && memeq(data, "RIFF", 4) == 1 && memeq(data + 8, "WEBP", 4) == 1) { return "image/webp"; }
+    if (_sl_starts(data, n, "MM", 2) == 1 && n >= 4 && load8(data + 2) == 0 && load8(data + 3) == 42) {
+        return "image/tiff";
+    }
+    if (_sl_starts(data, n, "II*", 3) == 1 && n >= 4 && load8(data + 3) == 0) { return "image/tiff"; }
+    if (_sl_starts(data, n, "DDS ", 4) == 1) { return "image/vnd-ms.dds"; }
+    if (_sl_starts(data, n, "BM", 2) == 1) { return "image/bmp"; }
+    if (n >= 4 && load8(data) == 0 && load8(data + 1) == 0 && load8(data + 2) == 1 && load8(data + 3) == 0) {
+        return "image/x-icon";
+    }
+    if (_sl_starts(data, n, "#?RADIANCE", 10) == 1) { return "image/vnd.radiance"; }
+    if (n >= 12 && load8(data) == 0 && load8(data + 1) == 0 && memeq(data + 4, "ftypavif", 8) == 1) {
+        return "image/avif";
+    }
+    if (n >= 4 && load8(data) == 118 && load8(data + 1) == 47 && load8(data + 2) == 49 && load8(data + 3) == 1) {
+        return "image/x-exr";
+    }
+    if (_sl_starts(data, n, "qoif", 4) == 1) { return "image/x-qoi"; }
+    if (n >= 2 && load8(data) == 80 && load8(data + 1) >= 49 && load8(data + 1) <= 55) {
+        return "image/x-portable-anymap";
+    }
+    if (_sl_starts(data, n, "farbfeld", 8) == 1) { return "application/octet-stream"; }
+    return "image/png";
+}
+
+# The Linux name of signal n (x86_64 and aarch64 number them alike), or 0.
+#must_use
+fn _sl_signal_name(n): i64 {
+    match n {
+        1 => { return "SIGHUP"; }
+        2 => { return "SIGINT"; }
+        3 => { return "SIGQUIT"; }
+        4 => { return "SIGILL"; }
+        5 => { return "SIGTRAP"; }
+        6 => { return "SIGABRT"; }
+        7 => { return "SIGBUS"; }
+        8 => { return "SIGFPE"; }
+        9 => { return "SIGKILL"; }
+        10 => { return "SIGUSR1"; }
+        11 => { return "SIGSEGV"; }
+        12 => { return "SIGUSR2"; }
+        13 => { return "SIGPIPE"; }
+        14 => { return "SIGALRM"; }
+        15 => { return "SIGTERM"; }
+        16 => { return "SIGSTKFLT"; }
+        17 => { return "SIGCHLD"; }
+        18 => { return "SIGCONT"; }
+        19 => { return "SIGSTOP"; }
+        20 => { return "SIGTSTP"; }
+        21 => { return "SIGTTIN"; }
+        22 => { return "SIGTTOU"; }
+        23 => { return "SIGURG"; }
+        24 => { return "SIGXCPU"; }
+        25 => { return "SIGXFSZ"; }
+        26 => { return "SIGVTALRM"; }
+        27 => { return "SIGPROF"; }
+        28 => { return "SIGWINCH"; }
+        29 => { return "SIGIO"; }
+        30 => { return "SIGPWR"; }
+        31 => { return "SIGSYS"; }
+        _ => { return 0; }
+    }
+    return 0;
+}
+
+# Appends Rust's Display of a Unix ExitStatus: "exit status: N", or "signal: N (SIGNAME)" with " (core dumped)".
+fn _sl_exit_status_fmt(sb, sp: *SlSpawn): i64 {
+    if (sp.signal == 0) {
+        str_builder_add_cstr(sb, "exit status: ");
+        str_builder_add_int(sb, sp.code);
+        return 0;
+    }
+    str_builder_add_cstr(sb, "signal: ");
+    str_builder_add_int(sb, sp.signal);
+    var name = _sl_signal_name(sp.signal);
+    if (name != 0) {
+        str_builder_add_cstr(sb, " (");
+        str_builder_add_cstr(sb, name);
+        str_builder_putc(sb, 41);
+    }
+    if (sp.core == 1) { str_builder_add_cstr(sb, " (core dumped)"); }
+    return 0;
+}
+
+# p[0..n) with Unicode whitespace trimmed from both ends (Rust: str::trim): (start, length).
+fn _sl_trim_unicode(p, n): (i64, i64) {
+    var s = 0;
+    while (s < n) {
+        var l = _sl_ws_len(p, s, n);
+        if (l == 0) { break; }
+        s = s + l;
+    }
+    var e = n;
+    while (e > s) {
+        var b = _sl_utf8_back(p, s, e);
+        if (_sl_ws_len(p, b, n) != e - b) { break; }
+        e = b;
+    }
+    return (p + s, e - s);
+}
+
+# Err(SL_ERR_CAPTURE_FAILED): "<a><b>".
+fn _sl_capture_fail(detail_out, a, b): Result {
+    if (detail_out == 0) { return Err(SL_ERR_CAPTURE_FAILED); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, a);
+    str_builder_add_cstr(sb, b);
+    return _sl_fail(SL_ERR_CAPTURE_FAILED, detail_out, str_builder_build(sb));
+}
+
+# Copies data[0..n) to the system clipboard (Rust: CaptureClient::copy_to_clipboard): `wl-copy --type <mime>` under
+# Wayland, `xclip -selection clipboard -t <mime>` under X11, the MIME type sniffed from the data. Ok(0) or
+# Err(SL_ERR_CAPTURE_FAILED) with Rust's texts.
+fn SlCaptureClient_copy_to_clipboard(data, n, detail_out = 0): Result {
+    var session = selah_detect_session_type();
+    var mime = _sl_guess_mime(data, n);
+    _sl_log_kv(SK_DEBUG, "copying to clipboard", "mime", mime);
+    var argv: i64[7];
+    var tool = 0;
+    if (session == SL_SESSION_WAYLAND) {
+        tool = "wl-copy (is wl-clipboard installed?)";
+        argv[0] = "wl-copy";
+        argv[1] = "--type";
+        argv[2] = mime;
+        argv[3] = 0;
+    } else {
+        tool = "xclip (is xclip installed?)";
+        argv[0] = "xclip";
+        argv[1] = "-selection";
+        argv[2] = "clipboard";
+        argv[3] = "-t";
+        argv[4] = mime;
+        argv[5] = 0;
+    }
+    var fb = str_builder_new();
+    str_builder_add_cstr(fb, "failed to run ");
+    str_builder_add_cstr(fb, tool);
+    str_builder_add_cstr(fb, ": ");
+    var failed_to_run = str_data(str_builder_build(fb));
+    var path = _sl_which(argv[0]);
+    if (path == 0) { return _sl_capture_fail(detail_out, failed_to_run, "No such file or directory (os error 2)"); }
+    var spb: i64[7];
+    var s: *SlSpawn = _sl_as_spawn(&spb);
+    var ok, err = _sl_spawn_feed(str_data(path), &argv, data, n, s);
+    if (ok == 0) {
+        if (s.err != 0) { fl_free(s.err); }
+        var eb = str_builder_new();
+        _sl_errno_text(eb, err);
+        var text = str_data(str_builder_build(eb));
+        if (s.ran == 0) { return _sl_capture_fail(detail_out, failed_to_run, text); }
+        return _sl_capture_fail(detail_out, "clipboard tool failed: ", text);
+    }
+    if (s.code != 0 || s.signal != 0) {
+        if (detail_out != 0) {
+            var sb = str_builder_new();
+            str_builder_add_cstr(sb, "clipboard tool exited with ");
+            _sl_exit_status_fmt(sb, s);
+            str_builder_add_cstr(sb, ": ");
+            # Rust reads stderr with read_to_string, which keeps nothing when the bytes are not UTF-8.
+            if (_sl_utf8_valid(s.err, s.errlen) == 1) {
+                var tp, tn = _sl_trim_unicode(s.err, s.errlen);
+                _sl_sb_bytes(sb, tp, _sl_truncate(tp, tn, 1024));
+            }
+            fl_free(s.err);
+            return _sl_fail(SL_ERR_CAPTURE_FAILED, detail_out, str_builder_build(sb));
+        }
+        fl_free(s.err);
+        return Err(SL_ERR_CAPTURE_FAILED);
+    }
+    fl_free(s.err);
+    if (s.werr != 0) {
+        var wb = str_builder_new();
+        if (s.werr == -1) {
+            str_builder_add_cstr(wb, "the tool exited before reading all of its input");
+        } else {
+            _sl_errno_text(wb, s.werr);
+        }
+        return _sl_capture_fail(detail_out, "failed to write to clipboard tool stdin: ",
+            str_data(str_builder_build(wb)));
+    }
+    _sl_log_kv(SK_INFO, "copied image data to clipboard", "mime", mime);
+    return Ok(0);
+}
+
+# --- daimon.cyr ---
+
+# daimon.cyr — the daimon and hoosh clients (Rust: rust-old/src/daimon.rs), retargeted to the live Cyrius services
+# (port plan D2; each change in ADR 0002 #4–#7).
+#
+#   - DaimonConfig and HooshConfig keep Rust's fields, defaults and JSON; HooshConfig gains `model` (no default: hoosh
+#     refuses a chat request without one), written only when set, so a Rust-written config reads back unchanged.
+#   - DaimonConfig's Debug never shows the API key.
+#   - DaimonClient.register_agent posts {"name", "type": "Service"} to `POST /v1/agents` and returns daimon's integer
+#     `id` as a decimal string (Rust posted to `/v1/agents/register`, which the Cyrius daimon does not serve).
+#   - DaimonClient.heartbeat is dropped: nothing in selah calls it, and daimon keeps no liveness for an API agent.
+#   - HooshClient.ocr asks `POST /v1/chat/completions` (Rust: `/v1/vision/ocr`, never served): one user message whose
+#     content is a text part with the OCR instruction and an `image_url` part with a `data:` URL. The model's answer,
+#     the first choice's content, is read as Rust read its OCR response: `text` (a string, else empty), `confidence`
+#     (a number, else 0, clamped to 0..1), `regions` (each `{x, y, width, height}` normalized, a non-finite or empty
+#     one dropped: Rust's parse_region).
+#   - hoosh refuses a request body over 1 MiB, which a full-screen image usually is (L8, filed). When the request
+#     would be over, the image is decoded, re-encoded as JPEG and, while still too big, shrunk by an area average; the
+#     regions the model returns are scaled back to the source image's coordinates.
+
+const _SL_DAIMON_TIMEOUT_MS = 30000;
+const _SL_HOOSH_TIMEOUT_MS = 60000;
+const _SL_MAX_AGENT_ID_LEN = 256;
+# hoosh's MAX_REQUEST_BODY (src/lib/pool.cyr).
+const _SL_HOOSH_MAX_REQUEST = 1048576;
+
+struct SlDaimonConfig { endpoint: i64; api_key: i64; }
+struct SlHooshConfig { endpoint: i64; model: i64; }
+struct SlDaimonClient { endpoint: i64; api_key: i64; timeout_ms: i64; }
+struct SlHooshClient { endpoint: i64; model: i64; timeout_ms: i64; }
+
+#must_use
+fn _sl_as_dconf(p): *SlDaimonConfig {
+    return p;
+}
+
+#must_use
+fn _sl_as_hconf(p): *SlHooshConfig {
+    return p;
+}
+
+#must_use
+fn _sl_as_daimon(p): *SlDaimonClient {
+    return p;
+}
+
+#must_use
+fn _sl_as_hoosh(p): *SlHooshClient {
+    return p;
+}
+
+# A freelist copy of the NUL-terminated `p`, or 0 for 0.
+#must_use
+fn _sl_fl_dupz(p): i64 {
+    if (p == 0) { return 0; }
+    return _sl_fl_dup(p, strlen(p));
+}
+
+# ── configuration ────────────────────────────────────────────────────────────────────
+
+# A daimon configuration (NUL-terminated strings, copied; `api_key` 0 for none). 0 when out of memory.
+#must_use
+fn SlDaimonConfig_new(endpoint, api_key): *SlDaimonConfig {
+    var c: *SlDaimonConfig = _sl_as_dconf(fl_calloc(sizeof(SlDaimonConfig)));
+    if (c == 0) { return 0; }
+    c.endpoint = _sl_fl_dupz(endpoint);
+    c.api_key = _sl_fl_dupz(api_key);
+    return c;
+}
+
+# Rust's DaimonConfig::default(): http://localhost:8090, no API key.
+#must_use
+fn SlDaimonConfig_default(): *SlDaimonConfig {
+    return SlDaimonConfig_new("http://localhost:8090", 0);
+}
+
+# Frees a daimon configuration.
+fn SlDaimonConfig_free(c: *SlDaimonConfig): i64 {
+    if (c == 0) { return 0; }
+    if (c.endpoint != 0) { fl_free(c.endpoint); }
+    if (c.api_key != 0) { fl_free(c.api_key); }
+    fl_free(c);
+    return 0;
+}
+
+# Appends Rust's Debug of the config, with the key replaced:
+# `DaimonConfig { endpoint: "…", api_key: Some("<redacted>") }` (or `None`).
+fn SlDaimonConfig_fmt_debug(c: *SlDaimonConfig, sb): i64 {
+    str_builder_add_cstr(sb, "DaimonConfig { endpoint: ");
+    _sl_debug_str(sb, c.endpoint, strlen(c.endpoint));
+    if (c.api_key != 0) {
+        str_builder_add_cstr(sb, ", api_key: Some(\"<redacted>\") }");
+    } else {
+        str_builder_add_cstr(sb, ", api_key: None }");
+    }
+    return 0;
+}
+
+# Appends serde's JSON: {"endpoint":…,"api_key":…|null}.
+fn SlDaimonConfig_to_json(c: *SlDaimonConfig, sb): i64 {
+    str_builder_add_cstr(sb, "{\"endpoint\":");
+    _sl_json_str(sb, c.endpoint, strlen(c.endpoint));
+    str_builder_add_cstr(sb, ",\"api_key\":");
+    if (c.api_key == 0) {
+        str_builder_add_cstr(sb, "null");
+    } else {
+        _sl_json_str(sb, c.api_key, strlen(c.api_key));
+    }
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+# An Option<String> field as serde reads it: absent or null is None (stores 0), a string is Some (stores a freelist
+# copy). Returns 1, or 0 for any other type.
+fn _sl_json_opt_str(v, out): i64 {
+    store64(out, 0);
+    if (v == 0 || bayan_json_v_is_null(v) == true) { return 1; }
+    var s = _sl_json_as_str(v);
+    if (s == 0) { return 0; }
+    store64(out, _sl_fl_dup(str_data(s), str_len(s)));
+    return 1;
+}
+
+# A DaimonConfig from JSON p[0..n), as serde's derive reads one (an object or the array of its two fields).
+# Ok(*SlDaimonConfig) or Err(SL_ERR_SERDE).
+fn SlDaimonConfig_from_json(p, n, detail_out = 0): Result {
+    var a = _sl_scratch_new();
+    var v = _sl_json_parse_a(a, p, n);
+    var ep = 0;
+    var key = 0;
+    var ok = 0;
+    # serde's derive reads an object, or an array of exactly its two fields (an Option is not optional there).
+    var shape = 0;
+    if (v != 0 && bayan_json_v_is_obj(v) == true) { shape = 1; }
+    if (v != 0 && bayan_json_v_is_arr(v) == true && bayan_json_v_arr_len(v) == 2) { shape = 1; }
+    if (shape == 1) { ep = _sl_json_as_str(_sl_json_field(v, "endpoint", 2, 0)); }
+    if (ep != 0) { ok = _sl_json_opt_str(_sl_json_field(v, "api_key", 2, 1), &key); }
+    var c = 0;
+    if (ok == 1) {
+        c = SlDaimonConfig_new(0, 0);
+        if (c != 0) {
+            var cc: *SlDaimonConfig = _sl_as_dconf(c);
+            cc.endpoint = _sl_fl_dup(str_data(ep), str_len(ep));
+            cc.api_key = key;
+        }
+    }
+    _sl_scratch_free(a);
+    if (c == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "DaimonConfig: `endpoint` and `api_key` (or null) expected");
+    }
+    return Ok(c);
+}
+
+# A hoosh configuration (NUL-terminated strings, copied; `model` 0 for none). 0 when out of memory.
+#must_use
+fn SlHooshConfig_new(endpoint, model): *SlHooshConfig {
+    var c: *SlHooshConfig = _sl_as_hconf(fl_calloc(sizeof(SlHooshConfig)));
+    if (c == 0) { return 0; }
+    c.endpoint = _sl_fl_dupz(endpoint);
+    c.model = _sl_fl_dupz(model);
+    return c;
+}
+
+# Rust's HooshConfig::default(): http://localhost:8088, and (new) no model.
+#must_use
+fn SlHooshConfig_default(): *SlHooshConfig {
+    return SlHooshConfig_new("http://localhost:8088", 0);
+}
+
+# Frees a hoosh configuration.
+fn SlHooshConfig_free(c: *SlHooshConfig): i64 {
+    if (c == 0) { return 0; }
+    if (c.endpoint != 0) { fl_free(c.endpoint); }
+    if (c.model != 0) { fl_free(c.model); }
+    fl_free(c);
+    return 0;
+}
+
+# Appends serde's JSON: {"endpoint":…}, with "model" after it only when one is set (Rust's shape otherwise).
+fn SlHooshConfig_to_json(c: *SlHooshConfig, sb): i64 {
+    str_builder_add_cstr(sb, "{\"endpoint\":");
+    _sl_json_str(sb, c.endpoint, strlen(c.endpoint));
+    if (c.model != 0) {
+        str_builder_add_cstr(sb, ",\"model\":");
+        _sl_json_str(sb, c.model, strlen(c.model));
+    }
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+# A HooshConfig from JSON p[0..n): `endpoint` required, `model` optional. Ok(*SlHooshConfig) or Err(SL_ERR_SERDE).
+fn SlHooshConfig_from_json(p, n, detail_out = 0): Result {
+    var a = _sl_scratch_new();
+    var v = _sl_json_parse_a(a, p, n);
+    var ep = 0;
+    var model = 0;
+    var ok = 0;
+    if (v != 0 && bayan_json_v_is_obj(v) == true) {
+        ep = _sl_json_as_str(_sl_json_member(v, "endpoint"));
+        if (ep != 0) { ok = _sl_json_opt_str(_sl_json_member(v, "model"), &model); }
+    } elif (v != 0 && bayan_json_v_is_arr(v) == true && bayan_json_v_arr_len(v) == 1) {
+        # Rust's one-field struct also reads as a one-element array.
+        ep = _sl_json_as_str(bayan_json_v_arr_get(v, 0));
+        if (ep != 0) { ok = 1; }
+    }
+    var c = 0;
+    if (ok == 1) {
+        c = SlHooshConfig_new(0, 0);
+        if (c != 0) {
+            var cc: *SlHooshConfig = _sl_as_hconf(c);
+            cc.endpoint = _sl_fl_dup(str_data(ep), str_len(ep));
+            cc.model = model;
+        }
+    }
+    _sl_scratch_free(a);
+    if (c == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "HooshConfig: `endpoint` (a string) expected");
+    }
+    return Ok(c);
+}
+
+# ── agent ids and endpoints ──────────────────────────────────────────────────────────
+
+# Rust's validate_agent_id: not empty, not `.` or `..`, at most 256 bytes, no control character (Unicode Cc: C0,
+# DEL, C1). Ok(0) or Err(SL_ERR_API) with the id's first 64 bytes in Debug form.
+fn _sl_validate_agent_id(id, n, detail_out = 0): Result {
+    var bad = 0;
+    if (n == 0 || n > _SL_MAX_AGENT_ID_LEN) { bad = 1; }
+    if (n == 1 && load8(id) == 46) { bad = 1; }
+    if (n == 2 && load8(id) == 46 && load8(id + 1) == 46) { bad = 1; }
+    var i = 0;
+    while (bad == 0 && i < n) {
+        var c = load8(id + i);
+        if (c < 32 || c == 127) { bad = 1; }
+        if (c == 194 && i + 1 < n && load8(id + i + 1) >= 128 && load8(id + i + 1) <= 159) { bad = 1; }
+        i = i + 1;
+    }
+    if (bad == 0) { return Ok(0); }
+    if (detail_out == 0) { return Err(SL_ERR_API); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "invalid agent id ");
+    _sl_debug_str(sb, id, _sl_truncate(id, n, 64));
+    return _sl_fail(SL_ERR_API, detail_out, str_builder_build(sb));
+}
+
+# ── DaimonClient ─────────────────────────────────────────────────────────────────────
+
+# A client for `config` (copied; the endpoint's trailing slashes dropped), with Rust's 30 s timeout. 0 when out of
+# memory.
+#must_use
+fn SlDaimonClient_with_config(config: *SlDaimonConfig): *SlDaimonClient {
+    var c: *SlDaimonClient = _sl_as_daimon(fl_calloc(sizeof(SlDaimonClient)));
+    if (c == 0) { return 0; }
+    c.endpoint = _sl_fl_dup(config.endpoint, _sl_trim_slashes(config.endpoint));
+    c.api_key = _sl_fl_dupz(config.api_key);
+    c.timeout_ms = _SL_DAIMON_TIMEOUT_MS;
+    return c;
+}
+
+# A client with the default configuration (Rust: DaimonClient::new and Default).
+#must_use
+fn SlDaimonClient_new(): *SlDaimonClient {
+    var cfg = SlDaimonConfig_default();
+    var c = SlDaimonClient_with_config(cfg);
+    SlDaimonConfig_free(cfg);
+    return c;
+}
+
+# Frees a daimon client.
+fn SlDaimonClient_free(c: *SlDaimonClient): i64 {
+    if (c == 0) { return 0; }
+    if (c.endpoint != 0) { fl_free(c.endpoint); }
+    if (c.api_key != 0) { fl_free(c.api_key); }
+    fl_free(c);
+    return 0;
+}
+
+# The endpoint (NUL-terminated, owned by the client).
+#must_use
+fn SlDaimonClient_endpoint(c: *SlDaimonClient): i64 {
+    return c.endpoint;
+}
+
+# Appends the client's Debug, which, like the config's, never shows the key.
+fn SlDaimonClient_fmt_debug(c: *SlDaimonClient, sb): i64 {
+    str_builder_add_cstr(sb, "DaimonClient { config: DaimonConfig { endpoint: ");
+    _sl_debug_str(sb, c.endpoint, strlen(c.endpoint));
+    if (c.api_key != 0) {
+        str_builder_add_cstr(sb, ", api_key: Some(\"<redacted>\") } }");
+    } else {
+        str_builder_add_cstr(sb, ", api_key: None } }");
+    }
+    return 0;
+}
+
+# Appends the registration body daimon's `POST /v1/agents` reads (D2): {"name":…,"type":"Service"}.
+fn _sl_register_body(sb, name): i64 {
+    str_builder_add_cstr(sb, "{\"name\":");
+    _sl_json_str(sb, name, strlen(name));
+    str_builder_add_cstr(sb, ",\"type\":\"Service\"}");
+    return 0;
+}
+
+# Registers with daimon as `name` (D2: `POST /v1/agents` with {"name", "type": "Service"}). Ok(the agent id daimon
+# assigned, its integer `id` as a decimal NUL-terminated Str) or Err(SL_ERR_API).
+fn SlDaimonClient_register_agent(c: *SlDaimonClient, name, detail_out = 0): Result {
+    var segs = vec_new();
+    vec_push(segs, "v1");
+    vec_push(segs, "agents");
+    var ut, url = _sl_endpoint_url(c.endpoint, segs, detail_out);
+    if (is_err_result(ut) == 1) { return Err(url); }
+    var bb = str_builder_new();
+    _sl_register_body(bb, name);
+    var body = str_builder_build(bb);
+    var resp: SlHttpResponse = SlHttpResponse { 0, 0, 0 };
+    var rp: *SlHttpResponse = _sl_as_resp(&resp);
+    var t, v = _sl_http_call("POST", str_data(url), c.api_key, str_data(body), str_len(body), c.timeout_ms,
+        _SL_MAX_API_RESPONSE_BYTES, "daimon register failed", "daimon register", rp, detail_out);
+    if (is_err_result(t) == 1) { return Err(v); }
+    var st, sv = _sl_http_check_status(rp, "daimon register", detail_out);
+    if (is_err_result(st) == 1) {
+        fl_free(rp.body);
+        return Err(sv);
+    }
+    var a = _sl_scratch_new();
+    var root = _sl_json_parse_a(a, rp.body, rp.len);
+    fl_free(rp.body);
+    var why = 0;
+    var idv = 0;
+    if (root == 0) {
+        why = "not a JSON document";
+    } else {
+        idv = _sl_json_member(root, "id");
+        if (idv == 0) {
+            why = "missing field `id`";
+        } elif (bayan_json_v_tag(idv) != JTAG_INT) {
+            why = "`id` must be an integer";
+        }
+    }
+    var id = 0;
+    if (why == 0) {
+        var ib = str_builder_new();
+        str_builder_add_int(ib, bayan_json_v_int(idv));
+        id = str_builder_build(ib);
+    }
+    _sl_scratch_free(a);
+    if (why != 0) { return _sl_http_invalid(detail_out, "daimon register", why); }
+    var vt, vv = _sl_validate_agent_id(str_data(id), str_len(id), detail_out);
+    if (is_err_result(vt) == 1) { return Err(vv); }
+    _sl_log_kv(SK_INFO, "registered with daimon", "agent_id", str_data(id));
+    return Ok(id);
+}
+
+# ── HooshClient ──────────────────────────────────────────────────────────────────────
+
+# A client for `config` (copied; the endpoint's trailing slashes dropped), with Rust's 60 s timeout. 0 when out of
+# memory.
+#must_use
+fn SlHooshClient_with_config(config: *SlHooshConfig): *SlHooshClient {
+    var c: *SlHooshClient = _sl_as_hoosh(fl_calloc(sizeof(SlHooshClient)));
+    if (c == 0) { return 0; }
+    c.endpoint = _sl_fl_dup(config.endpoint, _sl_trim_slashes(config.endpoint));
+    c.model = _sl_fl_dupz(config.model);
+    c.timeout_ms = _SL_HOOSH_TIMEOUT_MS;
+    return c;
+}
+
+# A client with the default configuration (Rust: HooshClient::new and Default). It has no model, so ocr refuses
+# until one is configured.
+#must_use
+fn SlHooshClient_new(): *SlHooshClient {
+    var cfg = SlHooshConfig_default();
+    var c = SlHooshClient_with_config(cfg);
+    SlHooshConfig_free(cfg);
+    return c;
+}
+
+# Frees a hoosh client.
+fn SlHooshClient_free(c: *SlHooshClient): i64 {
+    if (c == 0) { return 0; }
+    if (c.endpoint != 0) { fl_free(c.endpoint); }
+    if (c.model != 0) { fl_free(c.model); }
+    fl_free(c);
+    return 0;
+}
+
+# The endpoint (NUL-terminated, owned by the client).
+#must_use
+fn SlHooshClient_endpoint(c: *SlHooshClient): i64 {
+    return c.endpoint;
+}
+
+var _SL_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+# Appends data[0..n) as standard padded base64 (RFC 4648 §4), straight into the builder (allocator `a`).
+# UPSTREAM(L19): bayan_base64_encode allocates its output on the bump heap only.
+fn _sl_base64_into(a, sb, data, n): i64 {
+    var i = 0;
+    var quad: u8[8];
+    var hdr: i64[2];
+    hdr[0] = &quad;
+    hdr[1] = 4;
+    while (i < n) {
+        var b0 = load8(data + i);
+        var b1 = 0;
+        var b2 = 0;
+        if (i + 1 < n) { b1 = load8(data + i + 1); }
+        if (i + 2 < n) { b2 = load8(data + i + 2); }
+        store8(&quad, load8(_SL_B64 + (b0 >> 2)));
+        store8(&quad + 1, load8(_SL_B64 + (((b0 & 3) << 4) | (b1 >> 4))));
+        store8(&quad + 2, 61);
+        store8(&quad + 3, 61);
+        if (i + 1 < n) { store8(&quad + 2, load8(_SL_B64 + (((b1 & 15) << 2) | (b2 >> 6)))); }
+        if (i + 2 < n) { store8(&quad + 3, load8(_SL_B64 + (b2 & 63))); }
+        str_builder_add_a(a, sb, &hdr);
+        i = i + 3;
+    }
+    return 0;
+}
+
+# What the model is asked (a NUL-terminated Str, built once).
+var _sl_ocr_prompt_s = 0;
+
+#must_use
+fn _sl_ocr_prompt(): i64 {
+    if (_sl_ocr_prompt_s != 0) { return _sl_ocr_prompt_s; }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "Extract all of the text in this image. ");
+    str_builder_add_cstr(sb, "Answer with only a JSON object and nothing else: ");
+    str_builder_add_cstr(sb, "{\"text\": the text, lines separated by \\n, \"confidence\": your confidence from 0 ");
+    str_builder_add_cstr(sb, "to 1, \"regions\": [{\"x\": left, \"y\": top, \"width\": w, \"height\": h} in ");
+    str_builder_add_cstr(sb, "pixels of this image, one per line of text]}.");
+    _sl_ocr_prompt_s = str_builder_build(sb);
+    return _sl_ocr_prompt_s;
+}
+
+# The chat-completions request for data[0..n) of MIME type `mime`, built in allocator `a`: a NUL-terminated Str.
+fn _sl_ocr_request(a, model, mime, data, n): Str {
+    var sb = str_builder_new_a(a);
+    str_builder_add_cstr_a(a, sb, "{\"model\":");
+    var mb = str_builder_new_a(a);
+    _sl_json_str(mb, model, strlen(model));
+    str_builder_add_a(a, sb, str_builder_build_a(a, mb));
+    str_builder_add_cstr_a(a, sb, ",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":");
+    var pb = str_builder_new_a(a);
+    _sl_json_str_s(pb, _sl_ocr_prompt());
+    str_builder_add_a(a, sb, str_builder_build_a(a, pb));
+    str_builder_add_cstr_a(a, sb, "},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:");
+    str_builder_add_cstr_a(a, sb, mime);
+    str_builder_add_cstr_a(a, sb, ";base64,");
+    _sl_base64_into(a, sb, data, n);
+    str_builder_add_cstr_a(a, sb, "\"}}]}]}");
+    return str_builder_build_a(a, sb);
+}
+
+# rgba (w x h) shrunk to w2 x h2 by an area average: each destination pixel is the mean of the source area it covers,
+# partly covered pixels weighted by their coverage. One destination row at a time: the source rows it covers are
+# summed, by coverage, into one accumulator row (weights in 1/65536 steps), which is then averaged across. Memory is
+# one row of the source, not an intermediate image. A new buffer on the freelist, or 0.
+fn _sl_resample_box(rgba, w, h, w2, h2): i64 {
+    var acc = fl_alloc(w * 32);
+    var out = fl_alloc(w2 * h2 * 4);
+    if (acc == 0 || out == 0) {
+        if (acc != 0) { fl_free(acc); }
+        if (out != 0) { fl_free(out); }
+        return 0;
+    }
+    var fw: f64 = f64_from(w);
+    var fw2: f64 = f64_from(w2);
+    var sx: f64 = fw / fw2;
+    var fh: f64 = f64_from(h);
+    var fh2: f64 = f64_from(h2);
+    var sy: f64 = fh / fh2;
+    var area: f64 = sx * sy * 4294967296.0;
+    var yy = 0;
+    while (yy < h2) {
+        var z = 0;
+        while (z < w * 4) {
+            store64(acc + z * 8, 0);
+            z = z + 1;
+        }
+        var fy: f64 = f64_from(yy);
+        var y0: f64 = fy * sy;
+        var y1: f64 = y0 + sy;
+        var fl0: f64 = f64_floor(y0);
+        var r = f64_to(fl0);
+        while (r < h) {
+            var fr: f64 = f64_from(r);
+            if (fr >= y1) { break; }
+            var lo: f64 = fr;
+            if (lo < y0) { lo = y0; }
+            var hi: f64 = fr + 1.0;
+            if (hi > y1) { hi = y1; }
+            var cw: f64 = (hi - lo) * 65536.0 + 0.5;
+            var cf: f64 = f64_floor(cw);
+            var cov = f64_to(cf);
+            var row = rgba + r * w * 4;
+            var k = 0;
+            while (k < w * 4) {
+                store64(acc + k * 8, load64(acc + k * 8) + load8(row + k) * cov);
+                k = k + 1;
+            }
+            r = r + 1;
+        }
+        var xx = 0;
+        while (xx < w2) {
+            var fx: f64 = f64_from(xx);
+            var x0: f64 = fx * sx;
+            var x1: f64 = x0 + sx;
+            var fl1: f64 = f64_floor(x0);
+            var i0 = f64_to(fl1);
+            var c = 0;
+            while (c < 4) {
+                var sum: f64 = 0.0;
+                var i = i0;
+                while (i < w) {
+                    var fi: f64 = f64_from(i);
+                    if (fi >= x1) { break; }
+                    var lo2: f64 = fi;
+                    if (lo2 < x0) { lo2 = x0; }
+                    var hi2: f64 = fi + 1.0;
+                    if (hi2 > x1) { hi2 = x1; }
+                    var cw2: f64 = (hi2 - lo2) * 65536.0 + 0.5;
+                    var cf2: f64 = f64_floor(cw2);
+                    var av0: f64 = f64_from(load64(acc + (i * 4 + c) * 8));
+                    sum = sum + av0 * cf2;
+                    i = i + 1;
+                }
+                var avg: f64 = sum / area + 0.5;
+                var av: f64 = f64_floor(avg);
+                store8(out + (yy * w2 + xx) * 4 + c, _sl_clamp_i64(f64_to(av), 0, 255));
+                c = c + 1;
+            }
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    fl_free(acc);
+    return out;
+}
+
+# Rust's parse_region over a bayan value, with the downscale's factors: {x, y, width, height} as JSON numbers (else
+# none), each multiplied by its axis's factor in f64 and narrowed to f32 (`as f32`), the rect kept when finite with an
+# area above 0, normalized. Writes it at out and returns 1, or returns 0.
+fn _sl_parse_region(v, fx: f64, fy: f64, out: *SlRect): i64 {
+    var x: f64 = 0.0;
+    var y: f64 = 0.0;
+    var w: f64 = 0.0;
+    var h: f64 = 0.0;
+    if (_sl_json_as_f64(_sl_json_member(v, "x"), &x) == 0) { return 0; }
+    if (_sl_json_as_f64(_sl_json_member(v, "y"), &y) == 0) { return 0; }
+    if (_sl_json_as_f64(_sl_json_member(v, "width"), &w) == 0) { return 0; }
+    if (_sl_json_as_f64(_sl_json_member(v, "height"), &h) == 0) { return 0; }
+    var xs: f64 = x * fx;
+    var ys: f64 = y * fy;
+    var ws: f64 = w * fx;
+    var hs: f64 = h * fy;
+    var r: SlRect = SlRect_new(f32_from(xs), f32_from(ys), f32_from(ws), f32_from(hs));
+    if (r.is_finite() == false) { return 0; }
+    var area: f64 = r.area();
+    if (area <= 0.0) { return 0; }
+    var nr: SlRect = r.normalized();
+    out.min_x = nr.min_x;
+    out.min_y = nr.min_y;
+    out.max_x = nr.max_x;
+    out.max_y = nr.max_y;
+    return 1;
+}
+
+# 1 when no float in the value tree is infinite: serde_json refuses a whole document with an out-of-range literal
+# (`1e400`) when it reads it into a Value, where bayan reads infinity.
+fn _sl_json_finite(v): i64 {
+    if (v == 0) { return 1; }
+    var tag = bayan_json_v_tag(v);
+    if (tag == JTAG_FLOAT) {
+        var bits = bayan_json_v_float(v);
+        if (((bits >> 52) & 2047) == 2047) { return 0; }
+        return 1;
+    }
+    if (tag == JTAG_ARR) {
+        var n = bayan_json_v_arr_len(v);
+        var i = 0;
+        while (i < n) {
+            if (_sl_json_finite(bayan_json_v_arr_get(v, i)) == 0) { return 0; }
+            i = i + 1;
+        }
+    }
+    if (tag == JTAG_OBJ) {
+        var m = bayan_json_v_obj_len(v);
+        var j = 0;
+        while (j < m) {
+            if (_sl_json_finite(bayan_json_v_obj_val(v, j)) == 0) { return 0; }
+            j = j + 1;
+        }
+    }
+    return 1;
+}
+
+# The OCR result from the model's answer p[0..n), read as Rust read its OCR response (a serde_json Value), the
+# regions' coordinates multiplied by fx and fy. Ok(*SlOcrResult) or Err(SL_ERR_API) when it is not JSON.
+fn _sl_ocr_from_answer(p, n, fx: f64, fy: f64, detail_out = 0): Result {
+    var a = _sl_scratch_new();
+    var v = _sl_json_parse_a(a, p, n);
+    if (v == 0 || _sl_json_finite(v) == 0) {
+        _sl_scratch_free(a);
+        return _sl_http_invalid(detail_out, "hoosh OCR", "the model's answer is not JSON");
+    }
+    var o: *SlOcrResult = _sl_as_ocr(fl_calloc(sizeof(SlOcrResult)));
+    var ts = _sl_json_as_str(_sl_json_member(v, "text"));
+    if (ts != 0) {
+        var td = _sl_fl_dup(str_data(ts), str_len(ts));
+        o.text = str_new(td, str_len(ts));
+    } else {
+        o.text = str_from("");
+    }
+    var conf: f64 = 0.0;
+    if (_sl_json_as_f64(_sl_json_member(v, "confidence"), &conf) == 0) { conf = 0.0; }
+    o.confidence = _sl_clamp_f64(conf, 0.0, 1.0);
+    var boxes = vec_new();
+    var regs = _sl_json_member(v, "regions");
+    if (regs != 0 && bayan_json_v_is_arr(regs) == true) {
+        var cnt = bayan_json_v_arr_len(regs);
+        var i = 0;
+        while (i < cnt) {
+            var rb: SlRect = SlRect_default();
+            if (_sl_parse_region(bayan_json_v_arr_get(regs, i), fx, fy, &rb) == 1) {
+                var rp: *SlRect = _sl_as_rect(fl_alloc(sizeof(SlRect)));
+                rp.min_x = rb.min_x;
+                rp.min_y = rb.min_y;
+                rp.max_x = rb.max_x;
+                rp.max_y = rb.max_y;
+                vec_push(boxes, rp);
+            }
+            i = i + 1;
+        }
+    }
+    o.bounding_boxes = boxes;
+    o.is_stub = 0;
+    _sl_scratch_free(a);
+    return Ok(o);
+}
+
+# The model's answer in a chat-completions response: the first choice's message content, a Str, or 0.
+fn _sl_chat_content(root): i64 {
+    var choices = _sl_json_member(root, "choices");
+    if (choices == 0 || bayan_json_v_is_arr(choices) == false || bayan_json_v_arr_len(choices) == 0) { return 0; }
+    var msg = _sl_json_member(bayan_json_v_arr_get(choices, 0), "message");
+    return _sl_json_as_str(_sl_json_member(msg, "content"));
+}
+
+# The answer with a Markdown code fence around it removed (a model often wraps JSON in ```json … ```): (start, length).
+fn _sl_unfence(p, n): (i64, i64) {
+    var s, l = _sl_trim_unicode(p, n);
+    if (l < 6 || memeq(s, "```", 3) == 0 || memeq(s + l - 3, "```", 3) == 0) { return (s, l); }
+    var i = 3;
+    while (i < l - 3 && load8(s + i) != 10) { i = i + 1; }
+    var s2, l2 = _sl_trim_unicode(s + i, l - 3 - i);
+    return (s2, l2);
+}
+
+# The request for the image data[0..n), fitted under hoosh's body cap (L8): the image as it is when that fits, else
+# decoded, then JPEG-encoded and shrunk until it does. Builds it in allocator `a` and stores the axis factors from the
+# image sent back to the source at fx_out and fy_out. Ok(Str) or Err(SL_ERR_API).
+fn _sl_ocr_fit(a, model, data, n, fx_out: *f64, fy_out: *f64, detail_out): Result {
+    var req = _sl_ocr_request(a, model, _sl_guess_mime(data, n), data, n);
+    if (str_len(req) <= _SL_HOOSH_MAX_REQUEST) { return Ok(req); }
+    var d = 0;
+    var it, iv = _sl_decode_image(data, n, &d);
+    if (is_err_result(it) == 1) {
+        if (detail_out == 0) { return Err(SL_ERR_API); }
+        var eb = str_builder_new();
+        str_builder_add_cstr(eb, "hoosh OCR: the image is over hoosh's 1 MiB request limit and could not be decoded ");
+        str_builder_add_cstr(eb, "to shrink it: ");
+        if (d != 0) { str_builder_add(eb, d); }
+        return _sl_fail(SL_ERR_API, detail_out, str_builder_build(eb));
+    }
+    var img: *SlImage = _sl_as_image(iv);
+    var w = img.width;
+    var h = img.height;
+    var w2 = w;
+    var h2 = h;
+    var px = img.pixels;
+    var own = 0;
+    while (1 == 1) {
+        var jl = 0;
+        var jpg = _sl_jpeg_encode(px, w2, h2, SL_JPEG_QUALITY, &jl);
+        if (jpg == 0) { break; }
+        req = _sl_ocr_request(a, model, "image/jpeg", jpg, jl);
+        fl_free(jpg);
+        var size = str_len(req);
+        if (size <= _SL_HOOSH_MAX_REQUEST || (w2 == 1 && h2 == 1)) {
+            if (own == 1) { fl_free(px); }
+            SlImage_free(img);
+            if (size > _SL_HOOSH_MAX_REQUEST) {
+                return _sl_api_fail(detail_out, "hoosh OCR", "the request cannot be made to fit hoosh's 1 MiB limit");
+            }
+            var fw: f64 = f64_from(w);
+            var fw2: f64 = f64_from(w2);
+            var fh: f64 = f64_from(h);
+            var fh2: f64 = f64_from(h2);
+            var rx: f64 = fw / fw2;
+            var ry: f64 = fh / fh2;
+            *fx_out = rx;
+            *fy_out = ry;
+            return Ok(req);
+        }
+        # Shrink by the square root of the overshoot, and a little more, so the next try usually fits.
+        var fs: f64 = f64_from(size);
+        var fcap: f64 = f64_from(_SL_HOOSH_MAX_REQUEST);
+        var ratio: f64 = fcap / fs;
+        var scale: f64 = f64_sqrt(ratio) * 0.9;
+        var nw: f64 = f64_from(w2) * scale;
+        var nh: f64 = f64_from(h2) * scale;
+        var nwi = _sl_clamp_i64(_sl_sat_i64(nw), 1, w2);
+        var nhi = _sl_clamp_i64(_sl_sat_i64(nh), 1, h2);
+        var small = _sl_resample_box(img.pixels, w, h, nwi, nhi);
+        if (small == 0) { break; }
+        if (own == 1) { fl_free(px); }
+        px = small;
+        own = 1;
+        w2 = nwi;
+        h2 = nhi;
+    }
+    if (own == 1) { fl_free(px); }
+    SlImage_free(img);
+    return _sl_api_fail(detail_out, "hoosh OCR", "out of memory");
+}
+
+# Extracts the text in an image through hoosh's vision models (Rust: HooshClient::ocr; D2's chat-completions
+# retarget, L8's downscale). Ok(*SlOcrResult, is_stub 0) or Err(SL_ERR_API).
+fn SlHooshClient_ocr(c: *SlHooshClient, data, n, detail_out = 0): Result {
+    if (c.model == 0) {
+        var why = "no model is set: HooshConfig.model must name a vision model on an OpenAI-compatible provider";
+        return _sl_api_fail(detail_out, "hoosh OCR", why);
+    }
+    var segs = vec_new();
+    vec_push(segs, "v1");
+    vec_push(segs, "chat");
+    vec_push(segs, "completions");
+    var ut, url = _sl_endpoint_url(c.endpoint, segs, detail_out);
+    if (is_err_result(ut) == 1) { return Err(url); }
+    var a = _sl_scratch_new();
+    if (a == 0) { return _sl_api_fail(detail_out, "hoosh OCR", "out of memory"); }
+    var fx: f64 = 1.0;
+    var fy: f64 = 1.0;
+    var ft, req = _sl_ocr_fit(a, c.model, data, n, &fx, &fy, detail_out);
+    if (is_err_result(ft) == 1) {
+        _sl_scratch_free(a);
+        return Err(req);
+    }
+    var resp: SlHttpResponse = SlHttpResponse { 0, 0, 0 };
+    var rp: *SlHttpResponse = _sl_as_resp(&resp);
+    var t, v = _sl_http_call("POST", str_data(url), 0, str_data(req), str_len(req), c.timeout_ms,
+        _SL_MAX_API_RESPONSE_BYTES, "hoosh OCR failed", "hoosh OCR", rp, detail_out);
+    _sl_scratch_free(a);
+    if (is_err_result(t) == 1) { return Err(v); }
+    var st, sv = _sl_http_check_status(rp, "hoosh OCR", detail_out);
+    if (is_err_result(st) == 1) {
+        fl_free(rp.body);
+        return Err(sv);
+    }
+    var b = _sl_scratch_new();
+    var root = _sl_json_parse_a(b, rp.body, rp.len);
+    fl_free(rp.body);
+    var content = _sl_chat_content(root);
+    if (content == 0) {
+        _sl_scratch_free(b);
+        return _sl_http_invalid(detail_out, "hoosh OCR", "no choices[0].message.content string");
+    }
+    var cp, cn = _sl_unfence(str_data(content), str_len(content));
+    var ot, ov = _sl_ocr_from_answer(cp, cn, fx, fy, detail_out);
+    _sl_scratch_free(b);
+    if (is_err_result(ot) == 1) { return Err(ov); }
+    var o: *SlOcrResult = _sl_as_ocr(ov);
+    var sb = str_builder_new();
+    str_builder_add_int(sb, vec_len(o.bounding_boxes));
+    _sl_log_kv(SK_DEBUG, "hoosh OCR complete", "regions", str_data(str_builder_build(sb)));
+    return Ok(o);
 }

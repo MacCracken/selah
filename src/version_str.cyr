@@ -1,0 +1,7 @@
+# version_str.cyr — selah's version at run time, from `VERSION` (sandhi's src/version_str.cyr pattern).
+#
+# `VERSION` is the source of truth; this literal must equal it, and tests/selah.tcyr fails when they disagree. The
+# HTTP User-Agent is `selah/<version>`, as Rust's `concat!("selah/", env!("CARGO_PKG_VERSION"))`.
+# CYRIUS_PKG_VERSION would not do: inside a consumer's build it is the consumer's version.
+
+var SL_VERSION = "0.30.0";

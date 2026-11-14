@@ -41,6 +41,7 @@ cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --chec
 | `ai` | M2 | 8,457 | `src/m_ai.rs` | PII detection over Rust's test inputs and a seeded generator; the stub OCR over every fixture; smart crop; the JSON shapes |
 | `codec` | M3 | 480 | `src/m_codec.rs` | `convert_format`'s verdict and dimensions for every fixture of at most 1 MP against every target; `encode` rows for the encoders' round trips (below) |
 | `annotate` | M4 | 3,457 | `src/m_annotate.rs` | `render` (by CRC of the RGBA), `to_svg`, `layer_json`, `layer_load`, `decode_image_data`, `redact_image`; the token groups are in the emitter's header |
+| `system` | M5 | 662 | `src/m_system.rs` | the history (Rust's HistoryStore over files the oracle writes), Rust's capture, daimon and hoosh clients driven against a loopback copy of `serve_once` on a tokio current-thread runtime, the session, MIME, exit-status and Debug texts, the configs; `wire_*` rows are class W (the retargeted requests, ADR 0002 #4 and #6). Row shapes are in the emitter's header |
 
 ## Fixtures
 
@@ -121,9 +122,14 @@ refusal; class B for a decoded JPEG.
   every PNG and BMP to exactly the pixels. JPEG accuracy against Rust's own encoding is printed per file (with
   `SELAH_REVERSE_VERBOSE=1`) and over the corpus. The harness also writes every layer file it builds
   (`layer-<n>.layer.json` beside `.layer.dims`), and Rust's `AnnotationCanvas::load_from_file` must load each with that
-  size and count. Exit 1 on a failure.
+  size and count. It also writes three history files with `.ids` (the port's own list, newest first), and Rust's
+  `HistoryStore::list` must give the same ids in the same order. Exit 1 on a failure.
 - `--bench`: Rust selah's codec paths timed on the image `tests/selah.bcyr` builds, decoding the files it wrote to
-  `build/bench/` (`docs/benchmarks-rust-v-cyrius.md`).
+  `build/bench/`, and (M5) the history and capture-answer benches on the inputs the Cyrius bench builds
+  (`docs/benchmarks-rust-v-cyrius.md`).
+
+`src/t_ai.rs` and `src/t_debug.rs` write generated Cyrius tables (`src/ai_data.cyr`, `src/debug_data.cyr`) from
+Rust's own `char` functions; `--check` covers them.
 
 ## Comparison
 

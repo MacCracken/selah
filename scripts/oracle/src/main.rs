@@ -20,9 +20,11 @@ mod m_error;
 mod m_fmtf;
 mod m_geometry;
 mod m_rfc3339;
+mod m_system;
 mod m_uuid;
 mod m_ai;
 mod t_ai;
+mod t_debug;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -140,7 +142,7 @@ fn main() {
     }
     if let Some(i) = args.iter().position(|a| a == "--reverse") {
         let dir = args.get(i + 1).map(PathBuf::from).unwrap_or_else(|| repo_root().join("build/reverse"));
-        let bad = m_codec::reverse(&dir);
+        let bad = m_codec::reverse(&dir) + m_system::reverse_history(&dir);
         std::process::exit(i32::from(bad > 0));
     }
     let check = args.iter().any(|a| a == "--check");
@@ -170,8 +172,11 @@ fn main() {
     modules.push("codec");
     m_annotate::emit(&mut out, &fixtures);
     modules.push("annotate");
+    m_system::emit(&mut out);
+    modules.push("system");
     let mut src_out = SrcOut::new();
     t_ai::emit(&mut src_out);
+    t_debug::emit(&mut src_out);
     out.insert("modules.txt".to_string(), format!("{}\n", modules.join("\n")).into_bytes());
 
     let mut existing = Vec::new();

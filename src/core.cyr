@@ -84,26 +84,79 @@ fn _sl_ascii_lower(a, n): i64 {
     return out;
 }
 
-# Appends Rust's Debug of a str (`"…"`): `\t \r \n \\ \" \0` escaped, other ASCII controls and DEL as `\u{x}`.
+# 1 when Rust's Debug for str writes the non-ASCII code point cp as `\u{…}` (not printable, or a grapheme extender),
+# from the generated table (src/debug_data.cyr).
+#must_use
+fn _sl_debug_escaped(cp): i64 {
+    var lo = 0;
+    var hi = _SL_DBGESC_N - 1;
+    while (lo <= hi) {
+        var mid = (lo + hi) / 2;
+        if (cp < _SL_DBGESC_LO[mid]) {
+            hi = mid - 1;
+        } elif (cp > _SL_DBGESC_HI[mid]) {
+            lo = mid + 1;
+        } else {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+# Appends `\u{x}`: the code point in lowercase hex without leading zeros.
+fn _sl_debug_u(sb, cp): i64 {
+    str_builder_add_cstr(sb, "\\u{");
+    var started = 0;
+    var sh = 20;
+    while (sh >= 0) {
+        var d = (cp >> sh) & 15;
+        if (d != 0 || started == 1 || sh == 0) {
+            str_builder_putc(sb, load8(_SL_HEX + d));
+            started = 1;
+        }
+        sh = sh - 4;
+    }
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+# Appends Rust's Debug of a str (`"…"`): `\t \r \n \\ \" \0` escaped, other C0 controls, DEL and every non-ASCII
+# character Rust does not print (src/debug_data.cyr) as `\u{x}`, the rest as it is. A byte that starts no valid
+# UTF-8 sequence (never in a Rust str) is written as it is.
 fn _sl_debug_str(sb, p, n): i64 {
     str_builder_putc(sb, 34);
     var i = 0;
     while (i < n) {
         var c = load8(p + i);
+        if (c >= 128) {
+            var l = _sl_utf8_seq(p, i, n);
+            if (l == 0) {
+                str_builder_putc(sb, c);
+                i = i + 1;
+            } else {
+                var cp = c & (127 >> l);
+                var k = 1;
+                while (k < l) {
+                    cp = (cp << 6) | (load8(p + i + k) & 63);
+                    k = k + 1;
+                }
+                if (_sl_debug_escaped(cp) == 1) {
+                    _sl_debug_u(sb, cp);
+                } else {
+                    _sl_sb_bytes(sb, p + i, l);
+                }
+                i = i + l;
+            }
+            continue;
+        }
         if (c == 9) { str_builder_add_cstr(sb, "\\t"); }
         elif (c == 13) { str_builder_add_cstr(sb, "\\r"); }
         elif (c == 10) { str_builder_add_cstr(sb, "\\n"); }
         elif (c == 92) { str_builder_add_cstr(sb, "\\\\"); }
         elif (c == 34) { str_builder_add_cstr(sb, "\\\""); }
         elif (c == 0) { str_builder_add_cstr(sb, "\\0"); }
-        elif (c < 32 || c == 127) {
-            str_builder_add_cstr(sb, "\\u{");
-            if (c >= 16) { str_builder_putc(sb, load8(_SL_HEX + (c >> 4))); }
-            str_builder_putc(sb, load8(_SL_HEX + (c & 15)));
-            str_builder_putc(sb, 125);
-        } else {
-            str_builder_putc(sb, c);
-        }
+        elif (c < 32 || c == 127) { _sl_debug_u(sb, c); }
+        else { str_builder_putc(sb, c); }
         i = i + 1;
     }
     str_builder_putc(sb, 34);
@@ -782,4 +835,131 @@ fn SlAnnotation_from_json(p, n, detail_out = 0): Result {
     var v = _sl_json_parse(p, n);
     if (v == 0) { return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "annotation: not a JSON document"); }
     return _sl_annotation_from_value(v, detail_out);
+}
+
+# ── CaptureRegion ─────────────────────────────────────────────────────────────────────
+
+enum SlCaptureRegionKind {
+    SL_REGION_FULL_SCREEN = 0;
+    SL_REGION_RECT = 1;
+    SL_REGION_WINDOW = 2;
+}
+
+# What to capture (Rust: CaptureRegion): the whole screen, a rect, or a window by id (a NUL-terminated string).
+struct SlCaptureRegion { kind: i64; rect: SlRect; window: i64; }
+
+# ── Monitor ───────────────────────────────────────────────────────────────────────────
+
+# A connected monitor (Rust: core::Monitor): its id ("HDMI-A-1") and name as Strs, its size, its offset in the
+# virtual layout (i32), and whether it is the primary one. One freelist block holds it and its strings.
+struct SlMonitor { id: i64; name: i64; width: i64; height: i64; x: i64; y: i64; primary: i64; }
+
+#must_use
+fn _sl_as_monitor(p): *SlMonitor {
+    return p;
+}
+
+# A new monitor; `id` and `name` are (pointer, length) pairs. 0 when out of memory.
+#must_use
+fn SlMonitor_new(id, idlen, name, namelen, width, height, x, y, primary): *SlMonitor {
+    var m: *SlMonitor = _sl_as_monitor(fl_alloc(sizeof(SlMonitor) + 32 + idlen + namelen + 2));
+    if (m == 0) { return 0; }
+    var h = _sl_addr(m) + sizeof(SlMonitor);
+    var d = h + 32;
+    if (idlen > 0) { memcpy(d, id, idlen); }
+    store8(d + idlen, 0);
+    store64(h, d);
+    store64(h + 8, idlen);
+    var d2 = d + idlen + 1;
+    if (namelen > 0) { memcpy(d2, name, namelen); }
+    store8(d2 + namelen, 0);
+    store64(h + 16, d2);
+    store64(h + 24, namelen);
+    m.id = h;
+    m.name = h + 16;
+    m.width = width;
+    m.height = height;
+    m.x = x;
+    m.y = y;
+    m.primary = primary;
+    return m;
+}
+
+# Frees a monitor (one block: the struct and its strings).
+fn SlMonitor_free(m: *SlMonitor): i64 {
+    if (m != 0) { fl_free(m); }
+    return 0;
+}
+
+# Appends serde's JSON for the monitor: {"id":…,"name":…,"width":…,"height":…,"x":…,"y":…,"primary":…}.
+fn SlMonitor_to_json(m: *SlMonitor, sb): i64 {
+    str_builder_add_cstr(sb, "{\"id\":");
+    _sl_json_str_s(sb, m.id);
+    str_builder_add_cstr(sb, ",\"name\":");
+    _sl_json_str_s(sb, m.name);
+    str_builder_add_cstr(sb, ",\"width\":");
+    str_builder_add_int(sb, m.width);
+    str_builder_add_cstr(sb, ",\"height\":");
+    str_builder_add_int(sb, m.height);
+    str_builder_add_cstr(sb, ",\"x\":");
+    str_builder_add_int(sb, m.x);
+    str_builder_add_cstr(sb, ",\"y\":");
+    str_builder_add_int(sb, m.y);
+    if (m.primary == 1) {
+        str_builder_add_cstr(sb, ",\"primary\":true}");
+    } else {
+        str_builder_add_cstr(sb, ",\"primary\":false}");
+    }
+    return 0;
+}
+
+# A JSON number as serde reads it into an i32 field: an integer in i32's range only (a float, even -0, is refused).
+# Writes it at out and returns 1, or returns 0.
+fn _sl_json_as_i32(v, out): i64 {
+    if (v == 0 || bayan_json_v_tag(v) != JTAG_INT) { return 0; }
+    var x = bayan_json_v_int(v);
+    if (x < -2147483648 || x > 2147483647) { return 0; }
+    store64(out, x);
+    return 1;
+}
+
+# A monitor from a bayan value, as serde's derive reads one (an object, or the array of its seven fields).
+# Ok(*SlMonitor) or Err(SL_ERR_SERDE).
+fn _sl_monitor_from_value(v, detail_out): Result {
+    if (v == 0 || (bayan_json_v_is_obj(v) == false && bayan_json_v_is_arr(v) == false)) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "monitor: invalid type: expected struct Monitor");
+    }
+    var id = _sl_json_as_str(_sl_json_field(v, "id", 7, 0));
+    var name = _sl_json_as_str(_sl_json_field(v, "name", 7, 1));
+    if (id == 0 || name == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "monitor: `id` and `name` must be strings");
+    }
+    var w = _sl_json_as_uint(_sl_json_field(v, "width", 7, 2), 4294967295);
+    var h = _sl_json_as_uint(_sl_json_field(v, "height", 7, 3), 4294967295);
+    var x = 0;
+    var y = 0;
+    var okx = _sl_json_as_i32(_sl_json_field(v, "x", 7, 4), &x);
+    var oky = _sl_json_as_i32(_sl_json_field(v, "y", 7, 5), &y);
+    if (w < 0 || h < 0 || okx == 0 || oky == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "monitor: `width`, `height` (u32), `x`, `y` (i32) required");
+    }
+    var pv = _sl_json_field(v, "primary", 7, 6);
+    if (pv == 0 || bayan_json_v_tag(pv) != JTAG_BOOL) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "monitor: `primary` must be a bool");
+    }
+    var prim = 0;
+    if (bayan_json_v_bool(pv) != 0) { prim = 1; }
+    var m = SlMonitor_new(str_data(id), str_len(id), str_data(name), str_len(name), w, h, x, y, prim);
+    if (m == 0) { return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "monitor: out of memory"); }
+    return Ok(m);
+}
+
+# A monitor from JSON p[0..n). Ok(*SlMonitor) or Err(SL_ERR_SERDE).
+fn SlMonitor_from_json(p, n, detail_out = 0): Result {
+    var a = _sl_scratch_new();
+    if (a == 0) { return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "monitor: out of memory"); }
+    var t, v = _sl_monitor_from_value(_sl_json_parse_a(a, p, n), detail_out);
+    _sl_scratch_free(a);
+    if (is_err_result(t) == 1) { return Err(v); }
+    return Ok(v);
 }

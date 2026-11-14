@@ -9,7 +9,7 @@ fn _s_is(s, text): i64 {
     return s != 0 && str_len(s) == n && memeq(str_data(s), text, n) == 1;
 }
 
-# Smoke-tests the bundle: geometry, core, errors, JSON, codecs, annotation.
+# Smoke-tests the bundle: geometry, core, errors, JSON, codecs, annotation, the clients and the history.
 fn main(): i64 {
     alloc_init();
     test_group("bundle");
@@ -41,6 +41,21 @@ fn main(): i64 {
     var c: *SlAnnotationCanvas = SlAnnotationCanvas_new(2, 2);
     SlAnnotationCanvas_apply_redaction(c, r);
     assert(SlAnnotationCanvas_count(c) == 1 && str_len(SlAnnotationCanvas_to_svg(c)) > 0, "canvas and SVG");
+    # M5: the system modules, through the bundle.
+    var cc: *SlCaptureClient = SlCaptureClient_new("http://localhost:8090/");
+    assert(_s_is(str_from(SlCaptureClient_base_url(cc)), "http://localhost:8090"), "CaptureClient::new");
+    var dc: *SlDaimonClient = SlDaimonClient_new();
+    assert(_s_is(str_from(SlDaimonClient_endpoint(dc)), "http://localhost:8090"), "DaimonClient::new");
+    var hs: *SlHistoryStore = SlHistoryStore_open("/tmp/selah_bundle_smoke.jsonl");
+    var lt, lv = SlHistoryStore_list(hs, 10);
+    assert(is_ok(lt) == 1 && vec_len(lv) == 0, "HistoryStore::list on a missing file");
+    # SL_VERSION (src/version_str.cyr, the User-Agent's) must be VERSION's text.
+    var vn = 0;
+    var vf = file_read_whole_max("VERSION", 64, &vn);
+    while (vn > 0 && (load8(vf + vn - 1) == 10 || load8(vf + vn - 1) == 13 || load8(vf + vn - 1) == 32)) {
+        vn = vn - 1;
+    }
+    assert(vf != 0 && vn == strlen(SL_VERSION) && memeq(vf, SL_VERSION, vn) == 1, "SL_VERSION is VERSION");
     return assert_summary();
 }
 

@@ -1,0 +1,216 @@
+# mock_http.cyr — a one-request HTTP/1.1 server on 127.0.0.1, on a thread (Rust: http::test_server::serve_once).
+#
+# The port plan's M5 test seam (M0 probe 4e). The server accepts one connection, reads one request (its head, and a
+# body by Content-Length), keeps the raw bytes, answers, and closes. Modes:
+#   0  answer `HTTP/1.1 <status> X` with Content-Type application/json, Content-Length and Connection: close;
+#   1  never answer: hold the connection until the client gives up (a timeout test);
+#   2  send `body` as the whole raw response (framing tests).
+# The listener gives up after 60 s with no client (a test whose request is refused before it is sent still ends; the
+# slow paths, like the OCR downscale under qemu, take several seconds before they connect).
+
+struct SlMock { lfd: i64; port: i64; status: i64; body: i64; blen: i64; raw: i64; rawlen: i64; thread: i64;
+    mode: i64; }
+
+#must_use
+fn _mock_as(p): *SlMock {
+    return p;
+}
+
+# The index of "\r\n\r\n" in p[0..n), or -1.
+#must_use
+fn _mock_head_end(p, n): i64 {
+    var i = 0;
+    while (i + 3 < n) {
+        if (load8(p + i) == 13 && load8(p + i + 1) == 10 && load8(p + i + 2) == 13 && load8(p + i + 3) == 10) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+# 1 when p[0..n) equals the NUL-terminated `name`, ignoring ASCII case.
+#must_use
+fn _mock_ieq(p, n, name): i64 {
+    if (strlen(name) != n) { return 0; }
+    var i = 0;
+    while (i < n) {
+        var a = load8(p + i);
+        var b = load8(name + i);
+        if (a >= 65 && a <= 90) { a = a + 32; }
+        if (b >= 65 && b <= 90) { b = b + 32; }
+        if (a != b) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# The value of header `name` in the request head p[0..he) as (start, length), or (0, -1).
+fn _mock_find_header(p, he, name): (i64, i64) {
+    var i = 0;
+    while (i < he && load8(p + i) != 10) { i = i + 1; }
+    i = i + 1;
+    while (i < he) {
+        var e = i;
+        while (e < he && load8(p + e) != 13) { e = e + 1; }
+        var c = i;
+        while (c < e && load8(p + c) != 58) { c = c + 1; }
+        if (c < e && _mock_ieq(p + i, c - i, name) == 1) {
+            var vs = c + 1;
+            while (vs < e && load8(p + vs) == 32) { vs = vs + 1; }
+            var ve = e;
+            while (ve > vs && load8(p + ve - 1) == 32) { ve = ve - 1; }
+            return (p + vs, ve - vs);
+        }
+        i = e + 2;
+    }
+    return (0, -1);
+}
+
+# The server thread.
+fn _mock_thread(arg): i64 {
+    var m: *SlMock = _mock_as(arg);
+    var at, cfd = sock_accept(m.lfd);
+    if (is_err_result(at) == 1) { return 0; }
+    sock_set_recv_timeout(cfd, 5, 0);
+    var cap = 65536;
+    var buf = fl_alloc(cap);
+    var n = 0;
+    var want = -1;
+    while (want < 0 || n < want) {
+        if (n == cap) {
+            var nb = fl_alloc(cap * 2);
+            memcpy(nb, buf, n);
+            fl_free(buf);
+            buf = nb;
+            cap = cap * 2;
+        }
+        var rt, got = sock_recv(cfd, buf + n, cap - n);
+        if (is_err_result(rt) == 1 || got <= 0) { break; }
+        n = n + got;
+        if (want < 0) {
+            var he = _mock_head_end(buf, n);
+            if (he >= 0) {
+                var cl = 0;
+                var vp, vl = _mock_find_header(buf, he, "content-length");
+                var k = 0;
+                while (k < vl) {
+                    cl = cl * 10 + load8(vp + k) - 48;
+                    k = k + 1;
+                }
+                want = he + 4 + cl;
+            }
+        }
+    }
+    m.raw = buf;
+    m.rawlen = n;
+    if (m.mode == 1) {
+        # Hold the connection open, answering nothing, until the client closes it or 5 s pass.
+        var hold: u8[64];
+        var ht, hn = sock_recv(cfd, &hold, 64);
+        sock_close(cfd);
+        return 0;
+    }
+    if (m.mode == 2) {
+        sock_send_all(cfd, m.body, m.blen);
+        sock_close(cfd);
+        return 0;
+    }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "HTTP/1.1 ");
+    str_builder_add_int(sb, m.status);
+    str_builder_add_cstr(sb, " X\r\nContent-Type: application/json\r\nContent-Length: ");
+    str_builder_add_int(sb, m.blen);
+    str_builder_add_cstr(sb, "\r\nConnection: close\r\n\r\n");
+    var head = str_builder_build(sb);
+    sock_send_all(cfd, str_data(head), str_len(head));
+    if (m.blen > 0) { sock_send_all(cfd, m.body, m.blen); }
+    sock_close(cfd);
+    return 0;
+}
+
+# Starts a server in `mode` that answers `status` with body[0..blen). 0 when no socket could be had.
+fn _mock_serve_mode(mode, status, body, blen): *SlMock {
+    var m: *SlMock = _mock_as(fl_calloc(sizeof(SlMock)));
+    var st, fd = tcp_socket();
+    if (is_err_result(st) == 1) { return 0; }
+    var bt, bv = sock_bind(fd, INADDR_LOOPBACK(), 0);
+    if (is_err_result(bt) == 1) { return 0; }
+    var lt, lv = sock_listen(fd, 4);
+    if (is_err_result(lt) == 1) { return 0; }
+    var sa: u8[32];
+    var salen: u8[8];
+    store32(&salen, 16);
+    sys_getsockname(fd, &sa, &salen);
+    m.port = (load8(&sa + 2) << 8) | load8(&sa + 3);
+    sock_set_recv_timeout(fd, 60, 0);
+    m.lfd = fd;
+    m.status = status;
+    m.body = body;
+    m.blen = blen;
+    m.mode = mode;
+    m.thread = thread_create(&_mock_thread, m);
+    return m;
+}
+
+# Rust's serve_once(status, body): body is NUL-terminated.
+fn _mock_serve(status, body): *SlMock {
+    return _mock_serve_mode(0, status, body, strlen(body));
+}
+
+# The server's base URL, "http://127.0.0.1:<port>" (NUL-terminated).
+#must_use
+fn _mock_url(m: *SlMock): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "http://127.0.0.1:");
+    str_builder_add_int(sb, m.port);
+    return str_data(str_builder_build(sb));
+}
+
+# Waits for the server thread to end and closes the listener (Rust: rx.recv()).
+fn _mock_join(m: *SlMock): i64 {
+    thread_join(m.thread);
+    sock_close(m.lfd);
+    return 0;
+}
+
+# The request line, without its CRLF, as a Str.
+#must_use
+fn _mock_request_line(m: *SlMock): i64 {
+    var e = 0;
+    while (e < m.rawlen && load8(m.raw + e) != 13) { e = e + 1; }
+    var hdr: i64[2];
+    hdr[0] = m.raw;
+    hdr[1] = e;
+    var sb = str_builder_new();
+    str_builder_add(sb, &hdr);
+    return str_builder_build(sb);
+}
+
+# The value of request header `name` (any case) as a Str, or 0 when it was not sent.
+#must_use
+fn _mock_header(m: *SlMock, name): i64 {
+    var he = _mock_head_end(m.raw, m.rawlen);
+    if (he < 0) { return 0; }
+    var vp, vl = _mock_find_header(m.raw, he, name);
+    if (vl < 0) { return 0; }
+    var hdr: i64[2];
+    hdr[0] = vp;
+    hdr[1] = vl;
+    var sb = str_builder_new();
+    str_builder_add(sb, &hdr);
+    return str_builder_build(sb);
+}
+
+# The request body as a Str.
+#must_use
+fn _mock_body(m: *SlMock): i64 {
+    var he = _mock_head_end(m.raw, m.rawlen);
+    var hdr: i64[2];
+    hdr[0] = m.raw + he + 4;
+    hdr[1] = m.rawlen - (he + 4);
+    if (he < 0) { hdr[1] = 0; }
+    var sb = str_builder_new();
+    str_builder_add(sb, &hdr);
+    return str_builder_build(sb);
+}

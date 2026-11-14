@@ -65,11 +65,201 @@ fn _sl_json_key(sb, key): i64 {
 
 # ── reading ───────────────────────────────────────────────────────────────────────────
 
-# Parse p[0..n) into a bayan value tree; 0 when it isn't one JSON document.
+# The length of the UTF-8 sequence at p[i] (its first byte 0x80 or above) by Rust's `str::from_utf8` rules (no
+# overlong form, no surrogate, nothing past U+10FFFF), or 0 when no valid sequence starts there.
+#must_use
+fn _sl_utf8_seq(p, i, n): i64 {
+    var c = load8(p + i);
+    var len = 0;
+    var lo = 128;
+    var hi = 191;
+    if (c >= 194 && c <= 223) {
+        len = 2;
+    } elif (c == 224) {
+        len = 3;
+        lo = 160;
+    } elif (c >= 225 && c <= 236) {
+        len = 3;
+    } elif (c == 237) {
+        len = 3;
+        hi = 159;
+    } elif (c >= 238 && c <= 239) {
+        len = 3;
+    } elif (c == 240) {
+        len = 4;
+        lo = 144;
+    } elif (c >= 241 && c <= 243) {
+        len = 4;
+    } elif (c == 244) {
+        len = 4;
+        hi = 143;
+    } else {
+        return 0;
+    }
+    if (i + len > n) { return 0; }
+    var b1 = load8(p + i + 1);
+    if (b1 < lo || b1 > hi) { return 0; }
+    var k = 2;
+    while (k < len) {
+        var b = load8(p + i + k);
+        if (b < 128 || b > 191) { return 0; }
+        k = k + 1;
+    }
+    return len;
+}
+
+# 1 when p[0..n) is UTF-8 (Rust's `str::from_utf8`).
+#must_use
+fn _sl_utf8_valid(p, n): i64 {
+    var i = 0;
+    while (i < n) {
+        if (load8(p + i) < 128) {
+            i = i + 1;
+        } else {
+            var l = _sl_utf8_seq(p, i, n);
+            if (l == 0) { return 0; }
+            i = i + l;
+        }
+    }
+    return 1;
+}
+
+# 1 when the integer token d[0..n) (digits, after any sign) is beyond i64: more than 19 digits, or 19 digits above
+# 9223372036854775807 (9223372036854775808 when negative).
+#must_use
+fn _sl_json_int_wide(d, n, neg): i64 {
+    if (n < 19) { return 0; }
+    if (n > 19) { return 1; }
+    var lim = "9223372036854775807";
+    if (neg == 1) { lim = "9223372036854775808"; }
+    var i = 0;
+    while (i < 19) {
+        var a = load8(d + i);
+        var b = load8(lim + i);
+        if (a != b) {
+            if (a > b) { return 1; }
+            return 0;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The integer token at p[i..): (end index, 1 when serde_json reads it as a float and bayan would not). serde_json
+# reads a bare `-0` as the float -0.0 and an integer beyond i64 as u64 or f64, where bayan reads the integer 0 and
+# refuses the token. A token with a fraction or exponent is a float to both: (end, 0).
+fn _sl_json_num_tok(p, i, n): (i64, i64) {
+    var s = i;
+    var neg = 0;
+    if (load8(p + s) == 45) {
+        neg = 1;
+        s = s + 1;
+    }
+    var j = s;
+    while (j < n && load8(p + j) >= 48 && load8(p + j) <= 57) { j = j + 1; }
+    var e = j;
+    var fl = 0;
+    while (e < n) {
+        var c = load8(p + e);
+        if ((c >= 48 && c <= 57) || c == 46 || c == 101 || c == 69 || c == 43 || c == 45) {
+            if (c == 46 || c == 101 || c == 69) { fl = 1; }
+            e = e + 1;
+        } else {
+            break;
+        }
+    }
+    if (fl == 1 || e != j) { return (e, 0); }
+    if (neg == 1 && j - s == 1 && load8(p + s) == 48) { return (j, 1); }
+    return (j, _sl_json_int_wide(p + s, j - s, neg));
+}
+
+# The index just past the JSON string whose opening quote is at p[i0 - 1], scanning from i0; -1 when a byte inside it
+# is not UTF-8 (Rust's `str::from_utf8` rules). Plain ASCII is skipped a word at a time: a word with no byte that is
+# non-ASCII, a quote or a backslash (a SWAR test) has nothing to look at. An unterminated string ends at n (bayan
+# refuses it).
+fn _sl_json_str_end(p, i0, n): i64 {
+    var i = i0;
+    while (i < n) {
+        if (i + 8 <= n) {
+            var w = load64(p + i);
+            var q = w ^ 0x2222222222222222;
+            var bs = w ^ 0x5C5C5C5C5C5C5C5C;
+            var zq = (q - 0x0101010101010101) & (-1 ^ q);
+            var zb = (bs - 0x0101010101010101) & (-1 ^ bs);
+            if (((w | zq | zb) & 0x8080808080808080) == 0) {
+                i = i + 8;
+                continue;
+            }
+        }
+        var d = load8(p + i);
+        if (d == 34) { return i + 1; }
+        if (d == 92) {
+            i = i + 2;
+        } elif (d >= 128) {
+            var l = _sl_utf8_seq(p, i, n);
+            if (l == 0) { return -1; }
+            i = i + l;
+        } else {
+            i = i + 1;
+        }
+    }
+    return n;
+}
+
+# p[0..n) made ready for bayan to read as serde_json reads it, in one pass: (buffer, length), or (0, 0) when a string
+# in it is not UTF-8 (serde_json requires that of every string it keeps; ADR 0002 #21) or a non-ASCII byte stands
+# outside a string (not JSON). An integer token serde_json reads as a float gets `.0` appended so bayan reads a float
+# too: a bare `-0` keeps its sign, and an integer past i64 is read as the nearest double instead of refused. The input
+# comes back unchanged when no token needs it; a rewritten copy is allocated from `a`.
+fn _sl_json_prep(a, p, n): (i64, i64) {
+    var sb = 0;
+    var from = 0;
+    var i = 0;
+    var hdr: i64[2];
+    while (i < n) {
+        var c = load8(p + i);
+        if (c == 34) {
+            i = _sl_json_str_end(p, i + 1, n);
+            if (i < 0) { return (0, 0); }
+        } elif (c == 45 || (c >= 48 && c <= 57)) {
+            var e, wide = _sl_json_num_tok(p, i, n);
+            if (wide == 1) {
+                if (sb == 0) { sb = str_builder_new_a(a); }
+                if (sb == 0) { return (0, 0); }
+                hdr[0] = p + from;
+                hdr[1] = e - from;
+                str_builder_add_a(a, sb, &hdr);
+                str_builder_add_cstr_a(a, sb, ".0");
+                from = e;
+            }
+            i = e;
+        } elif (c >= 128) {
+            return (0, 0);
+        } else {
+            i = i + 1;
+        }
+    }
+    if (sb == 0) { return (p, n); }
+    hdr[0] = p + from;
+    hdr[1] = n - from;
+    str_builder_add_a(a, sb, &hdr);
+    var s = str_builder_build_a(a, sb);
+    return (str_data(s), str_len(s));
+}
+
+# Parse p[0..n) into a bayan value tree, prepared by _sl_json_prep; 0 when it isn't one JSON document.
 #must_use
 fn _sl_json_parse(p, n): i64 {
-    if (n < 0) { return 0; }
-    return bayan_json_v_parse_buf(p, n);
+    return _sl_json_parse_a(default_alloc(), p, n);
+}
+
+# As _sl_json_parse, with the value tree (and any rewritten copy) allocated from `a`.
+#must_use
+fn _sl_json_parse_a(a, p, n): i64 {
+    if (n < 0 || a == 0) { return 0; }
+    var q, qn = _sl_json_prep(a, p, n);
+    if (q == 0) { return 0; }
+    return bayan_json_v_parse_buf_a(a, q, qn);
 }
 
 # The member `key` of object v: 0 when v is not an object or has no such member.
@@ -81,7 +271,9 @@ fn _sl_json_member(v, key): i64 {
 }
 
 # A JSON number as serde reads it into an f64 field: an integer converts (Rust `as f64`), a float is the parse's
-# correctly rounded double. Writes the value through `out` and returns 1, or returns 0 for anything else.
+# correctly rounded double. A literal past the f64 range (`1e400`), which bayan reads as infinity, is refused, as
+# serde_json refuses it (NumberOutOfRange). Writes the value through `out` and returns 1, or returns 0 for anything
+# else.
 fn _sl_json_as_f64(v, out): i64 {
     if (v == 0) { return 0; }
     var tag = bayan_json_v_tag(v);
@@ -91,10 +283,23 @@ fn _sl_json_as_f64(v, out): i64 {
         return 1;
     }
     if (tag == JTAG_FLOAT) {
-        store64(out, bayan_json_v_float(v));
+        var bits = bayan_json_v_float(v);
+        if (((bits >> 52) & 2047) == 2047) { return 0; }
+        store64(out, bits);
         return 1;
     }
     return 0;
+}
+
+# A JSON number as serde reads it into an unsigned integer field of at most `max`: an integer 0..=max only (a float,
+# even 1.0 or -0, is refused, as serde_json refuses it). Returns the value, or -1.
+#must_use
+fn _sl_json_as_uint(v, max): i64 {
+    if (v == 0) { return -1; }
+    if (bayan_json_v_tag(v) != JTAG_INT) { return -1; }
+    var x = bayan_json_v_int(v);
+    if (x < 0 || x > max) { return -1; }
+    return x;
 }
 
 # A JSON number as serde reads it into a u8 field: an integer 0..=255 only (a float, even 1.0, is refused, as

@@ -1,0 +1,777 @@
+# daimon.cyr — the daimon and hoosh clients (Rust: rust-old/src/daimon.rs), retargeted to the live Cyrius services
+# (port plan D2; each change in ADR 0002 #4–#7).
+#
+#   - DaimonConfig and HooshConfig keep Rust's fields, defaults and JSON; HooshConfig gains `model` (no default: hoosh
+#     refuses a chat request without one), written only when set, so a Rust-written config reads back unchanged.
+#   - DaimonConfig's Debug never shows the API key.
+#   - DaimonClient.register_agent posts {"name", "type": "Service"} to `POST /v1/agents` and returns daimon's integer
+#     `id` as a decimal string (Rust posted to `/v1/agents/register`, which the Cyrius daimon does not serve).
+#   - DaimonClient.heartbeat is dropped: nothing in selah calls it, and daimon keeps no liveness for an API agent.
+#   - HooshClient.ocr asks `POST /v1/chat/completions` (Rust: `/v1/vision/ocr`, never served): one user message whose
+#     content is a text part with the OCR instruction and an `image_url` part with a `data:` URL. The model's answer,
+#     the first choice's content, is read as Rust read its OCR response: `text` (a string, else empty), `confidence`
+#     (a number, else 0, clamped to 0..1), `regions` (each `{x, y, width, height}` normalized, a non-finite or empty
+#     one dropped: Rust's parse_region).
+#   - hoosh refuses a request body over 1 MiB, which a full-screen image usually is (L8, filed). When the request
+#     would be over, the image is decoded, re-encoded as JPEG and, while still too big, shrunk by an area average; the
+#     regions the model returns are scaled back to the source image's coordinates.
+
+const _SL_DAIMON_TIMEOUT_MS = 30000;
+const _SL_HOOSH_TIMEOUT_MS = 60000;
+const _SL_MAX_AGENT_ID_LEN = 256;
+# hoosh's MAX_REQUEST_BODY (src/lib/pool.cyr).
+const _SL_HOOSH_MAX_REQUEST = 1048576;
+
+struct SlDaimonConfig { endpoint: i64; api_key: i64; }
+struct SlHooshConfig { endpoint: i64; model: i64; }
+struct SlDaimonClient { endpoint: i64; api_key: i64; timeout_ms: i64; }
+struct SlHooshClient { endpoint: i64; model: i64; timeout_ms: i64; }
+
+#must_use
+fn _sl_as_dconf(p): *SlDaimonConfig {
+    return p;
+}
+
+#must_use
+fn _sl_as_hconf(p): *SlHooshConfig {
+    return p;
+}
+
+#must_use
+fn _sl_as_daimon(p): *SlDaimonClient {
+    return p;
+}
+
+#must_use
+fn _sl_as_hoosh(p): *SlHooshClient {
+    return p;
+}
+
+# A freelist copy of the NUL-terminated `p`, or 0 for 0.
+#must_use
+fn _sl_fl_dupz(p): i64 {
+    if (p == 0) { return 0; }
+    return _sl_fl_dup(p, strlen(p));
+}
+
+# ── configuration ────────────────────────────────────────────────────────────────────
+
+# A daimon configuration (NUL-terminated strings, copied; `api_key` 0 for none). 0 when out of memory.
+#must_use
+fn SlDaimonConfig_new(endpoint, api_key): *SlDaimonConfig {
+    var c: *SlDaimonConfig = _sl_as_dconf(fl_calloc(sizeof(SlDaimonConfig)));
+    if (c == 0) { return 0; }
+    c.endpoint = _sl_fl_dupz(endpoint);
+    c.api_key = _sl_fl_dupz(api_key);
+    return c;
+}
+
+# Rust's DaimonConfig::default(): http://localhost:8090, no API key.
+#must_use
+fn SlDaimonConfig_default(): *SlDaimonConfig {
+    return SlDaimonConfig_new("http://localhost:8090", 0);
+}
+
+# Frees a daimon configuration.
+fn SlDaimonConfig_free(c: *SlDaimonConfig): i64 {
+    if (c == 0) { return 0; }
+    if (c.endpoint != 0) { fl_free(c.endpoint); }
+    if (c.api_key != 0) { fl_free(c.api_key); }
+    fl_free(c);
+    return 0;
+}
+
+# Appends Rust's Debug of the config, with the key replaced:
+# `DaimonConfig { endpoint: "…", api_key: Some("<redacted>") }` (or `None`).
+fn SlDaimonConfig_fmt_debug(c: *SlDaimonConfig, sb): i64 {
+    str_builder_add_cstr(sb, "DaimonConfig { endpoint: ");
+    _sl_debug_str(sb, c.endpoint, strlen(c.endpoint));
+    if (c.api_key != 0) {
+        str_builder_add_cstr(sb, ", api_key: Some(\"<redacted>\") }");
+    } else {
+        str_builder_add_cstr(sb, ", api_key: None }");
+    }
+    return 0;
+}
+
+# Appends serde's JSON: {"endpoint":…,"api_key":…|null}.
+fn SlDaimonConfig_to_json(c: *SlDaimonConfig, sb): i64 {
+    str_builder_add_cstr(sb, "{\"endpoint\":");
+    _sl_json_str(sb, c.endpoint, strlen(c.endpoint));
+    str_builder_add_cstr(sb, ",\"api_key\":");
+    if (c.api_key == 0) {
+        str_builder_add_cstr(sb, "null");
+    } else {
+        _sl_json_str(sb, c.api_key, strlen(c.api_key));
+    }
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+# An Option<String> field as serde reads it: absent or null is None (stores 0), a string is Some (stores a freelist
+# copy). Returns 1, or 0 for any other type.
+fn _sl_json_opt_str(v, out): i64 {
+    store64(out, 0);
+    if (v == 0 || bayan_json_v_is_null(v) == true) { return 1; }
+    var s = _sl_json_as_str(v);
+    if (s == 0) { return 0; }
+    store64(out, _sl_fl_dup(str_data(s), str_len(s)));
+    return 1;
+}
+
+# A DaimonConfig from JSON p[0..n), as serde's derive reads one (an object or the array of its two fields).
+# Ok(*SlDaimonConfig) or Err(SL_ERR_SERDE).
+fn SlDaimonConfig_from_json(p, n, detail_out = 0): Result {
+    var a = _sl_scratch_new();
+    var v = _sl_json_parse_a(a, p, n);
+    var ep = 0;
+    var key = 0;
+    var ok = 0;
+    # serde's derive reads an object, or an array of exactly its two fields (an Option is not optional there).
+    var shape = 0;
+    if (v != 0 && bayan_json_v_is_obj(v) == true) { shape = 1; }
+    if (v != 0 && bayan_json_v_is_arr(v) == true && bayan_json_v_arr_len(v) == 2) { shape = 1; }
+    if (shape == 1) { ep = _sl_json_as_str(_sl_json_field(v, "endpoint", 2, 0)); }
+    if (ep != 0) { ok = _sl_json_opt_str(_sl_json_field(v, "api_key", 2, 1), &key); }
+    var c = 0;
+    if (ok == 1) {
+        c = SlDaimonConfig_new(0, 0);
+        if (c != 0) {
+            var cc: *SlDaimonConfig = _sl_as_dconf(c);
+            cc.endpoint = _sl_fl_dup(str_data(ep), str_len(ep));
+            cc.api_key = key;
+        }
+    }
+    _sl_scratch_free(a);
+    if (c == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "DaimonConfig: `endpoint` and `api_key` (or null) expected");
+    }
+    return Ok(c);
+}
+
+# A hoosh configuration (NUL-terminated strings, copied; `model` 0 for none). 0 when out of memory.
+#must_use
+fn SlHooshConfig_new(endpoint, model): *SlHooshConfig {
+    var c: *SlHooshConfig = _sl_as_hconf(fl_calloc(sizeof(SlHooshConfig)));
+    if (c == 0) { return 0; }
+    c.endpoint = _sl_fl_dupz(endpoint);
+    c.model = _sl_fl_dupz(model);
+    return c;
+}
+
+# Rust's HooshConfig::default(): http://localhost:8088, and (new) no model.
+#must_use
+fn SlHooshConfig_default(): *SlHooshConfig {
+    return SlHooshConfig_new("http://localhost:8088", 0);
+}
+
+# Frees a hoosh configuration.
+fn SlHooshConfig_free(c: *SlHooshConfig): i64 {
+    if (c == 0) { return 0; }
+    if (c.endpoint != 0) { fl_free(c.endpoint); }
+    if (c.model != 0) { fl_free(c.model); }
+    fl_free(c);
+    return 0;
+}
+
+# Appends serde's JSON: {"endpoint":…}, with "model" after it only when one is set (Rust's shape otherwise).
+fn SlHooshConfig_to_json(c: *SlHooshConfig, sb): i64 {
+    str_builder_add_cstr(sb, "{\"endpoint\":");
+    _sl_json_str(sb, c.endpoint, strlen(c.endpoint));
+    if (c.model != 0) {
+        str_builder_add_cstr(sb, ",\"model\":");
+        _sl_json_str(sb, c.model, strlen(c.model));
+    }
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+# A HooshConfig from JSON p[0..n): `endpoint` required, `model` optional. Ok(*SlHooshConfig) or Err(SL_ERR_SERDE).
+fn SlHooshConfig_from_json(p, n, detail_out = 0): Result {
+    var a = _sl_scratch_new();
+    var v = _sl_json_parse_a(a, p, n);
+    var ep = 0;
+    var model = 0;
+    var ok = 0;
+    if (v != 0 && bayan_json_v_is_obj(v) == true) {
+        ep = _sl_json_as_str(_sl_json_member(v, "endpoint"));
+        if (ep != 0) { ok = _sl_json_opt_str(_sl_json_member(v, "model"), &model); }
+    } elif (v != 0 && bayan_json_v_is_arr(v) == true && bayan_json_v_arr_len(v) == 1) {
+        # Rust's one-field struct also reads as a one-element array.
+        ep = _sl_json_as_str(bayan_json_v_arr_get(v, 0));
+        if (ep != 0) { ok = 1; }
+    }
+    var c = 0;
+    if (ok == 1) {
+        c = SlHooshConfig_new(0, 0);
+        if (c != 0) {
+            var cc: *SlHooshConfig = _sl_as_hconf(c);
+            cc.endpoint = _sl_fl_dup(str_data(ep), str_len(ep));
+            cc.model = model;
+        }
+    }
+    _sl_scratch_free(a);
+    if (c == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "HooshConfig: `endpoint` (a string) expected");
+    }
+    return Ok(c);
+}
+
+# ── agent ids and endpoints ──────────────────────────────────────────────────────────
+
+# Rust's validate_agent_id: not empty, not `.` or `..`, at most 256 bytes, no control character (Unicode Cc: C0,
+# DEL, C1). Ok(0) or Err(SL_ERR_API) with the id's first 64 bytes in Debug form.
+fn _sl_validate_agent_id(id, n, detail_out = 0): Result {
+    var bad = 0;
+    if (n == 0 || n > _SL_MAX_AGENT_ID_LEN) { bad = 1; }
+    if (n == 1 && load8(id) == 46) { bad = 1; }
+    if (n == 2 && load8(id) == 46 && load8(id + 1) == 46) { bad = 1; }
+    var i = 0;
+    while (bad == 0 && i < n) {
+        var c = load8(id + i);
+        if (c < 32 || c == 127) { bad = 1; }
+        if (c == 194 && i + 1 < n && load8(id + i + 1) >= 128 && load8(id + i + 1) <= 159) { bad = 1; }
+        i = i + 1;
+    }
+    if (bad == 0) { return Ok(0); }
+    if (detail_out == 0) { return Err(SL_ERR_API); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "invalid agent id ");
+    _sl_debug_str(sb, id, _sl_truncate(id, n, 64));
+    return _sl_fail(SL_ERR_API, detail_out, str_builder_build(sb));
+}
+
+# ── DaimonClient ─────────────────────────────────────────────────────────────────────
+
+# A client for `config` (copied; the endpoint's trailing slashes dropped), with Rust's 30 s timeout. 0 when out of
+# memory.
+#must_use
+fn SlDaimonClient_with_config(config: *SlDaimonConfig): *SlDaimonClient {
+    var c: *SlDaimonClient = _sl_as_daimon(fl_calloc(sizeof(SlDaimonClient)));
+    if (c == 0) { return 0; }
+    c.endpoint = _sl_fl_dup(config.endpoint, _sl_trim_slashes(config.endpoint));
+    c.api_key = _sl_fl_dupz(config.api_key);
+    c.timeout_ms = _SL_DAIMON_TIMEOUT_MS;
+    return c;
+}
+
+# A client with the default configuration (Rust: DaimonClient::new and Default).
+#must_use
+fn SlDaimonClient_new(): *SlDaimonClient {
+    var cfg = SlDaimonConfig_default();
+    var c = SlDaimonClient_with_config(cfg);
+    SlDaimonConfig_free(cfg);
+    return c;
+}
+
+# Frees a daimon client.
+fn SlDaimonClient_free(c: *SlDaimonClient): i64 {
+    if (c == 0) { return 0; }
+    if (c.endpoint != 0) { fl_free(c.endpoint); }
+    if (c.api_key != 0) { fl_free(c.api_key); }
+    fl_free(c);
+    return 0;
+}
+
+# The endpoint (NUL-terminated, owned by the client).
+#must_use
+fn SlDaimonClient_endpoint(c: *SlDaimonClient): i64 {
+    return c.endpoint;
+}
+
+# Appends the client's Debug, which, like the config's, never shows the key.
+fn SlDaimonClient_fmt_debug(c: *SlDaimonClient, sb): i64 {
+    str_builder_add_cstr(sb, "DaimonClient { config: DaimonConfig { endpoint: ");
+    _sl_debug_str(sb, c.endpoint, strlen(c.endpoint));
+    if (c.api_key != 0) {
+        str_builder_add_cstr(sb, ", api_key: Some(\"<redacted>\") } }");
+    } else {
+        str_builder_add_cstr(sb, ", api_key: None } }");
+    }
+    return 0;
+}
+
+# Appends the registration body daimon's `POST /v1/agents` reads (D2): {"name":…,"type":"Service"}.
+fn _sl_register_body(sb, name): i64 {
+    str_builder_add_cstr(sb, "{\"name\":");
+    _sl_json_str(sb, name, strlen(name));
+    str_builder_add_cstr(sb, ",\"type\":\"Service\"}");
+    return 0;
+}
+
+# Registers with daimon as `name` (D2: `POST /v1/agents` with {"name", "type": "Service"}). Ok(the agent id daimon
+# assigned, its integer `id` as a decimal NUL-terminated Str) or Err(SL_ERR_API).
+fn SlDaimonClient_register_agent(c: *SlDaimonClient, name, detail_out = 0): Result {
+    var segs = vec_new();
+    vec_push(segs, "v1");
+    vec_push(segs, "agents");
+    var ut, url = _sl_endpoint_url(c.endpoint, segs, detail_out);
+    if (is_err_result(ut) == 1) { return Err(url); }
+    var bb = str_builder_new();
+    _sl_register_body(bb, name);
+    var body = str_builder_build(bb);
+    var resp: SlHttpResponse = SlHttpResponse { 0, 0, 0 };
+    var rp: *SlHttpResponse = _sl_as_resp(&resp);
+    var t, v = _sl_http_call("POST", str_data(url), c.api_key, str_data(body), str_len(body), c.timeout_ms,
+        _SL_MAX_API_RESPONSE_BYTES, "daimon register failed", "daimon register", rp, detail_out);
+    if (is_err_result(t) == 1) { return Err(v); }
+    var st, sv = _sl_http_check_status(rp, "daimon register", detail_out);
+    if (is_err_result(st) == 1) {
+        fl_free(rp.body);
+        return Err(sv);
+    }
+    var a = _sl_scratch_new();
+    var root = _sl_json_parse_a(a, rp.body, rp.len);
+    fl_free(rp.body);
+    var why = 0;
+    var idv = 0;
+    if (root == 0) {
+        why = "not a JSON document";
+    } else {
+        idv = _sl_json_member(root, "id");
+        if (idv == 0) {
+            why = "missing field `id`";
+        } elif (bayan_json_v_tag(idv) != JTAG_INT) {
+            why = "`id` must be an integer";
+        }
+    }
+    var id = 0;
+    if (why == 0) {
+        var ib = str_builder_new();
+        str_builder_add_int(ib, bayan_json_v_int(idv));
+        id = str_builder_build(ib);
+    }
+    _sl_scratch_free(a);
+    if (why != 0) { return _sl_http_invalid(detail_out, "daimon register", why); }
+    var vt, vv = _sl_validate_agent_id(str_data(id), str_len(id), detail_out);
+    if (is_err_result(vt) == 1) { return Err(vv); }
+    _sl_log_kv(SK_INFO, "registered with daimon", "agent_id", str_data(id));
+    return Ok(id);
+}
+
+# ── HooshClient ──────────────────────────────────────────────────────────────────────
+
+# A client for `config` (copied; the endpoint's trailing slashes dropped), with Rust's 60 s timeout. 0 when out of
+# memory.
+#must_use
+fn SlHooshClient_with_config(config: *SlHooshConfig): *SlHooshClient {
+    var c: *SlHooshClient = _sl_as_hoosh(fl_calloc(sizeof(SlHooshClient)));
+    if (c == 0) { return 0; }
+    c.endpoint = _sl_fl_dup(config.endpoint, _sl_trim_slashes(config.endpoint));
+    c.model = _sl_fl_dupz(config.model);
+    c.timeout_ms = _SL_HOOSH_TIMEOUT_MS;
+    return c;
+}
+
+# A client with the default configuration (Rust: HooshClient::new and Default). It has no model, so ocr refuses
+# until one is configured.
+#must_use
+fn SlHooshClient_new(): *SlHooshClient {
+    var cfg = SlHooshConfig_default();
+    var c = SlHooshClient_with_config(cfg);
+    SlHooshConfig_free(cfg);
+    return c;
+}
+
+# Frees a hoosh client.
+fn SlHooshClient_free(c: *SlHooshClient): i64 {
+    if (c == 0) { return 0; }
+    if (c.endpoint != 0) { fl_free(c.endpoint); }
+    if (c.model != 0) { fl_free(c.model); }
+    fl_free(c);
+    return 0;
+}
+
+# The endpoint (NUL-terminated, owned by the client).
+#must_use
+fn SlHooshClient_endpoint(c: *SlHooshClient): i64 {
+    return c.endpoint;
+}
+
+var _SL_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+# Appends data[0..n) as standard padded base64 (RFC 4648 §4), straight into the builder (allocator `a`).
+# UPSTREAM(L19): bayan_base64_encode allocates its output on the bump heap only.
+fn _sl_base64_into(a, sb, data, n): i64 {
+    var i = 0;
+    var quad: u8[8];
+    var hdr: i64[2];
+    hdr[0] = &quad;
+    hdr[1] = 4;
+    while (i < n) {
+        var b0 = load8(data + i);
+        var b1 = 0;
+        var b2 = 0;
+        if (i + 1 < n) { b1 = load8(data + i + 1); }
+        if (i + 2 < n) { b2 = load8(data + i + 2); }
+        store8(&quad, load8(_SL_B64 + (b0 >> 2)));
+        store8(&quad + 1, load8(_SL_B64 + (((b0 & 3) << 4) | (b1 >> 4))));
+        store8(&quad + 2, 61);
+        store8(&quad + 3, 61);
+        if (i + 1 < n) { store8(&quad + 2, load8(_SL_B64 + (((b1 & 15) << 2) | (b2 >> 6)))); }
+        if (i + 2 < n) { store8(&quad + 3, load8(_SL_B64 + (b2 & 63))); }
+        str_builder_add_a(a, sb, &hdr);
+        i = i + 3;
+    }
+    return 0;
+}
+
+# What the model is asked (a NUL-terminated Str, built once).
+var _sl_ocr_prompt_s = 0;
+
+#must_use
+fn _sl_ocr_prompt(): i64 {
+    if (_sl_ocr_prompt_s != 0) { return _sl_ocr_prompt_s; }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "Extract all of the text in this image. ");
+    str_builder_add_cstr(sb, "Answer with only a JSON object and nothing else: ");
+    str_builder_add_cstr(sb, "{\"text\": the text, lines separated by \\n, \"confidence\": your confidence from 0 ");
+    str_builder_add_cstr(sb, "to 1, \"regions\": [{\"x\": left, \"y\": top, \"width\": w, \"height\": h} in ");
+    str_builder_add_cstr(sb, "pixels of this image, one per line of text]}.");
+    _sl_ocr_prompt_s = str_builder_build(sb);
+    return _sl_ocr_prompt_s;
+}
+
+# The chat-completions request for data[0..n) of MIME type `mime`, built in allocator `a`: a NUL-terminated Str.
+fn _sl_ocr_request(a, model, mime, data, n): Str {
+    var sb = str_builder_new_a(a);
+    str_builder_add_cstr_a(a, sb, "{\"model\":");
+    var mb = str_builder_new_a(a);
+    _sl_json_str(mb, model, strlen(model));
+    str_builder_add_a(a, sb, str_builder_build_a(a, mb));
+    str_builder_add_cstr_a(a, sb, ",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":");
+    var pb = str_builder_new_a(a);
+    _sl_json_str_s(pb, _sl_ocr_prompt());
+    str_builder_add_a(a, sb, str_builder_build_a(a, pb));
+    str_builder_add_cstr_a(a, sb, "},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:");
+    str_builder_add_cstr_a(a, sb, mime);
+    str_builder_add_cstr_a(a, sb, ";base64,");
+    _sl_base64_into(a, sb, data, n);
+    str_builder_add_cstr_a(a, sb, "\"}}]}]}");
+    return str_builder_build_a(a, sb);
+}
+
+# rgba (w x h) shrunk to w2 x h2 by an area average: each destination pixel is the mean of the source area it covers,
+# partly covered pixels weighted by their coverage. One destination row at a time: the source rows it covers are
+# summed, by coverage, into one accumulator row (weights in 1/65536 steps), which is then averaged across. Memory is
+# one row of the source, not an intermediate image. A new buffer on the freelist, or 0.
+fn _sl_resample_box(rgba, w, h, w2, h2): i64 {
+    var acc = fl_alloc(w * 32);
+    var out = fl_alloc(w2 * h2 * 4);
+    if (acc == 0 || out == 0) {
+        if (acc != 0) { fl_free(acc); }
+        if (out != 0) { fl_free(out); }
+        return 0;
+    }
+    var fw: f64 = f64_from(w);
+    var fw2: f64 = f64_from(w2);
+    var sx: f64 = fw / fw2;
+    var fh: f64 = f64_from(h);
+    var fh2: f64 = f64_from(h2);
+    var sy: f64 = fh / fh2;
+    var area: f64 = sx * sy * 4294967296.0;
+    var yy = 0;
+    while (yy < h2) {
+        var z = 0;
+        while (z < w * 4) {
+            store64(acc + z * 8, 0);
+            z = z + 1;
+        }
+        var fy: f64 = f64_from(yy);
+        var y0: f64 = fy * sy;
+        var y1: f64 = y0 + sy;
+        var fl0: f64 = f64_floor(y0);
+        var r = f64_to(fl0);
+        while (r < h) {
+            var fr: f64 = f64_from(r);
+            if (fr >= y1) { break; }
+            var lo: f64 = fr;
+            if (lo < y0) { lo = y0; }
+            var hi: f64 = fr + 1.0;
+            if (hi > y1) { hi = y1; }
+            var cw: f64 = (hi - lo) * 65536.0 + 0.5;
+            var cf: f64 = f64_floor(cw);
+            var cov = f64_to(cf);
+            var row = rgba + r * w * 4;
+            var k = 0;
+            while (k < w * 4) {
+                store64(acc + k * 8, load64(acc + k * 8) + load8(row + k) * cov);
+                k = k + 1;
+            }
+            r = r + 1;
+        }
+        var xx = 0;
+        while (xx < w2) {
+            var fx: f64 = f64_from(xx);
+            var x0: f64 = fx * sx;
+            var x1: f64 = x0 + sx;
+            var fl1: f64 = f64_floor(x0);
+            var i0 = f64_to(fl1);
+            var c = 0;
+            while (c < 4) {
+                var sum: f64 = 0.0;
+                var i = i0;
+                while (i < w) {
+                    var fi: f64 = f64_from(i);
+                    if (fi >= x1) { break; }
+                    var lo2: f64 = fi;
+                    if (lo2 < x0) { lo2 = x0; }
+                    var hi2: f64 = fi + 1.0;
+                    if (hi2 > x1) { hi2 = x1; }
+                    var cw2: f64 = (hi2 - lo2) * 65536.0 + 0.5;
+                    var cf2: f64 = f64_floor(cw2);
+                    var av0: f64 = f64_from(load64(acc + (i * 4 + c) * 8));
+                    sum = sum + av0 * cf2;
+                    i = i + 1;
+                }
+                var avg: f64 = sum / area + 0.5;
+                var av: f64 = f64_floor(avg);
+                store8(out + (yy * w2 + xx) * 4 + c, _sl_clamp_i64(f64_to(av), 0, 255));
+                c = c + 1;
+            }
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    fl_free(acc);
+    return out;
+}
+
+# Rust's parse_region over a bayan value, with the downscale's factors: {x, y, width, height} as JSON numbers (else
+# none), each multiplied by its axis's factor in f64 and narrowed to f32 (`as f32`), the rect kept when finite with an
+# area above 0, normalized. Writes it at out and returns 1, or returns 0.
+fn _sl_parse_region(v, fx: f64, fy: f64, out: *SlRect): i64 {
+    var x: f64 = 0.0;
+    var y: f64 = 0.0;
+    var w: f64 = 0.0;
+    var h: f64 = 0.0;
+    if (_sl_json_as_f64(_sl_json_member(v, "x"), &x) == 0) { return 0; }
+    if (_sl_json_as_f64(_sl_json_member(v, "y"), &y) == 0) { return 0; }
+    if (_sl_json_as_f64(_sl_json_member(v, "width"), &w) == 0) { return 0; }
+    if (_sl_json_as_f64(_sl_json_member(v, "height"), &h) == 0) { return 0; }
+    var xs: f64 = x * fx;
+    var ys: f64 = y * fy;
+    var ws: f64 = w * fx;
+    var hs: f64 = h * fy;
+    var r: SlRect = SlRect_new(f32_from(xs), f32_from(ys), f32_from(ws), f32_from(hs));
+    if (r.is_finite() == false) { return 0; }
+    var area: f64 = r.area();
+    if (area <= 0.0) { return 0; }
+    var nr: SlRect = r.normalized();
+    out.min_x = nr.min_x;
+    out.min_y = nr.min_y;
+    out.max_x = nr.max_x;
+    out.max_y = nr.max_y;
+    return 1;
+}
+
+# 1 when no float in the value tree is infinite: serde_json refuses a whole document with an out-of-range literal
+# (`1e400`) when it reads it into a Value, where bayan reads infinity.
+fn _sl_json_finite(v): i64 {
+    if (v == 0) { return 1; }
+    var tag = bayan_json_v_tag(v);
+    if (tag == JTAG_FLOAT) {
+        var bits = bayan_json_v_float(v);
+        if (((bits >> 52) & 2047) == 2047) { return 0; }
+        return 1;
+    }
+    if (tag == JTAG_ARR) {
+        var n = bayan_json_v_arr_len(v);
+        var i = 0;
+        while (i < n) {
+            if (_sl_json_finite(bayan_json_v_arr_get(v, i)) == 0) { return 0; }
+            i = i + 1;
+        }
+    }
+    if (tag == JTAG_OBJ) {
+        var m = bayan_json_v_obj_len(v);
+        var j = 0;
+        while (j < m) {
+            if (_sl_json_finite(bayan_json_v_obj_val(v, j)) == 0) { return 0; }
+            j = j + 1;
+        }
+    }
+    return 1;
+}
+
+# The OCR result from the model's answer p[0..n), read as Rust read its OCR response (a serde_json Value), the
+# regions' coordinates multiplied by fx and fy. Ok(*SlOcrResult) or Err(SL_ERR_API) when it is not JSON.
+fn _sl_ocr_from_answer(p, n, fx: f64, fy: f64, detail_out = 0): Result {
+    var a = _sl_scratch_new();
+    var v = _sl_json_parse_a(a, p, n);
+    if (v == 0 || _sl_json_finite(v) == 0) {
+        _sl_scratch_free(a);
+        return _sl_http_invalid(detail_out, "hoosh OCR", "the model's answer is not JSON");
+    }
+    var o: *SlOcrResult = _sl_as_ocr(fl_calloc(sizeof(SlOcrResult)));
+    var ts = _sl_json_as_str(_sl_json_member(v, "text"));
+    if (ts != 0) {
+        var td = _sl_fl_dup(str_data(ts), str_len(ts));
+        o.text = str_new(td, str_len(ts));
+    } else {
+        o.text = str_from("");
+    }
+    var conf: f64 = 0.0;
+    if (_sl_json_as_f64(_sl_json_member(v, "confidence"), &conf) == 0) { conf = 0.0; }
+    o.confidence = _sl_clamp_f64(conf, 0.0, 1.0);
+    var boxes = vec_new();
+    var regs = _sl_json_member(v, "regions");
+    if (regs != 0 && bayan_json_v_is_arr(regs) == true) {
+        var cnt = bayan_json_v_arr_len(regs);
+        var i = 0;
+        while (i < cnt) {
+            var rb: SlRect = SlRect_default();
+            if (_sl_parse_region(bayan_json_v_arr_get(regs, i), fx, fy, &rb) == 1) {
+                var rp: *SlRect = _sl_as_rect(fl_alloc(sizeof(SlRect)));
+                rp.min_x = rb.min_x;
+                rp.min_y = rb.min_y;
+                rp.max_x = rb.max_x;
+                rp.max_y = rb.max_y;
+                vec_push(boxes, rp);
+            }
+            i = i + 1;
+        }
+    }
+    o.bounding_boxes = boxes;
+    o.is_stub = 0;
+    _sl_scratch_free(a);
+    return Ok(o);
+}
+
+# The model's answer in a chat-completions response: the first choice's message content, a Str, or 0.
+fn _sl_chat_content(root): i64 {
+    var choices = _sl_json_member(root, "choices");
+    if (choices == 0 || bayan_json_v_is_arr(choices) == false || bayan_json_v_arr_len(choices) == 0) { return 0; }
+    var msg = _sl_json_member(bayan_json_v_arr_get(choices, 0), "message");
+    return _sl_json_as_str(_sl_json_member(msg, "content"));
+}
+
+# The answer with a Markdown code fence around it removed (a model often wraps JSON in ```json … ```): (start, length).
+fn _sl_unfence(p, n): (i64, i64) {
+    var s, l = _sl_trim_unicode(p, n);
+    if (l < 6 || memeq(s, "```", 3) == 0 || memeq(s + l - 3, "```", 3) == 0) { return (s, l); }
+    var i = 3;
+    while (i < l - 3 && load8(s + i) != 10) { i = i + 1; }
+    var s2, l2 = _sl_trim_unicode(s + i, l - 3 - i);
+    return (s2, l2);
+}
+
+# The request for the image data[0..n), fitted under hoosh's body cap (L8): the image as it is when that fits, else
+# decoded, then JPEG-encoded and shrunk until it does. Builds it in allocator `a` and stores the axis factors from the
+# image sent back to the source at fx_out and fy_out. Ok(Str) or Err(SL_ERR_API).
+fn _sl_ocr_fit(a, model, data, n, fx_out: *f64, fy_out: *f64, detail_out): Result {
+    var req = _sl_ocr_request(a, model, _sl_guess_mime(data, n), data, n);
+    if (str_len(req) <= _SL_HOOSH_MAX_REQUEST) { return Ok(req); }
+    var d = 0;
+    var it, iv = _sl_decode_image(data, n, &d);
+    if (is_err_result(it) == 1) {
+        if (detail_out == 0) { return Err(SL_ERR_API); }
+        var eb = str_builder_new();
+        str_builder_add_cstr(eb, "hoosh OCR: the image is over hoosh's 1 MiB request limit and could not be decoded ");
+        str_builder_add_cstr(eb, "to shrink it: ");
+        if (d != 0) { str_builder_add(eb, d); }
+        return _sl_fail(SL_ERR_API, detail_out, str_builder_build(eb));
+    }
+    var img: *SlImage = _sl_as_image(iv);
+    var w = img.width;
+    var h = img.height;
+    var w2 = w;
+    var h2 = h;
+    var px = img.pixels;
+    var own = 0;
+    while (1 == 1) {
+        var jl = 0;
+        var jpg = _sl_jpeg_encode(px, w2, h2, SL_JPEG_QUALITY, &jl);
+        if (jpg == 0) { break; }
+        req = _sl_ocr_request(a, model, "image/jpeg", jpg, jl);
+        fl_free(jpg);
+        var size = str_len(req);
+        if (size <= _SL_HOOSH_MAX_REQUEST || (w2 == 1 && h2 == 1)) {
+            if (own == 1) { fl_free(px); }
+            SlImage_free(img);
+            if (size > _SL_HOOSH_MAX_REQUEST) {
+                return _sl_api_fail(detail_out, "hoosh OCR", "the request cannot be made to fit hoosh's 1 MiB limit");
+            }
+            var fw: f64 = f64_from(w);
+            var fw2: f64 = f64_from(w2);
+            var fh: f64 = f64_from(h);
+            var fh2: f64 = f64_from(h2);
+            var rx: f64 = fw / fw2;
+            var ry: f64 = fh / fh2;
+            *fx_out = rx;
+            *fy_out = ry;
+            return Ok(req);
+        }
+        # Shrink by the square root of the overshoot, and a little more, so the next try usually fits.
+        var fs: f64 = f64_from(size);
+        var fcap: f64 = f64_from(_SL_HOOSH_MAX_REQUEST);
+        var ratio: f64 = fcap / fs;
+        var scale: f64 = f64_sqrt(ratio) * 0.9;
+        var nw: f64 = f64_from(w2) * scale;
+        var nh: f64 = f64_from(h2) * scale;
+        var nwi = _sl_clamp_i64(_sl_sat_i64(nw), 1, w2);
+        var nhi = _sl_clamp_i64(_sl_sat_i64(nh), 1, h2);
+        var small = _sl_resample_box(img.pixels, w, h, nwi, nhi);
+        if (small == 0) { break; }
+        if (own == 1) { fl_free(px); }
+        px = small;
+        own = 1;
+        w2 = nwi;
+        h2 = nhi;
+    }
+    if (own == 1) { fl_free(px); }
+    SlImage_free(img);
+    return _sl_api_fail(detail_out, "hoosh OCR", "out of memory");
+}
+
+# Extracts the text in an image through hoosh's vision models (Rust: HooshClient::ocr; D2's chat-completions
+# retarget, L8's downscale). Ok(*SlOcrResult, is_stub 0) or Err(SL_ERR_API).
+fn SlHooshClient_ocr(c: *SlHooshClient, data, n, detail_out = 0): Result {
+    if (c.model == 0) {
+        var why = "no model is set: HooshConfig.model must name a vision model on an OpenAI-compatible provider";
+        return _sl_api_fail(detail_out, "hoosh OCR", why);
+    }
+    var segs = vec_new();
+    vec_push(segs, "v1");
+    vec_push(segs, "chat");
+    vec_push(segs, "completions");
+    var ut, url = _sl_endpoint_url(c.endpoint, segs, detail_out);
+    if (is_err_result(ut) == 1) { return Err(url); }
+    var a = _sl_scratch_new();
+    if (a == 0) { return _sl_api_fail(detail_out, "hoosh OCR", "out of memory"); }
+    var fx: f64 = 1.0;
+    var fy: f64 = 1.0;
+    var ft, req = _sl_ocr_fit(a, c.model, data, n, &fx, &fy, detail_out);
+    if (is_err_result(ft) == 1) {
+        _sl_scratch_free(a);
+        return Err(req);
+    }
+    var resp: SlHttpResponse = SlHttpResponse { 0, 0, 0 };
+    var rp: *SlHttpResponse = _sl_as_resp(&resp);
+    var t, v = _sl_http_call("POST", str_data(url), 0, str_data(req), str_len(req), c.timeout_ms,
+        _SL_MAX_API_RESPONSE_BYTES, "hoosh OCR failed", "hoosh OCR", rp, detail_out);
+    _sl_scratch_free(a);
+    if (is_err_result(t) == 1) { return Err(v); }
+    var st, sv = _sl_http_check_status(rp, "hoosh OCR", detail_out);
+    if (is_err_result(st) == 1) {
+        fl_free(rp.body);
+        return Err(sv);
+    }
+    var b = _sl_scratch_new();
+    var root = _sl_json_parse_a(b, rp.body, rp.len);
+    fl_free(rp.body);
+    var content = _sl_chat_content(root);
+    if (content == 0) {
+        _sl_scratch_free(b);
+        return _sl_http_invalid(detail_out, "hoosh OCR", "no choices[0].message.content string");
+    }
+    var cp, cn = _sl_unfence(str_data(content), str_len(content));
+    var ot, ov = _sl_ocr_from_answer(cp, cn, fx, fy, detail_out);
+    _sl_scratch_free(b);
+    if (is_err_result(ot) == 1) { return Err(ov); }
+    var o: *SlOcrResult = _sl_as_ocr(ov);
+    var sb = str_builder_new();
+    str_builder_add_int(sb, vec_len(o.bounding_boxes));
+    _sl_log_kv(SK_DEBUG, "hoosh OCR complete", "regions", str_data(str_builder_build(sb)));
+    return Ok(o);
+}

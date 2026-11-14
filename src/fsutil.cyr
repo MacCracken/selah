@@ -15,6 +15,12 @@ fn _sl_errno_text(sb, err): i64 {
     var m = 0;
     if (e == 1) { m = "Operation not permitted"; }
     if (e == 2) { m = "No such file or directory"; }
+    if (e == 4) { m = "Interrupted system call"; }
+    if (e == 5) { m = "Input/output error"; }
+    if (e == 9) { m = "Bad file descriptor"; }
+    if (e == 10) { m = "No child processes"; }
+    if (e == 11) { m = "Resource temporarily unavailable"; }
+    if (e == 12) { m = "Cannot allocate memory"; }
     if (e == 13) { m = "Permission denied"; }
     if (e == 17) { m = "File exists"; }
     if (e == 20) { m = "Not a directory"; }
@@ -22,7 +28,9 @@ fn _sl_errno_text(sb, err): i64 {
     if (e == 27) { m = "File too large"; }
     if (e == 28) { m = "No space left on device"; }
     if (e == 30) { m = "Read-only file system"; }
+    if (e == 32) { m = "Broken pipe"; }
     if (e == 36) { m = "File name too long"; }
+    if (e == 38) { m = "Function not implemented"; }
     if (m != 0) {
         str_builder_add_cstr(sb, m);
         str_builder_add_cstr(sb, " ");

@@ -1,0 +1,569 @@
+# history.tcyr — rust-old/src/history.rs's tests, ported (port plan M5), with HistoryStore::open's doctest and
+# Cyrius-only checks: the lock deadline (a branch point tested on both sides, port plan §4) and the entry's JSON.
+
+include "tests/selah_src.cyr"
+include "tests/support.cyr"
+
+# A store in a new temp directory, as Rust's TempStore: (store, directory as a NUL-terminated string).
+fn _t_store(): (i64, i64) {
+    var id: u8[16];
+    _sl_uuid_v4(&id);
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "/tmp/selah_test_history_");
+    _sl_uuid_fmt(sb, &id, 1);
+    var dir = str_data(str_builder_build(sb));
+    sys_mkdir(dir, 448);
+    var pb = str_builder_new();
+    str_builder_add_cstr(pb, dir);
+    str_builder_add_cstr(pb, "/history.jsonl");
+    var s = SlHistoryStore_open(str_data(str_builder_build(pb)));
+    return (s, dir);
+}
+
+# Removes the store's directory with its history and lock files (Rust: TempStore's Drop).
+fn _t_drop(s: *SlHistoryStore, dir): i64 {
+    xunlink(s.path);
+    xunlink(str_data(_sl_history_lock_path(s)));
+    sys_rmdir(dir);
+    SlHistoryStore_free(s);
+    return 0;
+}
+
+# Rust's make_entry: a fresh id, /tmp/test.png, now, 1920x1080, png.
+fn _t_entry(source): *SlHistoryEntry {
+    var id: u8[16];
+    _sl_uuid_v4(&id);
+    var ns = clock_epoch_ns();
+    return SlHistoryEntry_new(&id, "/tmp/test.png", 13, ns / 1000000000, ns % 1000000000, source, strlen(source),
+        1920, 1080, "png", 3);
+}
+
+# make_entry with the timestamp moved by `secs` seconds.
+fn _t_entry_at(source, secs): *SlHistoryEntry {
+    var e: *SlHistoryEntry = _t_entry(source);
+    e.secs = e.secs + secs;
+    return e;
+}
+
+# The number of entries list(limit, since) returns, or -1 on an error.
+fn _t_count(s, limit, since): i64 {
+    var t, v = SlHistoryStore_list(s, limit, since);
+    if (is_err_result(t) == 1) { return -1; }
+    var n = vec_len(v);
+    selah_history_entries_free(v);
+    return n;
+}
+
+# 1 when the entry's source is the NUL-terminated `text`.
+fn _t_source_is(e: *SlHistoryEntry, text): i64 {
+    return _t_str_is(e.source, text);
+}
+
+# The id of the entry as 16 bytes at `out`, from a record. Returns out.
+fn _t_id(e: *SlHistoryEntry, out): i64 {
+    memcpy(out, e, 16);
+    return out;
+}
+
+# Writes data[0..n) as the store's whole file.
+fn _t_write(s: *SlHistoryStore, data, n): i64 {
+    file_write_all(s.path, data, n);
+    return 0;
+}
+
+# The entry's line, as Rust's serde_json::to_vec writes it (a Str).
+fn _t_line(e): i64 {
+    var sb = str_builder_new();
+    SlHistoryEntry_to_json(e, sb);
+    return str_builder_build(sb);
+}
+
+fn _t_record_and_list(): i64 {
+    test_group("test_record_and_list");
+    var s, dir = _t_store();
+    SlHistoryStore_record(s, _t_entry("full screen"));
+    SlHistoryStore_record(s, _t_entry("region"));
+    assert(_t_count(s, 10, 0) == 2, "two entries");
+    _t_drop(s, dir);
+    return 0;
+}
+
+fn _t_list_empty(): i64 {
+    test_group("test_list_empty");
+    var s, dir = _t_store();
+    assert(_t_count(s, 10, 0) == 0, "empty");
+    _t_drop(s, dir);
+    return 0;
+}
+
+fn _t_list_with_limit(): i64 {
+    test_group("test_list_with_limit");
+    var s, dir = _t_store();
+    var i = 0;
+    while (i < 5) {
+        SlHistoryStore_record(s, _t_entry("capture"));
+        i = i + 1;
+    }
+    assert(_t_count(s, 3, 0) == 3, "limited to 3");
+    _t_drop(s, dir);
+    return 0;
+}
+
+fn _t_get_by_id(): i64 {
+    test_group("test_get_by_id");
+    var s, dir = _t_store();
+    var e = _t_entry("test");
+    var id: u8[16];
+    _t_id(e, &id);
+    SlHistoryStore_record(s, e);
+    var t, found = SlHistoryStore_get(s, &id);
+    assert(is_ok(t) == 1 && found != 0 && memeq(found, &id, 16) == 1, "found by id");
+    var other: u8[16];
+    _sl_uuid_v4(&other);
+    var t2, nf = SlHistoryStore_get(s, &other);
+    assert(is_ok(t2) == 1 && nf == 0, "an unknown id is None");
+    _t_drop(s, dir);
+    return 0;
+}
+
+fn _t_delete_entry(): i64 {
+    test_group("test_delete_entry");
+    var s, dir = _t_store();
+    var e = _t_entry("to-delete");
+    var id: u8[16];
+    _t_id(e, &id);
+    SlHistoryStore_record(s, _t_entry("keep"));
+    SlHistoryStore_record(s, e);
+    SlHistoryStore_record(s, _t_entry("also-keep"));
+    var t, removed = SlHistoryStore_delete(s, &id);
+    assert(is_ok(t) == 1 && removed == 1, "deleted");
+    var lt, v = SlHistoryStore_list(s, 10);
+    var none = 1;
+    var i = 0;
+    while (i < vec_len(v)) {
+        if (memeq(vec_get(v, i), &id, 16) == 1) { none = 0; }
+        i = i + 1;
+    }
+    assert(vec_len(v) == 2 && none == 1, "two left, the deleted one gone");
+    var t2, again = SlHistoryStore_delete(s, &id);
+    assert(is_ok(t2) == 1 && again == 0, "deleting again returns false");
+    _t_drop(s, dir);
+    return 0;
+}
+
+fn _t_delete_nonexistent(): i64 {
+    test_group("test_delete_nonexistent");
+    var s, dir = _t_store();
+    SlHistoryStore_record(s, _t_entry("test"));
+    var id: u8[16];
+    _sl_uuid_v4(&id);
+    var t, removed = SlHistoryStore_delete(s, &id);
+    assert(is_ok(t) == 1 && removed == 0, "nothing to delete");
+    _t_drop(s, dir);
+    return 0;
+}
+
+fn _t_delete_from_empty(): i64 {
+    test_group("test_delete_from_empty");
+    var s, dir = _t_store();
+    var id: u8[16];
+    _sl_uuid_v4(&id);
+    var t, removed = SlHistoryStore_delete(s, &id);
+    assert(is_ok(t) == 1 && removed == 0, "no file, nothing deleted");
+    _t_drop(s, dir);
+    return 0;
+}
+
+fn _t_list_since(): i64 {
+    test_group("test_list_since");
+    var s, dir = _t_store();
+    var ns = clock_epoch_ns();
+    var before: i64[2];
+    before[0] = ns / 1000000000;
+    before[1] = ns % 1000000000;
+    SlHistoryStore_record(s, _t_entry("old"));
+    assert(_t_count(s, 10, &before) == 1, "the entry is at or after `before`");
+    _t_drop(s, dir);
+    return 0;
+}
+
+fn _t_record_and_get_roundtrip(): i64 {
+    test_group("test_record_and_get_roundtrip");
+    var s, dir = _t_store();
+    var e: *SlHistoryEntry = _t_entry("roundtrip");
+    var id: u8[16];
+    _t_id(e, &id);
+    SlHistoryStore_record(s, e);
+    var t, g = SlHistoryStore_get(s, &id);
+    var got: *SlHistoryEntry = _sl_as_history(g);
+    assert(is_ok(t) == 1 && got != 0, "found");
+    assert(_t_source_is(got, "roundtrip") == 1 && got.width == 1920 && got.height == 1080, "fields kept");
+    assert(got.secs == e.secs && got.nanos == e.nanos, "the timestamp to the nanosecond");
+    _t_drop(s, dir);
+    return 0;
+}
+
+fn _t_list_returns_newest_first(): i64 {
+    test_group("test_list_returns_newest_first");
+    var s, dir = _t_store();
+    var i = 0;
+    while (i < 3) {
+        SlHistoryStore_record(s, _t_entry_at("entry", i));
+        i = i + 1;
+    }
+    var t, v = SlHistoryStore_list(s, 10);
+    var a: *SlHistoryEntry = _sl_as_history(vec_get(v, 0));
+    var b: *SlHistoryEntry = _sl_as_history(vec_get(v, 1));
+    var c: *SlHistoryEntry = _sl_as_history(vec_get(v, 2));
+    assert(a.secs >= b.secs && b.secs >= c.secs, "newest first");
+    _t_drop(s, dir);
+    return 0;
+}
+
+fn _t_lock_file_is_separate_and_persistent(): i64 {
+    test_group("test_lock_file_is_separate_and_persistent");
+    var s, dir = _t_store();
+    SlHistoryStore_record(s, _t_entry("a"));
+    var lock = _sl_history_lock_path(s);
+    assert(_t_str_has(lock, ".jsonl.lock") == 1, "<history>.lock");
+    var lk = str_data(lock);
+    assert(file_exists(lk) == 1, "the lock file stays");
+    SlHistoryStore_record(s, _t_entry("b"));
+    var t, v = SlHistoryStore_list(s, 1);
+    var t2, removed = SlHistoryStore_delete(s, vec_get(v, 0));
+    assert(is_ok(t2) == 1 && removed == 1, "a leftover lock file does not block writers");
+    _t_drop(s, dir);
+    return 0;
+}
+
+# The concurrency test's writer threads: each records 25 entries.
+var _t_conc_store = 0;
+var _t_conc_failed = 0;
+
+fn _t_conc_writer(arg): i64 {
+    var i = 0;
+    while (i < 25) {
+        var t, v = SlHistoryStore_record(_t_conc_store, _t_entry("thread"));
+        if (is_err_result(t) == 1) { _t_conc_failed = _t_conc_failed + 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The deleting thread: `arg` is a freelist array of ten 16-byte ids.
+fn _t_conc_deleter(arg): i64 {
+    var i = 0;
+    while (i < 10) {
+        var t, removed = SlHistoryStore_delete(_t_conc_store, arg + i * 16);
+        if (is_err_result(t) == 1 || removed != 1) { _t_conc_failed = _t_conc_failed + 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn _t_concurrent_record_and_delete_lose_nothing(): i64 {
+    test_group("test_concurrent_record_and_delete_lose_nothing");
+    var s, dir = _t_store();
+    var ids = fl_alloc(160);
+    var i = 0;
+    while (i < 10) {
+        var e = _t_entry("doomed");
+        _t_id(e, ids + i * 16);
+        SlHistoryStore_record(s, e);
+        i = i + 1;
+    }
+    _t_conc_store = s;
+    var th: i64[5];
+    var k = 0;
+    while (k < 4) {
+        th[k] = thread_create(&_t_conc_writer, 0);
+        k = k + 1;
+    }
+    th[4] = thread_create(&_t_conc_deleter, ids);
+    k = 0;
+    while (k < 5) {
+        thread_join(th[k]);
+        k = k + 1;
+    }
+    assert(_t_conc_failed == 0, "every record and delete succeeded");
+    var t, v = SlHistoryStore_list(s, -1);
+    var doomed = 0;
+    var j = 0;
+    while (j < vec_len(v)) {
+        if (_t_source_is(vec_get(v, j), "doomed") == 1) { doomed = doomed + 1; }
+        j = j + 1;
+    }
+    assert(vec_len(v) == 100, "appends lost during concurrent deletes");
+    assert(doomed == 0, "every doomed entry deleted");
+    _t_drop(s, dir);
+    return 0;
+}
+
+fn _t_list_skips_malformed_and_invalid_utf8_lines(): i64 {
+    test_group("test_list_skips_malformed_and_invalid_utf8_lines");
+    var s, dir = _t_store();
+    var good = _t_entry("good");
+    var id: u8[16];
+    _t_id(good, &id);
+    var sb = str_builder_new();
+    str_builder_add(sb, _t_line(good));
+    str_builder_add_cstr(sb, "\n{not json}\n");
+    str_builder_putc(sb, 255);
+    str_builder_putc(sb, 254);
+    str_builder_add_cstr(sb, " garbage\n\n");
+    var content = str_builder_build(sb);
+    _t_write(s, str_data(content), str_len(content));
+    var t, v = SlHistoryStore_list(s, 10);
+    assert(vec_len(v) == 1 && memeq(vec_get(v, 0), &id, 16) == 1, "only the good line");
+    var gt, g = SlHistoryStore_get(s, &id);
+    assert(g != 0 && _t_source_is(g, "good") == 1, "get finds it");
+    var dt, removed = SlHistoryStore_delete(s, &id);
+    assert(removed == 1, "deleted");
+    var n = 0;
+    var after = file_read_whole_max(SlHistoryStore_path(s), 4096, &n);
+    var kept = 0;
+    var k = 0;
+    while (k + 10 <= n) {
+        if (memeq(after + k, "{not json}", 10) == 1) { kept = 1; }
+        k = k + 1;
+    }
+    assert(kept == 1, "delete keeps the malformed lines it can't interpret");
+    assert(_t_count(s, 10, 0) == 0, "nothing readable left");
+    _t_drop(s, dir);
+    return 0;
+}
+
+fn _t_list_limit_keeps_newest_with_stable_ties(): i64 {
+    test_group("test_list_limit_keeps_newest_with_stable_ties");
+    var s, dir = _t_store();
+    var base = clock_epoch_ns() / 1000000000;
+    var off: i64[5];
+    off[0] = 3;
+    off[1] = 1;
+    off[2] = 5;
+    off[3] = 5;
+    off[4] = 2;
+    var names: i64[5];
+    names[0] = "e0";
+    names[1] = "e1";
+    names[2] = "e2";
+    names[3] = "e3";
+    names[4] = "e4";
+    var i = 0;
+    while (i < 5) {
+        var e: *SlHistoryEntry = _t_entry(names[i]);
+        e.secs = base + off[i];
+        e.nanos = 0;
+        SlHistoryStore_record(s, e);
+        i = i + 1;
+    }
+    var t, v = SlHistoryStore_list(s, 3);
+    assert(vec_len(v) == 3, "three");
+    assert(_t_source_is(vec_get(v, 0), "e2") == 1 && _t_source_is(vec_get(v, 1), "e3") == 1, "ties in file order");
+    assert(_t_source_is(vec_get(v, 2), "e0") == 1, "then the next newest");
+    assert(_t_count(s, 0, 0) == 0, "limit 0 is empty");
+    _t_drop(s, dir);
+    return 0;
+}
+
+fn _t_list_since_filters_older(): i64 {
+    test_group("test_list_since_filters_older");
+    var s, dir = _t_store();
+    var ns = clock_epoch_ns();
+    SlHistoryStore_record(s, _t_entry_at("old", -3600));
+    SlHistoryStore_record(s, _t_entry("new"));
+    var since: i64[2];
+    since[0] = ns / 1000000000 - 60;
+    since[1] = ns % 1000000000;
+    var t, v = SlHistoryStore_list(s, 10, &since);
+    assert(vec_len(v) == 1 && _t_source_is(vec_get(v, 0), "new") == 1, "only the new one");
+    _t_drop(s, dir);
+    return 0;
+}
+
+# The file's permission bits.
+fn _t_mode(path): i64 {
+    var st[256];
+    xstat(path, &st);
+    return load32(&st + STAT_MODE) & 511;
+}
+
+fn _t_history_file_is_private(): i64 {
+    test_group("test_history_file_is_private");
+    var s, dir = _t_store();
+    SlHistoryStore_record(s, _t_entry("x"));
+    assert(_t_mode(SlHistoryStore_path(s)) == 384, "0600");
+    SlHistoryStore_record(s, _t_entry("keep"));
+    var t, v = SlHistoryStore_list(s, 10);
+    var first = vec_get(v, vec_len(v) - 1);
+    var dt, removed = SlHistoryStore_delete(s, first);
+    assert(removed == 1 && _t_mode(SlHistoryStore_path(s)) == 384, "still 0600 after an atomic rewrite");
+    _t_drop(s, dir);
+    return 0;
+}
+
+fn _t_record_after_torn_line_is_not_lost(): i64 {
+    test_group("test_record_after_torn_line_is_not_lost");
+    var s, dir = _t_store();
+    var first = _t_entry("first");
+    var fid: u8[16];
+    _t_id(first, &fid);
+    var sb = str_builder_new();
+    str_builder_add(sb, _t_line(first));
+    str_builder_add_cstr(sb, "\n{\"id\":\"0000");
+    var content = str_builder_build(sb);
+    _t_write(s, str_data(content), str_len(content));
+    var next = _t_entry("next");
+    var nid: u8[16];
+    _t_id(next, &nid);
+    SlHistoryStore_record(s, next);
+    var t, v = SlHistoryStore_list(s, 10);
+    var hf = 0;
+    var hn = 0;
+    var i = 0;
+    while (i < vec_len(v)) {
+        if (memeq(vec_get(v, i), &fid, 16) == 1) { hf = 1; }
+        if (memeq(vec_get(v, i), &nid, 16) == 1) { hn = 1; }
+        i = i + 1;
+    }
+    assert(hf == 1, "the first entry survives");
+    assert(hn == 1, "entry appended after a torn line was lost");
+    var gt, g = SlHistoryStore_get(s, &nid);
+    assert(g != 0, "get finds it");
+    _t_drop(s, dir);
+    return 0;
+}
+
+fn _t_default_data_dir_resolution(): i64 {
+    test_group("test_default_data_dir_resolution");
+    assert(_t_str_is(_sl_default_data_dir("/xdg", "/home/u"), "/xdg/selah") == 1, "XDG wins");
+    assert(_t_str_is(_sl_default_data_dir(0, "/home/u"), "/home/u/.local/share/selah") == 1, "HOME fallback");
+    assert(_t_str_is(_sl_default_data_dir("", "/home/u"), "/home/u/.local/share/selah") == 1, "empty XDG ignored");
+    assert(_t_str_is(_sl_default_data_dir("rel/dir", "/home/u"), "/home/u/.local/share/selah") == 1,
+        "relative XDG ignored");
+    assert(_sl_default_data_dir(0, ".") == 0, "no usable location");
+    assert(_sl_default_data_dir(0, 0) == 0, "nothing set");
+    return 0;
+}
+
+# HistoryStore::open's doctest: a fresh store lists nothing.
+fn _t_doctest_open(): i64 {
+    test_group("doctest: HistoryStore::open");
+    var s = SlHistoryStore_open("/tmp/selah_doctest.jsonl");
+    assert(_t_count(s, 10, 0) == 0, "fresh store has no entries");
+    SlHistoryStore_free(s);
+    return 0;
+}
+
+# Cyrius-only: a writer that cannot get the lock gives up at the deadline with Rust's message, and the lock is free
+# again once its holder closes it (the deadline is lowered to keep the test fast; Rust's is 5 s).
+fn _t_lock_deadline(): i64 {
+    test_group("lock deadline");
+    var s, dir = _t_store();
+    var lt, holder = _sl_history_lock(s, 0);
+    assert(is_ok(lt) == 1, "first writer holds the lock");
+    _sl_history_lock_timeout_ms = 100;
+    var t0 = clock_now_ms();
+    var d = 0;
+    var t, v = SlHistoryStore_record(s, _t_entry("blocked"), &d);
+    var waited = clock_now_ms() - t0;
+    assert(is_err_result(t) == 1 && v == SL_ERR_IO, "Io");
+    assert(_t_str_has(selah_error_display(v, d), "timed out waiting for history lock") == 1, "Rust's text");
+    assert(waited >= 100 && waited < 2000, "gave up at the deadline");
+    file_close(holder);
+    var t2, v2 = SlHistoryStore_record(s, _t_entry("free"));
+    assert(is_ok(t2) == 1, "the lock is free once its holder closes it");
+    _sl_history_lock_timeout_ms = 5000;
+    _t_drop(s, dir);
+    return 0;
+}
+
+# Cyrius-only: the line serde_json writes, and reading it back.
+fn _t_entry_json(): i64 {
+    test_group("entry JSON");
+    var id: u8[16];
+    var i = 0;
+    while (i < 16) {
+        store8(&id + i, i * 17);
+        i = i + 1;
+    }
+    var e = SlHistoryEntry_new(&id, "/tmp/a \"b\".png", 14, 1763164800, 123000000, "region", 6, 1920, 1080,
+        "png", 3);
+    var line = _t_line(e);
+    var want = str_builder_new();
+    str_builder_add_cstr(want, "{\"id\":\"00112233-4455-6677-8899-aabbccddeeff\",\"path\":\"/tmp/a \\\"b\\\".png\",");
+    str_builder_add_cstr(want, "\"timestamp\":\"2025-11-15T00:00:00.123Z\",\"source\":\"region\",");
+    str_builder_add_cstr(want, "\"width\":1920,\"height\":1080,\"format\":\"png\"}");
+    assert(str_eq(line, str_builder_build(want)) == 1, "serde_json's line");
+    var t, v = SlHistoryEntry_from_json(str_data(line), str_len(line));
+    var back: *SlHistoryEntry = _sl_as_history(v);
+    assert(is_ok(t) == 1 && memeq(back, &id, 16) == 1 && back.nanos == 123000000, "reads back");
+    var bad = str_builder_new();
+    str_builder_add_cstr(bad, "{\"id\":\"00112233-4455-6677-8899-aabbccddeeff\",\"path\":\"p\",");
+    str_builder_add_cstr(bad, "\"timestamp\":\"2025-11-15T00:00:00Z\",\"source\":\"s\",");
+    str_builder_add_cstr(bad, "\"width\":-0,\"height\":1,\"format\":\"png\"}");
+    var bs = str_builder_build(bad);
+    var t2, v2 = SlHistoryEntry_from_json(str_data(bs), str_len(bs));
+    assert(is_err_result(t2) == 1, "-0 is a float to serde, not a u32");
+    return 0;
+}
+
+# Rust's tests/integration.rs test_history_store_integration.
+fn _t_history_store_integration(): i64 {
+    test_group("test_history_store_integration");
+    var u: u8[16];
+    _sl_uuid_v4(&u);
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "/tmp/selah_integration_test_");
+    _sl_uuid_fmt(sb, &u, 1);
+    str_builder_add_cstr(sb, ".jsonl");
+    var path = str_data(str_builder_build(sb));
+    var s = SlHistoryStore_open(path);
+    var e = _t_entry("full screen");
+    var id: u8[16];
+    _t_id(e, &id);
+    SlHistoryStore_record(s, e);
+    var t, g = SlHistoryStore_get(s, &id);
+    var got: *SlHistoryEntry = _sl_as_history(g);
+    assert(got != 0 && got.width == 1920, "get");
+    assert(_t_count(s, 10, 0) == 1, "list");
+    SlHistoryStore_delete(s, &id);
+    var t2, g2 = SlHistoryStore_get(s, &id);
+    assert(g2 == 0, "gone after delete");
+    xunlink(path);
+    xunlink(str_data(_sl_history_lock_path(s)));
+    SlHistoryStore_free(s);
+    return 0;
+}
+
+# Runs the suite; the exit code is the failure count, clamped.
+fn main(): i64 {
+    alloc_init();
+    _t_record_and_list();
+    _t_list_empty();
+    _t_list_with_limit();
+    _t_get_by_id();
+    _t_delete_entry();
+    _t_delete_nonexistent();
+    _t_delete_from_empty();
+    _t_list_since();
+    _t_record_and_get_roundtrip();
+    _t_list_returns_newest_first();
+    _t_lock_file_is_separate_and_persistent();
+    _t_concurrent_record_and_delete_lose_nothing();
+    _t_list_skips_malformed_and_invalid_utf8_lines();
+    _t_list_limit_keeps_newest_with_stable_ties();
+    _t_list_since_filters_older();
+    _t_history_file_is_private();
+    _t_record_after_torn_line_is_not_lost();
+    _t_default_data_dir_resolution();
+    _t_doctest_open();
+    _t_lock_deadline();
+    _t_entry_json();
+    _t_history_store_integration();
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

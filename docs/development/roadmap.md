@@ -11,7 +11,8 @@
 - [x] **M2 PII and smart crop** (2026-11-14): ai
 - [x] **M3 Codecs** (2026-11-14): codec, png_enc, bmp_enc, jpeg_enc; decode gated under ADR 0003; WebP, progressive and CMYK refused (ADR 0002)
 - [x] **M4 Annotation** (2026-11-14): raster, annotate, the facade, and fsutil (brought forward from M5)
-- [ ] **M5 System and clients**: history, clipboard, HTTP; daimon and hoosh clients retargeted (ADR 0002)
+- [x] **M5 System and clients** (2026-11-14): history, http, spawn (the clipboard), capture; daimon and hoosh clients
+  retargeted (ADR 0002)
 - [ ] **M6 MCP profile**: the five tools on bote
 - [ ] **M7 Release 1.0.0**: Rust-test ledger, full surface parity, benches against Rust, `dist/` bundles
 
@@ -21,6 +22,9 @@
 - [ ] hoosh: image parts for non-OpenAI providers, the 1 MiB body cap
   (`hoosh/docs/development/issues/2026-11-14-selah-vision-image-parts-reach-only-openai-shaped-providers.md`)
 - [ ] sandhi: `total_ms` bounding a blocked read (`sandhi/docs/development/issues/2026-11-11-total-ms-does-not-bound-a-blocked-first-read.md`)
+- [ ] sandhi: the response cap reserved up front (`sandhi/docs/development/issues/2026-11-14-buffered-client-reserves-the-whole-response-cap.md`)
+- [ ] bayan: JSON parse throughput, base64 with an allocator (`bayan/docs/development/issues/2026-11-14-*`)
+- [ ] cyrius: a spawn that feeds stdin (`cyrius/docs/development/issues/2026-11-14-process-has-no-spawn-that-feeds-stdin.md`)
 
 ### After 1.0.0
 

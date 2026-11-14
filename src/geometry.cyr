@@ -214,6 +214,21 @@ impl SlRect {
     }
 }
 
+# Appends Rust's Debug of a rect (derived on selah's `Rect(hisab::Rect)`, glam's Vec2 Debug inside):
+# `Rect(Rect { min: Vec2(x, y), max: Vec2(x, y) })`, each coordinate as f32 Debug.
+fn _sl_rect_debug(sb, r: SlRect): i64 {
+    str_builder_add_cstr(sb, "Rect(Rect { min: Vec2(");
+    _sl_fmt_f32_debug(sb, r.min_x);
+    str_builder_add_cstr(sb, ", ");
+    _sl_fmt_f32_debug(sb, r.min_y);
+    str_builder_add_cstr(sb, "), max: Vec2(");
+    _sl_fmt_f32_debug(sb, r.max_x);
+    str_builder_add_cstr(sb, ", ");
+    _sl_fmt_f32_debug(sb, r.max_y);
+    str_builder_add_cstr(sb, ") })");
+    return 0;
+}
+
 # Rust's Rect::default(): new(0, 0, 0, 0).
 #must_use
 fn SlRect_default(): SlRect {

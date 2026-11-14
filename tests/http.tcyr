@@ -1,0 +1,227 @@
+# http.tcyr — rust-old/src/http.rs's tests, ported (port plan M5), against the loopback mock server, with
+# Cyrius-only checks of the endpoint URL builder (daimon.rs's test_endpoint_url_encodes_segments lives in daimon.tcyr)
+# and of the deadlines (L10).
+
+include "tests/selah_src.cyr"
+include "tests/support.cyr"
+include "tests/mock_http.cyr"
+
+# A GET of `url` with a 5 s deadline and `limit`, into `r`. Returns the Result's tag and value.
+fn _t_get(url, limit, r: *SlHttpResponse, d): (i64, i64) {
+    var t, v = _sl_http_call("GET", url, 0, 0, 0, 5000, limit, "test request failed", "test", r, d);
+    return (t, v);
+}
+
+# Rust's test_http_client_error_surfaces_as_api_error, recast: sandhi has no client object to fail to build, so a
+# transport failure (nothing listens on port 9) is the error that surfaces as Api.
+fn _t_transport_error_surfaces_as_api_error(): i64 {
+    test_group("test_http_client_error_surfaces_as_api_error");
+    var resp: SlHttpResponse = SlHttpResponse { 0, 0, 0 };
+    var d = 0;
+    var t, v = _t_get("http://127.0.0.1:9/", 100, &resp, &d);
+    assert(is_err_result(t) == 1 && v == SL_ERR_API, "Api");
+    assert(_t_str_has(selah_error_display(v, d), "API error: test request failed: ") == 1, "the context leads");
+    return 0;
+}
+
+fn _t_truncate_char_boundary(): i64 {
+    test_group("test_truncate_char_boundary");
+    assert(_sl_truncate("hello", 5, 10) == 5, "short stays");
+    assert(_sl_truncate("hello", 5, 3) == 3, "cut");
+    var he = _t_bytes("68 c3 a9 6c 6c 6f");
+    assert(_sl_truncate(str_data(he), 6, 2) == 1, "never split a character");
+    assert(_sl_truncate("", 0, 0) == 0, "empty");
+    return 0;
+}
+
+fn _t_check_status_truncates_error_body(): i64 {
+    test_group("test_check_status_truncates_error_body");
+    var body = fl_alloc(10001);
+    memset(body, 120, 10000);
+    store8(body + 10000, 0);
+    var m = _mock_serve(500, body);
+    var resp: SlHttpResponse = SlHttpResponse { 0, 0, 0 };
+    var t, v = _t_get(_mock_url(m), 16777216, &resp, 0);
+    _mock_join(m);
+    var d = 0;
+    var ct, cv = _sl_http_check_status(&resp, "test", &d);
+    var msg = selah_error_display(cv, d);
+    assert(is_ok(t) == 1 && is_err_result(ct) == 1, "a 500 is an error");
+    assert(_t_str_has(msg, "API error: test 500 Internal Server Error: xxx") == 1, "status, reason, body");
+    assert(str_len(msg) < 600, "error message not truncated");
+    var tail = str_data(msg) + str_len(msg) - 3;
+    assert(memeq(tail, "…", 3) == 1, "ends with an ellipsis");
+    return 0;
+}
+
+fn _t_read_json_enforces_limit(): i64 {
+    test_group("test_read_json_enforces_limit");
+    var sb = str_builder_new();
+    str_builder_putc(sb, 34);
+    var i = 0;
+    while (i < 1000) {
+        str_builder_putc(sb, 97);
+        i = i + 1;
+    }
+    str_builder_putc(sb, 34);
+    var m = _mock_serve(200, str_data(str_builder_build(sb)));
+    var resp: SlHttpResponse = SlHttpResponse { 0, 0, 0 };
+    var d = 0;
+    var t, v = _t_get(_mock_url(m), 100, &resp, &d);
+    _mock_join(m);
+    assert(is_err_result(t) == 1 && _t_str_has(selah_error_display(v, d), "too large (1002 bytes, limit 100)") == 1,
+        "too large");
+    return 0;
+}
+
+fn _t_read_json_ok_and_sends_user_agent(): i64 {
+    test_group("test_read_json_ok_and_sends_user_agent");
+    var m = _mock_serve(200, "{\"a\":1}");
+    var resp: SlHttpResponse = SlHttpResponse { 0, 0, 0 };
+    var t, v = _t_get(_mock_url(m), 100, &resp, 0);
+    _mock_join(m);
+    var a = _sl_scratch_new();
+    var jt, jv = _sl_http_json(a, &resp, "test");
+    assert(is_ok(t) == 1 && is_ok(jt) == 1, "read");
+    assert(bayan_json_v_int(_sl_json_member(jv, "a")) == 1, "a = 1");
+    _sl_scratch_free(a);
+    var ua = _mock_header(m, "user-agent");
+    assert(ua != 0 && _t_str_has(ua, "selah/") == 1 && memeq(str_data(ua), "selah/", 6) == 1, "selah/<version>");
+    return 0;
+}
+
+fn _t_read_json_invalid(): i64 {
+    test_group("test_read_json_invalid");
+    var m = _mock_serve(200, "not json");
+    var resp: SlHttpResponse = SlHttpResponse { 0, 0, 0 };
+    var t, v = _t_get(_mock_url(m), 100, &resp, 0);
+    _mock_join(m);
+    var a = _sl_scratch_new();
+    var d = 0;
+    var jt, jv = _sl_http_json(a, &resp, "ctx", &d);
+    _sl_scratch_free(a);
+    assert(is_err_result(jt) == 1 && _t_str_has(selah_error_display(jv, d), "ctx: invalid response") == 1, "invalid");
+    return 0;
+}
+
+# The bytes written as space-separated hex pairs, as a Str.
+fn _t_bytes(hex): i64 {
+    var sb = str_builder_new();
+    var n = strlen(hex);
+    var i = 0;
+    while (i + 1 < n) {
+        str_builder_putc(sb, (_sl_hexval(load8(hex + i)) << 4) | _sl_hexval(load8(hex + i + 1)));
+        i = i + 3;
+    }
+    return str_builder_build(sb);
+}
+
+# Cyrius-only: the error body is decoded as Rust's from_utf8_lossy decodes it (one U+FFFD per maximal invalid
+# subpart) before the 512-byte cut, and a 512-byte body is shown whole, without an ellipsis.
+fn _t_status_text_lossy_and_exact(): i64 {
+    test_group("status text: lossy decoding and the 512-byte edge");
+    # a E0 80 b F0 9F 98 c FF d
+    var inb = _t_bytes("61 e0 80 62 f0 9f 98 63 ff 64");
+    var want = _t_bytes("61 ef bf bd ef bf bd 62 ef bf bd 63 ef bf bd 64");
+    var d = 0;
+    var t, v = _sl_http_status_err(404, str_data(inb), str_len(inb), "ctx", &d);
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "API error: ctx 404 Not Found: ");
+    str_builder_add(sb, want);
+    assert(str_eq(selah_error_display(v, d), str_builder_build(sb)) == 1,
+        "E0 80: two subparts; F0 9F 98: one; FF: one");
+    var body = fl_alloc(513);
+    memset(body, 121, 513);
+    var d2 = 0;
+    var t2, v2 = _sl_http_status_err(599, body, 512, "ctx", &d2);
+    var m2 = selah_error_display(v2, d2);
+    assert(_t_str_has(m2, "ctx 599 <unknown status code>: ") == 1, "an unknown code");
+    assert(memeq(str_data(m2) + str_len(m2) - 1, "y", 1) == 1, "512 bytes: no ellipsis");
+    var d3 = 0;
+    var t3, v3 = _sl_http_status_err(400, body, 513, "ctx", &d3);
+    var m3 = selah_error_display(v3, d3);
+    assert(memeq(str_data(m3) + str_len(m3) - 3, "…", 3) == 1, "513 bytes: cut, with an ellipsis");
+    return 0;
+}
+
+# Cyrius-only (L10): a server that never answers is cut off at the deadline, as a timeout, well before the 5 s the
+# mock would hold the connection.
+fn _t_silent_server_times_out(): i64 {
+    test_group("a silent server times out (L10)");
+    var m = _mock_serve_mode(1, 0, 0, 0);
+    var resp: SlHttpResponse = SlHttpResponse { 0, 0, 0 };
+    var d = 0;
+    var t0 = clock_now_ms();
+    var t, v = _sl_http_call("GET", _mock_url(m), 0, 0, 0, 300, 100, "slow request failed", "slow", &resp, &d);
+    var took = clock_now_ms() - t0;
+    _mock_join(m);
+    assert(is_err_result(t) == 1 && _t_str_has(selah_error_display(v, d), "slow request failed: timed out") == 1,
+        "a timeout");
+    assert(took < 2000, "within the deadline");
+    return 0;
+}
+
+# Cyrius-only: a POST carries the JSON body, its Content-Type and the bearer token; a chunked answer is read whole.
+fn _t_post_sends_json_and_bearer(): i64 {
+    test_group("POST: JSON body, Content-Type, Authorization; a chunked answer");
+    var rb = str_builder_new();
+    str_builder_add_cstr(rb, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+    str_builder_add_cstr(rb, "3\r\n{\"a\r\n4\r\n\":2}\r\n0\r\n\r\n");
+    var raw = str_data(str_builder_build(rb));
+    var m = _mock_serve_mode(2, 0, raw, strlen(raw));
+    var resp: SlHttpResponse = SlHttpResponse { 0, 0, 0 };
+    var t, v = _sl_http_call("POST", _mock_url(m), "tok", "{\"q\":1}", 7, 5000, 100, "post failed", "post", &resp, 0);
+    _mock_join(m);
+    assert(is_ok(t) == 1 && resp.status == 200 && resp.len == 7 && memeq(resp.body, "{\"a\":2}", 7) == 1,
+        "chunked body read whole");
+    assert(_t_str_is(_mock_request_line(m), "POST / HTTP/1.1") == 1, "request line");
+    assert(_t_str_is(_mock_header(m, "authorization"), "Bearer tok") == 1, "bearer");
+    assert(_t_str_is(_mock_header(m, "content-type"), "application/json") == 1, "content type");
+    assert(_t_str_is(_mock_body(m), "{\"q\":1}") == 1, "body");
+    return 0;
+}
+
+# Cyrius-only: endpoint URLs.
+fn _t_endpoint_urls(): i64 {
+    test_group("endpoint_url");
+    var segs = vec_new();
+    vec_push(segs, "v1");
+    vec_push(segs, "agents");
+    var t, v = _sl_endpoint_url("http://h:1", segs);
+    assert(is_ok(t) == 1 && _t_str_is(v, "http://h:1/v1/agents") == 1, "no path");
+    var t2, v2 = _sl_endpoint_url("https://h/base/?x=1", segs);
+    assert(is_ok(t2) == 1 && _t_str_is(v2, "https://h/base/v1/agents?x=1") == 1, "the query stays after the path");
+    var odd = vec_new();
+    vec_push(odd, "a b%");
+    vec_push(odd, ".");
+    vec_push(odd, str_data(_t_bytes("c3 a9 5c 60 7b 7d")));
+    vec_push(odd, "..");
+    var t3, v3 = _sl_endpoint_url("http://h/p", odd);
+    assert(is_ok(t3) == 1 && _t_str_is(v3, "http://h/p/a%20b%25/%C3%A9%5C%60%7B%7D") == 1, "encoded; . and .. skipped");
+    var d = 0;
+    var t4, v4 = _sl_endpoint_url("ftp://h/", segs, &d);
+    assert(is_err_result(t4) == 1 && v4 == SL_ERR_API, "http(s) only");
+    var t5, v5 = _sl_endpoint_url("http://", segs);
+    assert(is_err_result(t5) == 1, "a host is needed");
+    return 0;
+}
+
+# Runs the suite; the exit code is the failure count, clamped.
+fn main(): i64 {
+    alloc_init();
+    _t_transport_error_surfaces_as_api_error();
+    _t_truncate_char_boundary();
+    _t_check_status_truncates_error_body();
+    _t_read_json_enforces_limit();
+    _t_read_json_ok_and_sends_user_agent();
+    _t_read_json_invalid();
+    _t_status_text_lossy_and_exact();
+    _t_silent_server_times_out();
+    _t_post_sends_json_and_bearer();
+    _t_endpoint_urls();
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

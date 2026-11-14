@@ -30,6 +30,10 @@ MODULES = {
     "annotate": {"enums": set(), "structs": {"AnnotationCanvas"}},
     "lib": {"enums": set(), "structs": set()},
     "fsutil": {"enums": set(), "structs": set()},
+    "history": {"enums": set(), "structs": {"HistoryStore"}},
+    "http": {"enums": set(), "structs": set()},
+    "capture": {"enums": set(), "structs": {"CaptureClient"}},
+    "daimon": {"enums": set(), "structs": {"DaimonClient", "HooshClient"}},
 }
 
 # A pending module's items that an earlier milestone ports: checked now, by the same rules. (M3 ported annotate.rs's
@@ -38,10 +42,6 @@ PARTIAL = {}
 
 # Rust files whose milestone has not come yet (port plan §3): counted, not checked (bar PARTIAL). M7 empties this.
 PENDING_MODULES = {
-    "http": "M5",
-    "history": "M5",
-    "capture": "M5",
-    "daimon": "M5",
     "mcp": "M6",
 }
 NOT_APPLICABLE_MODULES = {}
@@ -50,6 +50,8 @@ NOT_APPLICABLE_MODULES = {}
 EXCEPTIONS = {
     "Rect::as_hisab": "the layout is SlRect's own public fields (min_x, min_y, max_x, max_y); ADR 0002 #12",
     "SelahError::AnnotationError": "SL_ERR_ANNOTATION",
+    "CaptureClient::with_client": "a reqwest client has no Cyrius counterpart: SlCaptureClient_with_timeout; ADR 0002 #9",
+    "DaimonClient::heartbeat": "dropped when the client was retargeted (port plan D2); ADR 0002 #5",
 }
 
 ERROR_NAMES = {
@@ -77,7 +79,7 @@ def rust_items(module):
         m = re.match(r"impl(?:<[^>]*>)?\s+(?:(\w+(?:::\w+)*)\s+for\s+)?(\w+)(?:<[^>]*>)?\s*\{", s)
         if m and depth == 0:
             impl = (m.group(2), m.group(1))
-        fm = re.match(r"pub (?:const )?fn (\w+)", s)
+        fm = re.match(r"pub (?:const )?(?:async )?fn (\w+)", s)
         if fm:
             if impl and depth >= 1:
                 items.append((f"{impl[0]}::{fm.group(1)}", impl[0], fm.group(1)))

@@ -1,0 +1,650 @@
+# capture.cyr — the screen capture client for daimon, the clipboard, and the session type (Rust:
+# rust-old/src/capture.rs).
+#
+# Port plan M5, D2, D6. CaptureClient keeps Rust's contract: `POST <base>/v1/screen/capture` with
+# {"region"?, "monitor"?, "format", "agent_id"} and `GET <base>/v1/screen/monitors`. daimon has no such routes yet
+# (ledger L9, filed), so the client is tested against the loopback mock server only. What changed, each in ADR 0002:
+#   - `agent_id` is a field, Rust's constant "selah" by default, set to the id daimon registered (D2);
+#   - a WebP capture is refused (ADR 0002 #1: the port has no WebP codec);
+#   - the client takes a timeout, not a caller's reqwest client (#9);
+#   - save_to_file writes atomically, 0600 (#18).
+# Regions are normalized, clipped to the non-negative quadrant and rounded outward to whole pixels, and a non-finite
+# or empty one is refused before any request is sent; so is a window target, which the daimon API has no selector
+# for (a full-screen fallback would expose every other window).
+
+const _SL_CAPTURE_TIMEOUT_MS = 30000;
+
+struct SlCaptureClient { base_url: i64; agent_id: i64; timeout_ms: i64; }
+
+# A capture's answer (Rust: CaptureResponse): the image as base64 (a Str), its size, and its format's name (a Str).
+# One freelist block; free it with SlCaptureResponse_free.
+struct SlCaptureResponse { image_data: i64; width: i64; height: i64; format: i64; }
+
+enum SlSessionType {
+    SL_SESSION_WAYLAND = 0;
+    SL_SESSION_X11 = 1;
+}
+
+#must_use
+fn _sl_as_capture(p): *SlCaptureClient {
+    return p;
+}
+
+#must_use
+fn _sl_as_capture_resp(p): *SlCaptureResponse {
+    return p;
+}
+
+#must_use
+fn _sl_as_region(p): *SlCaptureRegion {
+    return p;
+}
+
+# ── the client ───────────────────────────────────────────────────────────────────────
+
+# A client for daimon at `base_url` (every trailing `/` dropped), with Rust's 30 s timeout and agent id "selah".
+# 0 when out of memory.
+#must_use
+fn SlCaptureClient_new(base_url): *SlCaptureClient {
+    return SlCaptureClient_with_timeout(base_url, _SL_CAPTURE_TIMEOUT_MS);
+}
+
+# As SlCaptureClient_new, with a request timeout in milliseconds (Rust: with_client and a configured reqwest
+# client; ADR 0002 #9).
+#must_use
+fn SlCaptureClient_with_timeout(base_url, timeout_ms): *SlCaptureClient {
+    var c: *SlCaptureClient = _sl_as_capture(fl_alloc(sizeof(SlCaptureClient)));
+    if (c == 0) { return 0; }
+    c.base_url = _sl_fl_dup(base_url, _sl_trim_slashes(base_url));
+    c.agent_id = _sl_fl_dup("selah", 5);
+    c.timeout_ms = timeout_ms;
+    if (c.base_url == 0 || c.agent_id == 0) {
+        SlCaptureClient_free(c);
+        return 0;
+    }
+    return c;
+}
+
+# Frees a client.
+fn SlCaptureClient_free(c: *SlCaptureClient): i64 {
+    if (c == 0) { return 0; }
+    if (c.base_url != 0) { fl_free(c.base_url); }
+    if (c.agent_id != 0) { fl_free(c.agent_id); }
+    fl_free(c);
+    return 0;
+}
+
+# The base URL, without trailing slashes (NUL-terminated, owned by the client).
+#must_use
+fn SlCaptureClient_base_url(c: *SlCaptureClient): i64 {
+    return c.base_url;
+}
+
+# Sets the agent id sent with captures (D2: the id daimon's `POST /v1/agents` returned). Returns 1, or 0 when out of
+# memory (the old id is kept).
+fn SlCaptureClient_set_agent_id(c: *SlCaptureClient, agent_id): i64 {
+    var d = _sl_fl_dup(agent_id, strlen(agent_id));
+    if (d == 0) { return 0; }
+    fl_free(c.agent_id);
+    c.agent_id = d;
+    return 1;
+}
+
+# The agent id sent with captures (NUL-terminated, owned by the client).
+#must_use
+fn SlCaptureClient_agent_id(c: *SlCaptureClient): i64 {
+    return c.agent_id;
+}
+
+# Frees a capture answer (one block: the struct and its strings).
+fn SlCaptureResponse_free(r: *SlCaptureResponse): i64 {
+    if (r != 0) { fl_free(r); }
+    return 0;
+}
+
+# ── RegionSpec ───────────────────────────────────────────────────────────────────────
+
+# Rust's clamp_to_u32 (`val as u32`): saturating, NaN and negatives to 0.
+#must_use
+fn _sl_clamp_to_u32(x: f64): i64 {
+    return _sl_clamp_i64(_sl_sat_i64(x), 0, 4294967295);
+}
+
+# Rust's RegionSpec::from_rect: the rect normalized, clipped to the non-negative quadrant, its fractional edges
+# rounded outward. Writes x, y, width and height to out[0..4) and returns Ok(0), or Err(SL_ERR_INVALID_REGION) with
+# Rust's text for a non-finite rect or one that covers no on-screen pixel.
+fn _sl_region_spec(rect: SlRect, out, detail_out = 0): Result {
+    if (rect.is_finite() == false) {
+        if (detail_out == 0) { return Err(SL_ERR_INVALID_REGION); }
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "region coordinates must be finite (got ");
+        _sl_rect_debug(sb, rect);
+        str_builder_putc(sb, 41);
+        return _sl_fail(SL_ERR_INVALID_REGION, detail_out, str_builder_build(sb));
+    }
+    var r: SlRect = rect.normalized();
+    var a: f64 = f32_to(r.min_x);
+    var b: f64 = f32_to(r.min_y);
+    var c: f64 = f32_to(r.max_x);
+    var d: f64 = f32_to(r.max_y);
+    var fa: f64 = f64_floor(a);
+    var fb: f64 = f64_floor(b);
+    var cc: f64 = f64_ceil(c);
+    var cd: f64 = f64_ceil(d);
+    var x0 = _sl_clamp_to_u32(fa);
+    var y0 = _sl_clamp_to_u32(fb);
+    var x1 = _sl_clamp_to_u32(cc);
+    var y1 = _sl_clamp_to_u32(cd);
+    var w = x1 - x0;
+    var h = y1 - y0;
+    if (w < 0) { w = 0; }
+    if (h < 0) { h = 0; }
+    if (w == 0 || h == 0) {
+        if (detail_out == 0) { return Err(SL_ERR_INVALID_REGION); }
+        var wf: f32 = rect.max_x - rect.min_x;
+        var hf: f32 = rect.max_y - rect.min_y;
+        var eb = str_builder_new();
+        str_builder_add_cstr(eb, "region must cover at least 1x1 on-screen pixel (got ");
+        _sl_fmt_f32_display(eb, wf);
+        str_builder_putc(eb, 120);
+        _sl_fmt_f32_display(eb, hf);
+        str_builder_add_cstr(eb, " at ");
+        _sl_fmt_f32_display(eb, rect.min_x);
+        str_builder_putc(eb, 44);
+        _sl_fmt_f32_display(eb, rect.min_y);
+        str_builder_putc(eb, 41);
+        return _sl_fail(SL_ERR_INVALID_REGION, detail_out, str_builder_build(eb));
+    }
+    store64(out, x0);
+    store64(out + 8, y0);
+    store64(out + 16, w);
+    store64(out + 24, h);
+    return Ok(0);
+}
+
+# Appends the capture request body, as serde_json writes Rust's CaptureRequest: `region` (when `spec` is non-zero,
+# its four u32) and `monitor` (when non-zero) only when present, then `format` and `agent_id`.
+fn _sl_capture_body(sb, spec, monitor, format, agent_id): i64 {
+    str_builder_putc(sb, 123);
+    if (spec != 0) {
+        str_builder_add_cstr(sb, "\"region\":{\"x\":");
+        str_builder_add_int(sb, load64(spec));
+        str_builder_add_cstr(sb, ",\"y\":");
+        str_builder_add_int(sb, load64(spec + 8));
+        str_builder_add_cstr(sb, ",\"width\":");
+        str_builder_add_int(sb, load64(spec + 16));
+        str_builder_add_cstr(sb, ",\"height\":");
+        str_builder_add_int(sb, load64(spec + 24));
+        str_builder_add_cstr(sb, "},");
+    }
+    if (monitor != 0) {
+        str_builder_add_cstr(sb, "\"monitor\":");
+        _sl_json_str(sb, monitor, strlen(monitor));
+        str_builder_putc(sb, 44);
+    }
+    str_builder_add_cstr(sb, "\"format\":");
+    _sl_json_str(sb, format, strlen(format));
+    str_builder_add_cstr(sb, ",\"agent_id\":");
+    _sl_json_str(sb, agent_id, strlen(agent_id));
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+# A CaptureResponse from a bayan value, as serde's derive reads one. Ok(*SlCaptureResponse) or Err(SL_ERR_SERDE).
+fn _sl_capture_resp_from_value(v, detail_out): Result {
+    if (v == 0 || (bayan_json_v_is_obj(v) == false && bayan_json_v_is_arr(v) == false)) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "invalid type: expected struct CaptureResponse");
+    }
+    var data = _sl_json_as_str(_sl_json_field(v, "image_data", 4, 0));
+    var fmt = _sl_json_as_str(_sl_json_field(v, "format", 4, 3));
+    var w = _sl_json_as_uint(_sl_json_field(v, "width", 4, 1), 4294967295);
+    var h = _sl_json_as_uint(_sl_json_field(v, "height", 4, 2), 4294967295);
+    if (data == 0 || fmt == 0 || w < 0 || h < 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out,
+            "`image_data` and `format` must be strings, `width` and `height` u32 integers");
+    }
+    var dl = str_len(data);
+    var fl = str_len(fmt);
+    var r: *SlCaptureResponse = _sl_as_capture_resp(fl_alloc(sizeof(SlCaptureResponse) + 32 + dl + fl + 2));
+    if (r == 0) { return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "out of memory"); }
+    var hd = _sl_addr(r) + sizeof(SlCaptureResponse);
+    var p = hd + 32;
+    memcpy(p, str_data(data), dl);
+    store8(p + dl, 0);
+    store64(hd, p);
+    store64(hd + 8, dl);
+    var q = p + dl + 1;
+    memcpy(q, str_data(fmt), fl);
+    store8(q + fl, 0);
+    store64(hd + 16, q);
+    store64(hd + 24, fl);
+    r.image_data = hd;
+    r.format = hd + 16;
+    r.width = w;
+    r.height = h;
+    return Ok(r);
+}
+
+# A capture answer's body read as Rust's read_json::<CaptureResponse> reads it. Ok(*SlCaptureResponse) or
+# Err(SL_ERR_API): "daimon capture: invalid response: <why>".
+fn _sl_capture_from_body(p, n, detail_out = 0): Result {
+    var a = _sl_scratch_new();
+    var d = 0;
+    var ct, cv = _sl_capture_resp_from_value(_sl_json_parse_a(a, p, n), &d);
+    _sl_scratch_free(a);
+    if (is_err_result(ct) == 1) {
+        var why = "not a JSON document";
+        if (d != 0) { why = str_data(d); }
+        return _sl_http_invalid(detail_out, "daimon capture", why);
+    }
+    return Ok(cv);
+}
+
+# POSTs a capture request and reads the answer (Rust: post_capture). Ok(*SlCaptureResponse) or Err(SL_ERR_API).
+fn _sl_post_capture(c: *SlCaptureClient, spec, monitor, format, detail_out): Result {
+    var ub = str_builder_new();
+    str_builder_add_cstr(ub, c.base_url);
+    str_builder_add_cstr(ub, "/v1/screen/capture");
+    var url = str_data(str_builder_build(ub));
+    var bb = str_builder_new();
+    _sl_capture_body(bb, spec, monitor, format, c.agent_id);
+    var body = str_builder_build(bb);
+    _sl_log_kv(SK_DEBUG, "requesting screen capture", "format", format);
+    var resp: SlHttpResponse = SlHttpResponse { 0, 0, 0 };
+    var rp: *SlHttpResponse = _sl_as_resp(&resp);
+    var t, v = _sl_http_call("POST", url, 0, str_data(body), str_len(body), c.timeout_ms,
+        _SL_MAX_CAPTURE_RESPONSE_BYTES, "daimon capture request failed", "daimon capture", rp, detail_out);
+    if (is_err_result(t) == 1) { return Err(v); }
+    var st, sv = _sl_http_check_status(rp, "daimon capture", detail_out);
+    if (is_err_result(st) == 1) {
+        fl_free(rp.body);
+        return Err(sv);
+    }
+    var ct, cv = _sl_capture_from_body(rp.body, rp.len, detail_out);
+    fl_free(rp.body);
+    if (is_err_result(ct) == 1) { return Err(cv); }
+    var r: *SlCaptureResponse = _sl_as_capture_resp(cv);
+    var sb = str_builder_new();
+    str_builder_add_int(sb, r.width);
+    str_builder_putc(sb, 120);
+    str_builder_add_int(sb, r.height);
+    _sl_log_kv(SK_INFO, "captured screenshot", "size", str_data(str_builder_build(sb)));
+    return Ok(r);
+}
+
+# Err(SL_ERR_UNSUPPORTED_FORMAT) for WebP (ADR 0002 #1), else Ok(the format's extension).
+fn _sl_capture_format(format, detail_out): Result {
+    if (format == SL_FMT_WEBP) {
+        return _sl_fail_cstr(SL_ERR_UNSUPPORTED_FORMAT, detail_out,
+            "WebP is not supported by the Cyrius port (encode and decode)");
+    }
+    return Ok(selah_image_format_extension(format));
+}
+
+# Captures `region` (*SlCaptureRegion) in `format` (Rust: CaptureClient::capture). Ok(*SlCaptureResponse), or
+# Err(SL_ERR_INVALID_REGION) for a window, a non-finite or an empty region (nothing is sent), Err(SL_ERR_API), or
+# Err(SL_ERR_UNSUPPORTED_FORMAT) for WebP.
+fn SlCaptureClient_capture(c: *SlCaptureClient, region: *SlCaptureRegion, format, detail_out = 0): Result {
+    var spec: i64[4];
+    var sp = 0;
+    if (region.kind == SL_REGION_RECT) {
+        var rt, rv = _sl_region_spec(region.rect, &spec, detail_out);
+        if (is_err_result(rt) == 1) { return Err(rv); }
+        sp = &spec;
+    } elif (region.kind != SL_REGION_FULL_SCREEN) {
+        if (detail_out == 0) { return Err(SL_ERR_INVALID_REGION); }
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "window capture (");
+        if (region.window != 0) { str_builder_add_cstr(sb, region.window); }
+        str_builder_add_cstr(sb, ") is not supported by the daimon capture API; ");
+        str_builder_add_cstr(sb, "capture the full screen or a region instead");
+        return _sl_fail(SL_ERR_INVALID_REGION, detail_out, str_builder_build(sb));
+    }
+    var ft, fv = _sl_capture_format(format, detail_out);
+    if (is_err_result(ft) == 1) { return Err(fv); }
+    return _sl_post_capture(c, sp, 0, fv, detail_out);
+}
+
+# Captures the full screen as PNG (Rust: capture_full).
+fn SlCaptureClient_capture_full(c: *SlCaptureClient, detail_out = 0): Result {
+    var rb: i64[4];
+    var r: *SlCaptureRegion = _sl_as_region(&rb);
+    r.kind = SL_REGION_FULL_SCREEN;
+    r.rect = SlRect_default();
+    r.window = 0;
+    return SlCaptureClient_capture(c, r, SL_FMT_PNG, detail_out);
+}
+
+# Captures `rect` as PNG (Rust: capture_region).
+fn SlCaptureClient_capture_region(c: *SlCaptureClient, rect: SlRect, detail_out = 0): Result {
+    var rb: i64[4];
+    var r: *SlCaptureRegion = _sl_as_region(&rb);
+    r.kind = SL_REGION_RECT;
+    r.rect = rect;
+    r.window = 0;
+    return SlCaptureClient_capture(c, r, SL_FMT_PNG, detail_out);
+}
+
+# 1 when the UTF-8 text p[0..n) is only Unicode whitespace (Rust: `s.trim().is_empty()`).
+#must_use
+fn _sl_blank(p, n): i64 {
+    var i = 0;
+    while (i < n) {
+        var l = _sl_ws_len(p, i, n);
+        if (l == 0) { return 0; }
+        i = i + l;
+    }
+    return 1;
+}
+
+# Captures the monitor `monitor_id` (NUL-terminated) in `format` (Rust: capture_monitor). A blank id is
+# Err(SL_ERR_INVALID_REGION) and nothing is sent.
+fn SlCaptureClient_capture_monitor(c: *SlCaptureClient, monitor_id, format, detail_out = 0): Result {
+    if (_sl_blank(monitor_id, strlen(monitor_id)) == 1) {
+        return _sl_fail_cstr(SL_ERR_INVALID_REGION, detail_out, "monitor id must not be empty");
+    }
+    var ft, fv = _sl_capture_format(format, detail_out);
+    if (is_err_result(ft) == 1) { return Err(fv); }
+    return _sl_post_capture(c, 0, monitor_id, fv, detail_out);
+}
+
+# The monitors daimon reports (Rust: list_monitors). Ok(vec of *SlMonitor, each freed with SlMonitor_free) or
+# Err(SL_ERR_API).
+fn SlCaptureClient_list_monitors(c: *SlCaptureClient, detail_out = 0): Result {
+    var ub = str_builder_new();
+    str_builder_add_cstr(ub, c.base_url);
+    str_builder_add_cstr(ub, "/v1/screen/monitors");
+    var url = str_data(str_builder_build(ub));
+    var resp: SlHttpResponse = SlHttpResponse { 0, 0, 0 };
+    var rp: *SlHttpResponse = _sl_as_resp(&resp);
+    var t, v = _sl_http_call("GET", url, 0, 0, 0, c.timeout_ms, _SL_MAX_API_RESPONSE_BYTES,
+        "daimon monitors request failed", "daimon monitors", rp, detail_out);
+    if (is_err_result(t) == 1) { return Err(v); }
+    var st, sv = _sl_http_check_status(rp, "daimon monitors", detail_out);
+    if (is_err_result(st) == 1) {
+        fl_free(rp.body);
+        return Err(sv);
+    }
+    var mt, mv = _sl_monitors_from_body(rp.body, rp.len, detail_out);
+    fl_free(rp.body);
+    if (is_err_result(mt) == 1) { return Err(mv); }
+    return Ok(mv);
+}
+
+# A monitor list's body read as Rust's read_json::<Vec<Monitor>> reads it. Ok(vec of *SlMonitor) or Err(SL_ERR_API):
+# "daimon monitors: invalid response: <why>".
+fn _sl_monitors_from_body(p, n, detail_out = 0): Result {
+    var a = _sl_scratch_new();
+    var arr = _sl_json_parse_a(a, p, n);
+    var out = vec_new();
+    var why = 0;
+    if (arr == 0) {
+        why = "not a JSON document";
+    } elif (bayan_json_v_is_arr(arr) == false) {
+        why = "invalid type: expected a sequence";
+    } else {
+        var cnt = bayan_json_v_arr_len(arr);
+        var i = 0;
+        while (i < cnt && why == 0) {
+            var d = 0;
+            var mt, mv = _sl_monitor_from_value(bayan_json_v_arr_get(arr, i), &d);
+            if (is_err_result(mt) == 1) {
+                why = str_data(d);
+            } else {
+                vec_push(out, mv);
+            }
+            i = i + 1;
+        }
+    }
+    _sl_scratch_free(a);
+    if (why != 0) {
+        var j = 0;
+        while (j < vec_len(out)) {
+            SlMonitor_free(vec_get(out, j));
+            j = j + 1;
+        }
+        return _sl_http_invalid(detail_out, "daimon monitors", why);
+    }
+    return Ok(out);
+}
+
+# Writes data[0..n) to the file at `path` (Rust: CaptureClient::save_to_file): atomically and 0600 here, as the layer
+# file is (ADR 0002 #18). Ok(0) or Err(SL_ERR_IO).
+fn SlCaptureClient_save_to_file(data, n, path, detail_out = 0): Result {
+    var t, v = _sl_write_atomic(path, data, n, detail_out);
+    if (is_err_result(t) == 1) { return Err(v); }
+    _sl_log_kv(SK_DEBUG, "saved capture", "path", path);
+    return Ok(0);
+}
+
+# ── session type ─────────────────────────────────────────────────────────────────────
+
+# 1 when the NUL-terminated `s` equals `lower` ignoring ASCII case (`lower` all lowercase).
+#must_use
+fn _sl_ieq(s, lower): i64 {
+    var n = strlen(s);
+    if (n != strlen(lower)) { return 0; }
+    var i = 0;
+    while (i < n) {
+        var c = load8(s + i);
+        if (c >= 65 && c <= 90) { c = c + 32; }
+        if (c != load8(lower + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Rust's session_type_from: Wayland when WAYLAND_DISPLAY is set and non-empty, or XDG_SESSION_TYPE is "wayland" in
+# any ASCII case; X11 otherwise. Either argument may be 0 (unset).
+#must_use
+fn _sl_session_type_from(wayland_display, xdg_session_type): i64 {
+    if (wayland_display != 0 && load8(wayland_display) != 0) { return SL_SESSION_WAYLAND; }
+    if (xdg_session_type != 0 && _sl_ieq(xdg_session_type, "wayland") == 1) { return SL_SESSION_WAYLAND; }
+    return SL_SESSION_X11;
+}
+
+# The display session this process runs under (Rust: detect_session_type).
+#must_use
+fn selah_detect_session_type(): i64 {
+    return _sl_session_type_from(getenv("WAYLAND_DISPLAY"), getenv("XDG_SESSION_TYPE"));
+}
+
+# ── clipboard ────────────────────────────────────────────────────────────────────────
+
+# 1 when data[0..n) starts with sig[0..sn).
+#must_use
+fn _sl_starts(data, n, sig, sn): i64 {
+    if (n < sn) { return 0; }
+    return memeq(data, sig, sn);
+}
+
+# The MIME type of data[0..n) as image 0.25.10's guess_format and ImageFormat::to_mime_type name it, checked in its
+# table's order; "image/png" when nothing matches (Rust's fallback).
+#must_use
+fn _sl_guess_mime(data, n): i64 {
+    if (_sl_starts(data, n, "\x89PNG\r\n\x1a\n", 8) == 1) { return "image/png"; }
+    if (n >= 3 && load8(data) == 255 && load8(data + 1) == 216 && load8(data + 2) == 255) { return "image/jpeg"; }
+    if (_sl_starts(data, n, "GIF89a", 6) == 1 || _sl_starts(data, n, "GIF87a", 6) == 1) { return "image/gif"; }
+    if (n >= 12 && memeq(data, "RIFF", 4) == 1 && memeq(data + 8, "WEBP", 4) == 1) { return "image/webp"; }
+    if (_sl_starts(data, n, "MM", 2) == 1 && n >= 4 && load8(data + 2) == 0 && load8(data + 3) == 42) {
+        return "image/tiff";
+    }
+    if (_sl_starts(data, n, "II*", 3) == 1 && n >= 4 && load8(data + 3) == 0) { return "image/tiff"; }
+    if (_sl_starts(data, n, "DDS ", 4) == 1) { return "image/vnd-ms.dds"; }
+    if (_sl_starts(data, n, "BM", 2) == 1) { return "image/bmp"; }
+    if (n >= 4 && load8(data) == 0 && load8(data + 1) == 0 && load8(data + 2) == 1 && load8(data + 3) == 0) {
+        return "image/x-icon";
+    }
+    if (_sl_starts(data, n, "#?RADIANCE", 10) == 1) { return "image/vnd.radiance"; }
+    if (n >= 12 && load8(data) == 0 && load8(data + 1) == 0 && memeq(data + 4, "ftypavif", 8) == 1) {
+        return "image/avif";
+    }
+    if (n >= 4 && load8(data) == 118 && load8(data + 1) == 47 && load8(data + 2) == 49 && load8(data + 3) == 1) {
+        return "image/x-exr";
+    }
+    if (_sl_starts(data, n, "qoif", 4) == 1) { return "image/x-qoi"; }
+    if (n >= 2 && load8(data) == 80 && load8(data + 1) >= 49 && load8(data + 1) <= 55) {
+        return "image/x-portable-anymap";
+    }
+    if (_sl_starts(data, n, "farbfeld", 8) == 1) { return "application/octet-stream"; }
+    return "image/png";
+}
+
+# The Linux name of signal n (x86_64 and aarch64 number them alike), or 0.
+#must_use
+fn _sl_signal_name(n): i64 {
+    match n {
+        1 => { return "SIGHUP"; }
+        2 => { return "SIGINT"; }
+        3 => { return "SIGQUIT"; }
+        4 => { return "SIGILL"; }
+        5 => { return "SIGTRAP"; }
+        6 => { return "SIGABRT"; }
+        7 => { return "SIGBUS"; }
+        8 => { return "SIGFPE"; }
+        9 => { return "SIGKILL"; }
+        10 => { return "SIGUSR1"; }
+        11 => { return "SIGSEGV"; }
+        12 => { return "SIGUSR2"; }
+        13 => { return "SIGPIPE"; }
+        14 => { return "SIGALRM"; }
+        15 => { return "SIGTERM"; }
+        16 => { return "SIGSTKFLT"; }
+        17 => { return "SIGCHLD"; }
+        18 => { return "SIGCONT"; }
+        19 => { return "SIGSTOP"; }
+        20 => { return "SIGTSTP"; }
+        21 => { return "SIGTTIN"; }
+        22 => { return "SIGTTOU"; }
+        23 => { return "SIGURG"; }
+        24 => { return "SIGXCPU"; }
+        25 => { return "SIGXFSZ"; }
+        26 => { return "SIGVTALRM"; }
+        27 => { return "SIGPROF"; }
+        28 => { return "SIGWINCH"; }
+        29 => { return "SIGIO"; }
+        30 => { return "SIGPWR"; }
+        31 => { return "SIGSYS"; }
+        _ => { return 0; }
+    }
+    return 0;
+}
+
+# Appends Rust's Display of a Unix ExitStatus: "exit status: N", or "signal: N (SIGNAME)" with " (core dumped)".
+fn _sl_exit_status_fmt(sb, sp: *SlSpawn): i64 {
+    if (sp.signal == 0) {
+        str_builder_add_cstr(sb, "exit status: ");
+        str_builder_add_int(sb, sp.code);
+        return 0;
+    }
+    str_builder_add_cstr(sb, "signal: ");
+    str_builder_add_int(sb, sp.signal);
+    var name = _sl_signal_name(sp.signal);
+    if (name != 0) {
+        str_builder_add_cstr(sb, " (");
+        str_builder_add_cstr(sb, name);
+        str_builder_putc(sb, 41);
+    }
+    if (sp.core == 1) { str_builder_add_cstr(sb, " (core dumped)"); }
+    return 0;
+}
+
+# p[0..n) with Unicode whitespace trimmed from both ends (Rust: str::trim): (start, length).
+fn _sl_trim_unicode(p, n): (i64, i64) {
+    var s = 0;
+    while (s < n) {
+        var l = _sl_ws_len(p, s, n);
+        if (l == 0) { break; }
+        s = s + l;
+    }
+    var e = n;
+    while (e > s) {
+        var b = _sl_utf8_back(p, s, e);
+        if (_sl_ws_len(p, b, n) != e - b) { break; }
+        e = b;
+    }
+    return (p + s, e - s);
+}
+
+# Err(SL_ERR_CAPTURE_FAILED): "<a><b>".
+fn _sl_capture_fail(detail_out, a, b): Result {
+    if (detail_out == 0) { return Err(SL_ERR_CAPTURE_FAILED); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, a);
+    str_builder_add_cstr(sb, b);
+    return _sl_fail(SL_ERR_CAPTURE_FAILED, detail_out, str_builder_build(sb));
+}
+
+# Copies data[0..n) to the system clipboard (Rust: CaptureClient::copy_to_clipboard): `wl-copy --type <mime>` under
+# Wayland, `xclip -selection clipboard -t <mime>` under X11, the MIME type sniffed from the data. Ok(0) or
+# Err(SL_ERR_CAPTURE_FAILED) with Rust's texts.
+fn SlCaptureClient_copy_to_clipboard(data, n, detail_out = 0): Result {
+    var session = selah_detect_session_type();
+    var mime = _sl_guess_mime(data, n);
+    _sl_log_kv(SK_DEBUG, "copying to clipboard", "mime", mime);
+    var argv: i64[7];
+    var tool = 0;
+    if (session == SL_SESSION_WAYLAND) {
+        tool = "wl-copy (is wl-clipboard installed?)";
+        argv[0] = "wl-copy";
+        argv[1] = "--type";
+        argv[2] = mime;
+        argv[3] = 0;
+    } else {
+        tool = "xclip (is xclip installed?)";
+        argv[0] = "xclip";
+        argv[1] = "-selection";
+        argv[2] = "clipboard";
+        argv[3] = "-t";
+        argv[4] = mime;
+        argv[5] = 0;
+    }
+    var fb = str_builder_new();
+    str_builder_add_cstr(fb, "failed to run ");
+    str_builder_add_cstr(fb, tool);
+    str_builder_add_cstr(fb, ": ");
+    var failed_to_run = str_data(str_builder_build(fb));
+    var path = _sl_which(argv[0]);
+    if (path == 0) { return _sl_capture_fail(detail_out, failed_to_run, "No such file or directory (os error 2)"); }
+    var spb: i64[7];
+    var s: *SlSpawn = _sl_as_spawn(&spb);
+    var ok, err = _sl_spawn_feed(str_data(path), &argv, data, n, s);
+    if (ok == 0) {
+        if (s.err != 0) { fl_free(s.err); }
+        var eb = str_builder_new();
+        _sl_errno_text(eb, err);
+        var text = str_data(str_builder_build(eb));
+        if (s.ran == 0) { return _sl_capture_fail(detail_out, failed_to_run, text); }
+        return _sl_capture_fail(detail_out, "clipboard tool failed: ", text);
+    }
+    if (s.code != 0 || s.signal != 0) {
+        if (detail_out != 0) {
+            var sb = str_builder_new();
+            str_builder_add_cstr(sb, "clipboard tool exited with ");
+            _sl_exit_status_fmt(sb, s);
+            str_builder_add_cstr(sb, ": ");
+            # Rust reads stderr with read_to_string, which keeps nothing when the bytes are not UTF-8.
+            if (_sl_utf8_valid(s.err, s.errlen) == 1) {
+                var tp, tn = _sl_trim_unicode(s.err, s.errlen);
+                _sl_sb_bytes(sb, tp, _sl_truncate(tp, tn, 1024));
+            }
+            fl_free(s.err);
+            return _sl_fail(SL_ERR_CAPTURE_FAILED, detail_out, str_builder_build(sb));
+        }
+        fl_free(s.err);
+        return Err(SL_ERR_CAPTURE_FAILED);
+    }
+    fl_free(s.err);
+    if (s.werr != 0) {
+        var wb = str_builder_new();
+        if (s.werr == -1) {
+            str_builder_add_cstr(wb, "the tool exited before reading all of its input");
+        } else {
+            _sl_errno_text(wb, s.werr);
+        }
+        return _sl_capture_fail(detail_out, "failed to write to clipboard tool stdin: ",
+            str_data(str_builder_build(wb)));
+    }
+    _sl_log_kv(SK_INFO, "copied image data to clipboard", "mime", mime);
+    return Ok(0);
+}
