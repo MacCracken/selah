@@ -23,6 +23,9 @@ cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --chec
   the port plan §3) and registers it in `src/main.rs`.
 - **The oracle owns `tests/golden/`.** `--check` reports any file there that no emitter writes as stale, and a
   plain run deletes it.
+- **Generated sources.** `src/t_<module>.rs` writes a Cyrius data module into `src/` (today `src/ai_data.cyr`, Rust's
+  `char::is_alphanumeric` as a range table). It is never edited by hand; `--check` compares it like the corpus, so it
+  must be written in `cyrius fmt`'s canonical form.
 - **`tests/golden/modules.txt`** lists every module. `tests/parity.tcyr` replays exactly that list, so a module is
   replayed as soon as its emitter exists (as pending, until its functions get dispatcher entries).
 
@@ -35,6 +38,7 @@ cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --chec
 | `core` | M1 | 1,331 | `src/m_core.rs` | the enums, `xml_escape`, `derive_output_path`, `Color`, `RedactionTarget`, `CaptureSource`, `Annotation` JSON |
 | `uuid` | M1 | 144 | `src/m_uuid.rs` | ids written (hyphenated, simple, JSON) and read (`Uuid::parse_str`'s forms) |
 | `rfc3339` | M1 | 1,169 | `src/m_rfc3339.rs` | chrono's `DateTime<Utc>` through serde, both ways |
+| `ai` | M2 | 8,451 | `src/m_ai.rs` | PII detection over Rust's test inputs and a seeded generator; the stub OCR over every fixture; smart crop; the JSON shapes |
 
 ## Fixtures
 

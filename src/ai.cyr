@@ -1,0 +1,663 @@
+# ai.cyr — PII detection, the stub OCR and smart-crop suggestions (Rust: rust-old/src/ai.rs).
+#
+# tests/golden/ai.tsv pins every function against Rust bit for bit: the PII matcher over Rust's own test inputs and a
+# seeded generator of PII-shaped text, the stub OCR over every image fixture, the crop grid up to u32::MAX.
+#
+# Allocation (port plan D10): every function that returns a list takes the allocator first in its `_a` form
+# (`selah_suggest_redactions_a(a, …)`), so a caller can put a call's results in an arena and reset it; the plain form
+# uses the default allocator. Lists are `lib/vec.cyr` vectors of pointers.
+
+# ── types ─────────────────────────────────────────────────────────────────────────────
+
+# Rust's OcrResult: the extracted text (a Str), a confidence 0..1, the text's bounding boxes (a vec of *SlRect), and
+# whether the stub (byte-scanning) implementation produced it.
+struct SlOcrResult { text: i64; confidence: f64; bounding_boxes: i64; is_stub: i64; }
+
+# Rust's SmartCropSuggestion: a crop region, why it was suggested (a Str), and a confidence 0..1.
+struct SlSmartCropSuggestion { region: SlRect; reason: i64; confidence: f64; }
+
+# Rust's RedactionSuggestion: the region holding the data (always Rect::default() from suggest_redactions, which has no
+# locations), what kind it is, a confidence 0..1, and the matched text (a Str).
+struct SlRedactionSuggestion { region: SlRect; target: SlRedactionTarget; confidence: f64; matched_text: i64; }
+
+#must_use
+fn _sl_as_ocr(p): *SlOcrResult {
+    return p;
+}
+
+#must_use
+fn _sl_as_crop(p): *SlSmartCropSuggestion {
+    return p;
+}
+
+#must_use
+fn _sl_as_suggestion(p): *SlRedactionSuggestion {
+    return p;
+}
+
+#must_use
+fn _sl_as_rect(p): *SlRect {
+    return p;
+}
+
+# A copy of p[0..n) as a Str on allocator a; 0 when out of memory.
+#must_use
+fn _sl_str_copy_a(a, p, n): i64 {
+    var buf = alloc_via(a, n + 1);
+    if (buf == 0) { return 0; }
+    memcpy(buf, p, n);
+    store8(buf + n, 0);
+    return str_new_a(a, buf, n);
+}
+
+# Appends a vec of *SlRect as a JSON array of serde rects.
+fn _sl_rects_to_json(sb, rects): i64 {
+    str_builder_putc(sb, 91);
+    var n = 0;
+    if (rects != 0) { n = vec_len(rects); }
+    var i = 0;
+    while (i < n) {
+        if (i > 0) { str_builder_putc(sb, 44); }
+        var r: *SlRect = _sl_as_rect(vec_get(rects, i));
+        r.to_json(sb);
+        i = i + 1;
+    }
+    str_builder_putc(sb, 93);
+    return 0;
+}
+
+# Appends serde's JSON for an OCR result: {"text":…,"confidence":…,"bounding_boxes":[…],"is_stub":…}.
+fn SlOcrResult_to_json(o: *SlOcrResult, sb): i64 {
+    str_builder_add_cstr(sb, "{\"text\":");
+    _sl_json_str_s(sb, o.text);
+    str_builder_add_cstr(sb, ",\"confidence\":");
+    _sl_fmt_f64_json(sb, o.confidence);
+    str_builder_add_cstr(sb, ",\"bounding_boxes\":");
+    _sl_rects_to_json(sb, o.bounding_boxes);
+    str_builder_add_cstr(sb, ",\"is_stub\":");
+    if (o.is_stub != 0) { str_builder_add_cstr(sb, "true"); } else { str_builder_add_cstr(sb, "false"); }
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+# Read an OCR result from JSON text, as Rust's derived Deserialize: text, confidence and bounding_boxes required,
+# is_stub defaulting to false; or serde's array form, of all four or of the first three.
+# Ok(*SlOcrResult) or Err(SL_ERR_SERDE).
+fn SlOcrResult_from_json(p, n, detail_out = 0): Result {
+    var v = _sl_json_parse(p, n);
+    if (v == 0 || (bayan_json_v_is_obj(v) == false && bayan_json_v_is_arr(v) == false)) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "OCR result: expected a JSON object or array");
+    }
+    # serde's array form: is_stub has #[serde(default)], so it may be left off the end ([text, confidence, boxes]).
+    var alen = 4;
+    if (bayan_json_v_is_arr(v) == true && bayan_json_v_arr_len(v) == 3) { alen = 3; }
+    var text = _sl_json_as_str(_sl_json_field(v, "text", alen, 0));
+    var conf: f64 = 0.0;
+    var boxes = _sl_json_field(v, "bounding_boxes", alen, 2);
+    if (text == 0 || _sl_json_as_f64(_sl_json_field(v, "confidence", alen, 1), &conf) == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "OCR result: `text` or `confidence` missing or mistyped");
+    }
+    if (boxes == 0 || bayan_json_v_is_arr(boxes) == false) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "OCR result: `bounding_boxes` must be an array");
+    }
+    var stub = 0;
+    var sv = 0;
+    if (alen == 4) { sv = _sl_json_field(v, "is_stub", 4, 3); }
+    if (sv != 0) {
+        if (bayan_json_v_is_bool(sv) == false) {
+            return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "OCR result: `is_stub` must be a bool");
+        }
+        stub = bayan_json_v_bool(sv);
+    }
+    var rects = vec_new();
+    var nb = bayan_json_v_arr_len(boxes);
+    var i = 0;
+    while (i < nb) {
+        var r: *SlRect = _sl_as_rect(alloc(sizeof(SlRect)));
+        var t, e = _sl_rect_from_value(bayan_json_v_arr_get(boxes, i), r, detail_out);
+        if (is_err_result(t) == 1) { return Err(e); }
+        vec_push(rects, r);
+        i = i + 1;
+    }
+    var o: *SlOcrResult = _sl_as_ocr(alloc(sizeof(SlOcrResult)));
+    o.text = text;
+    o.confidence = conf;
+    o.bounding_boxes = rects;
+    o.is_stub = stub;
+    return Ok(o);
+}
+
+# Appends serde's JSON for a crop suggestion: {"region":…,"reason":…,"confidence":…}.
+fn SlSmartCropSuggestion_to_json(c: *SlSmartCropSuggestion, sb): i64 {
+    str_builder_add_cstr(sb, "{\"region\":");
+    c.region.to_json(sb);
+    str_builder_add_cstr(sb, ",\"reason\":");
+    _sl_json_str_s(sb, c.reason);
+    str_builder_add_cstr(sb, ",\"confidence\":");
+    _sl_fmt_f64_json(sb, c.confidence);
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+# Appends serde's JSON for a redaction suggestion: {"region":…,"target_type":…,"confidence":…,"matched_text":…}.
+fn SlRedactionSuggestion_to_json(s: *SlRedactionSuggestion, sb): i64 {
+    str_builder_add_cstr(sb, "{\"region\":");
+    s.region.to_json(sb);
+    str_builder_add_cstr(sb, ",\"target_type\":");
+    s.target.to_json(sb);
+    str_builder_add_cstr(sb, ",\"confidence\":");
+    _sl_fmt_f64_json(sb, s.confidence);
+    str_builder_add_cstr(sb, ",\"matched_text\":");
+    _sl_json_str_s(sb, s.matched_text);
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+# ── the stub OCR ──────────────────────────────────────────────────────────────────────
+
+# Rust's MIN_TEXT_RUN: the shortest printable run the stub keeps.
+var SL_MIN_TEXT_RUN = 4;
+
+# Rust's extract_text_regions, on allocator a: the runs of printable ASCII (0x20..=0x7E) of at least four bytes,
+# joined by single spaces. A stub: it reads the encoded file's bytes (embedded metadata), not rendered text, so its
+# confidence is at most 0.1 and it has no bounding boxes. 0 when out of memory.
+#must_use
+fn selah_extract_text_regions_a(a, p, n): *SlOcrResult {
+    var sb = str_builder_new_a(a);
+    if (sb == 0) { return 0; }
+    var any = 0;
+    var i = 0;
+    while (i < n) {
+        var start = i;
+        while (i < n && load8(p + i) >= 0x20 && load8(p + i) <= 0x7E) { i = i + 1; }
+        if (i - start >= SL_MIN_TEXT_RUN) {
+            if (any == 1) { str_builder_putc(sb, 32); }
+            _sl_sb_bytes(sb, p + start, i - start);
+            any = 1;
+        }
+        i = i + 1;
+    }
+    var o: *SlOcrResult = _sl_as_ocr(alloc_via(a, sizeof(SlOcrResult)));
+    if (o == 0) { return 0; }
+    o.text = str_builder_build_a(a, sb);
+    o.confidence = 0.0;
+    if (any == 1) { o.confidence = 0.1; }
+    o.bounding_boxes = vec_new_a(a);
+    o.is_stub = 1;
+    _sl_log_debug("stub OCR extracted text");
+    return o;
+}
+
+# Rust's extract_text_regions, on the default allocator.
+#must_use
+fn selah_extract_text_regions(p, n): *SlOcrResult {
+    return selah_extract_text_regions_a(default_alloc(), p, n);
+}
+
+# ── Unicode ───────────────────────────────────────────────────────────────────────────
+
+# Rust's char::is_alphanumeric of code point cp, from the generated table (src/ai_data.cyr).
+#must_use
+fn _sl_is_alnum(cp): i64 {
+    if (cp < 0x80) {
+        return (cp >= 48 && cp <= 57) || (cp >= 65 && cp <= 90) || (cp >= 97 && cp <= 122);
+    }
+    var lo = 0;
+    var hi = _SL_ALNUM_N - 1;
+    while (lo <= hi) {
+        var mid = (lo + hi) / 2;
+        if (cp < _SL_ALNUM_LO[mid]) {
+            hi = mid - 1;
+        } elif (cp > _SL_ALNUM_HI[mid]) {
+            lo = mid + 1;
+        } else {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+# The UTF-8 character starting at p[i] (i < n): (code point, length). A byte that starts no valid sequence reads as
+# U+FFFD of length 1 (Rust's &str is always valid UTF-8; this only keeps invalid input from being misread).
+fn _sl_utf8_at(p, i, n): (i64, i64) {
+    var c = load8(p + i);
+    if (c < 0x80) { return (c, 1); }
+    var len = 0;
+    var cp = 0;
+    if (c >= 0xC2 && c <= 0xDF) { len = 2; cp = c & 0x1F; }
+    elif (c >= 0xE0 && c <= 0xEF) { len = 3; cp = c & 0x0F; }
+    elif (c >= 0xF0 && c <= 0xF4) { len = 4; cp = c & 0x07; }
+    else { return (0xFFFD, 1); }
+    if (i + len > n) { return (0xFFFD, 1); }
+    var k = 1;
+    while (k < len) {
+        var b = load8(p + i + k);
+        if ((b & 0xC0) != 0x80) { return (0xFFFD, 1); }
+        cp = (cp << 6) | (b & 0x3F);
+        k = k + 1;
+    }
+    return (cp, len);
+}
+
+# The start index of the UTF-8 character ending at p[j - 1] (j > lo).
+#must_use
+fn _sl_utf8_back(p, lo, j): i64 {
+    var i = j - 1;
+    var k = 0;
+    while (i > lo && k < 3 && (load8(p + i) & 0xC0) == 0x80) {
+        i = i - 1;
+        k = k + 1;
+    }
+    return i;
+}
+
+# ── PII detection ─────────────────────────────────────────────────────────────────────
+
+# Rust's luhn_check over the ASCII digits d[0..n): every byte a digit and the checksum a multiple of 10.
+#must_use
+fn _sl_luhn_check(d, n): i64 {
+    var sum = 0;
+    var dbl = 0;
+    var i = n - 1;
+    while (i >= 0) {
+        var b = load8(d + i);
+        if (b < 48 || b > 57) { return 0; }
+        var x = b - 48;
+        if (dbl == 1) {
+            x = x * 2;
+            if (x > 9) { x = x - 9; }
+        }
+        sum = sum + x;
+        dbl = 1 - dbl;
+        i = i - 1;
+    }
+    return sum % 10 == 0;
+}
+
+# 1 for an ASCII digit.
+#must_use
+fn _sl_digit(c): i64 {
+    return c >= 48 && c <= 57;
+}
+
+# Rust's is_email: `local@domain.tld`, a non-empty local part, and an ASCII-alphabetic TLD of at least two bytes.
+#must_use
+fn _sl_is_email(p, n): i64 {
+    var at = 0;
+    while (at < n && load8(p + at) != 64) { at = at + 1; }
+    if (at >= n || at == 0) { return 0; }
+    var dot = n - 1;
+    while (dot > at && load8(p + dot) != 46) { dot = dot - 1; }
+    if (dot <= at) { return 0; }
+    var tld = n - dot - 1;
+    if (tld < 2) { return 0; }
+    var i = dot + 1;
+    while (i < n) {
+        var c = load8(p + i) | 32;
+        if (c < 97 || c > 122) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Rust's is_credit_card: only digits and dashes, 13–19 digits, passing Luhn.
+#must_use
+fn _sl_is_credit_card(p, n): i64 {
+    var digits: u8[20];
+    var k = 0;
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        if (_sl_digit(c) == 1) {
+            if (k == 19) { return 0; }
+            store8(&digits + k, c);
+            k = k + 1;
+        } elif (c != 45) {
+            return 0;
+        }
+        i = i + 1;
+    }
+    return k >= 13 && _sl_luhn_check(&digits, k) == 1;
+}
+
+# Rust's is_ipv4: four dot-separated parts, each 1–3 ASCII digits worth at most 255.
+#must_use
+fn _sl_is_ipv4(p, n): i64 {
+    var parts = 0;
+    var i = 0;
+    loop {
+        var start = i;
+        while (i < n && load8(p + i) != 46) { i = i + 1; }
+        var len = i - start;
+        parts = parts + 1;
+        if (parts > 4 || len == 0 || len > 3) { return 0; }
+        var v = 0;
+        var k = start;
+        while (k < i) {
+            var c = load8(p + k);
+            if (_sl_digit(c) == 0) { return 0; }
+            v = v * 10 + (c - 48);
+            k = k + 1;
+        }
+        if (v > 255) { return 0; }
+        if (i >= n) { break; }
+        i = i + 1;
+    }
+    return parts == 4;
+}
+
+# Rust's is_phone: 10–15 digits with at least one of - . ( ), and otherwise only + and #.
+#must_use
+fn _sl_is_phone(p, n): i64 {
+    var digits = 0;
+    var sep = 0;
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        if (_sl_digit(c) == 1) { digits = digits + 1; }
+        elif (c == 45 || c == 46 || c == 40 || c == 41) { sep = 1; }
+        elif (c != 43 && c != 35) { return 0; }
+        i = i + 1;
+    }
+    return sep == 1 && digits >= 10 && digits <= 15;
+}
+
+# 1 for a byte of Rust's TRAILING_PUNCT: . , ; : ! ? ) ] " '
+#must_use
+fn _sl_trailing_punct(c): i64 {
+    return c == 46 || c == 44 || c == 59 || c == 58 || c == 33 || c == 63 || c == 41 || c == 93 || c == 34 || c == 39;
+}
+
+# The tokens of text p[0..n) as Rust's split_whitespace gives them: a vec of (start, length) pairs, flattened.
+fn _sl_tokens_a(a, p, n): i64 {
+    var v = vec_new_a(a);
+    var i = 0;
+    loop {
+        loop {
+            var w = _sl_ws_len(p, i, n);
+            if (w == 0) { break; }
+            i = i + w;
+        }
+        if (i >= n) { break; }
+        var start = i;
+        while (i < n) {
+            # Printable ASCII is never whitespace: the common byte skips the Unicode check.
+            var c = load8(p + i);
+            if (c > 32 && c < 127) {
+                i = i + 1;
+                continue;
+            }
+            if (_sl_ws_len(p, i, n) != 0) { break; }
+            i = i + 1;
+        }
+        vec_push_a(a, v, start);
+        vec_push_a(a, v, i - start);
+    }
+    return v;
+}
+
+# A new suggestion on allocator a: kind, matched text p[0..n) (copied), confidence; its region Rect::default().
+#must_use
+fn _sl_suggestion_a(a, kind, p, n, conf: f64): *SlRedactionSuggestion {
+    var s: *SlRedactionSuggestion = _sl_as_suggestion(alloc_via(a, sizeof(SlRedactionSuggestion)));
+    if (s == 0) { return 0; }
+    s.region = SlRect_default();
+    s.target = SlRedactionTarget_new(kind, 0);
+    s.confidence = conf;
+    s.matched_text = _sl_str_copy_a(a, p, n);
+    return s;
+}
+
+# Rust's match_grouped_card from token t (of the flattened pairs in `tk`, `count` tokens): a 4-digit first group, then
+# up to four groups of 3–6 digits (each may end in TRAILING_PUNCT, which ends the run), 13–19 digits in all, passing
+# Luhn; the longest such run wins. Returns (span end, tokens consumed after t), or (-1, 0).
+fn _sl_match_grouped_card(p, tk, count, t): (i64, i64) {
+    var s0 = vec_get(tk, t * 2);
+    if (vec_get(tk, t * 2 + 1) != 4) { return (-1, 0); }
+    var digits: u8[20];
+    var k = 0;
+    while (k < 4) {
+        var c = load8(p + s0 + k);
+        if (_sl_digit(c) == 0) { return (-1, 0); }
+        store8(&digits + k, c);
+        k = k + 1;
+    }
+    var nd = 4;
+    var groups = 1;
+    var best_end = -1;
+    var best_used = 0;
+    var j = t + 1;
+    while (j < count && j <= t + 4) {
+        var gs = vec_get(tk, j * 2);
+        var tl = vec_get(tk, j * 2 + 1);
+        var gl = tl;
+        while (gl > 0 && _sl_trailing_punct(load8(p + gs + gl - 1)) == 1) { gl = gl - 1; }
+        var ends = gl != tl;
+        if (gl < 3 || gl > 6 || nd + gl > 19) { break; }
+        var ok = 1;
+        var q = 0;
+        while (q < gl) {
+            if (_sl_digit(load8(p + gs + q)) == 0) { ok = 0; }
+            q = q + 1;
+        }
+        if (ok == 0) { break; }
+        memcpy(&digits + nd, p + gs, gl);
+        nd = nd + gl;
+        groups = groups + 1;
+        if (groups >= 3 && nd >= 13 && _sl_luhn_check(&digits, nd) == 1) {
+            best_end = gs + gl;
+            best_used = groups - 1;
+        }
+        if (ends) { break; }
+        j = j + 1;
+    }
+    return (best_end, best_used);
+}
+
+# Rust's match_split_phone from token t: "(ddd)" ending token t (anything before its first `(` is dropped), then the
+# next token "ddd-dddd" or "ddd.dddd" (TRAILING_PUNCT trimmed). Returns (span start, span end), or (-1, -1).
+fn _sl_match_split_phone(p, tk, count, t): (i64, i64) {
+    var s0 = vec_get(tk, t * 2);
+    var e0 = s0 + vec_get(tk, t * 2 + 1);
+    var a = s0;
+    while (a < e0 && load8(p + a) != 40) { a = a + 1; }
+    if (e0 - a != 5 || load8(p + a + 4) != 41) { return (-1, -1); }
+    if (_sl_digit(load8(p + a + 1)) == 0 || _sl_digit(load8(p + a + 2)) == 0 || _sl_digit(load8(p + a + 3)) == 0) {
+        return (-1, -1);
+    }
+    if (t + 1 >= count) { return (-1, -1); }
+    var ls = vec_get(tk, t * 2 + 2);
+    var ll = vec_get(tk, t * 2 + 3);
+    while (ll > 0 && _sl_trailing_punct(load8(p + ls + ll - 1)) == 1) { ll = ll - 1; }
+    if (ll != 8) { return (-1, -1); }
+    var sep = load8(p + ls + 3);
+    if (sep != 45 && sep != 46) { return (-1, -1); }
+    var q = 0;
+    while (q < 8) {
+        if (q != 3 && _sl_digit(load8(p + ls + q)) == 0) { return (-1, -1); }
+        q = q + 1;
+    }
+    return (a, ls + 8);
+}
+
+# Rust's classify_token on p[s..e): a suggestion (email, card, IP address or phone, in that priority), or 0.
+fn _sl_classify_a(a, p, s, e): *SlRedactionSuggestion {
+    # Email: a token holding '@', trimmed of non-alphanumeric characters (Unicode's) at both ends.
+    var has_at = 0;
+    var i = s;
+    while (i < e) {
+        if (load8(p + i) == 64) { has_at = 1; }
+        i = i + 1;
+    }
+    if (has_at == 1) {
+        var lo = s;
+        var hi = e;
+        while (lo < hi) {
+            var cp, len = _sl_utf8_at(p, lo, hi);
+            if (_sl_is_alnum(cp) == 1) { break; }
+            lo = lo + len;
+        }
+        while (hi > lo) {
+            var b = _sl_utf8_back(p, lo, hi);
+            var cp2, len2 = _sl_utf8_at(p, b, hi);
+            # A sequence that does not end at hi is malformed: its last byte reads as U+FFFD alone.
+            if (b + len2 != hi) {
+                hi = hi - 1;
+                continue;
+            }
+            if (_sl_is_alnum(cp2) == 1) { break; }
+            hi = b;
+        }
+        if (_sl_is_email(p + lo, hi - lo) == 1) { return _sl_suggestion_a(a, SL_TARGET_EMAIL, p + lo, hi - lo, 0.9); }
+    }
+    # Card: trimmed of non-digits.
+    var cl = s;
+    var ch = e;
+    while (cl < ch && _sl_digit(load8(p + cl)) == 0) { cl = cl + 1; }
+    while (ch > cl && _sl_digit(load8(p + ch - 1)) == 0) { ch = ch - 1; }
+    if (_sl_is_credit_card(p + cl, ch - cl) == 1) {
+        return _sl_suggestion_a(a, SL_TARGET_CREDIT_CARD, p + cl, ch - cl, 0.85);
+    }
+    # IP address: trimmed of everything but digits and dots, then of dots.
+    var il = s;
+    var ih = e;
+    while (il < ih && _sl_digit(load8(p + il)) == 0 && load8(p + il) != 46) { il = il + 1; }
+    while (ih > il && _sl_digit(load8(p + ih - 1)) == 0 && load8(p + ih - 1) != 46) { ih = ih - 1; }
+    while (il < ih && load8(p + il) == 46) { il = il + 1; }
+    while (ih > il && load8(p + ih - 1) == 46) { ih = ih - 1; }
+    if (_sl_is_ipv4(p + il, ih - il) == 1) {
+        return _sl_suggestion_a(a, SL_TARGET_IP_ADDRESS, p + il, ih - il, 0.8);
+    }
+    # Phone: from the first digit, '+' or '(' to the last digit.
+    var pl = s;
+    var ph = e;
+    while (pl < ph) {
+        var c = load8(p + pl);
+        if (_sl_digit(c) == 1 || c == 43 || c == 40) { break; }
+        pl = pl + 1;
+    }
+    while (ph > pl && _sl_digit(load8(p + ph - 1)) == 0) { ph = ph - 1; }
+    if (_sl_is_phone(p + pl, ph - pl) == 1) {
+        return _sl_suggestion_a(a, SL_TARGET_PHONE, p + pl, ph - pl, 0.7);
+    }
+    return 0;
+}
+
+# Rust's suggest_redactions, on allocator a: the emails, credit-card numbers (Luhn-checked, plain, dashed or
+# space-grouped), IPv4 addresses and phone numbers (a separator required) in text p[0..n), each token reported at
+# most once, in text order. A vec of *SlRedactionSuggestion; their regions are Rect::default() (no locations).
+#must_use
+fn selah_suggest_redactions_a(a, p, n): i64 {
+    var out = vec_new_a(a);
+    if (out == 0) { return 0; }
+    var tk = _sl_tokens_a(a, p, n);
+    var count = vec_len(tk) / 2;
+    var t = 0;
+    while (t < count) {
+        var ce, used = _sl_match_grouped_card(p, tk, count, t);
+        if (ce >= 0) {
+            var s0 = vec_get(tk, t * 2);
+            vec_push_a(a, out, _sl_suggestion_a(a, SL_TARGET_CREDIT_CARD, p + s0, ce - s0, 0.85));
+            t = t + 1 + used;
+            continue;
+        }
+        var ps, pe = _sl_match_split_phone(p, tk, count, t);
+        if (ps >= 0) {
+            vec_push_a(a, out, _sl_suggestion_a(a, SL_TARGET_PHONE, p + ps, pe - ps, 0.7));
+            t = t + 2;
+            continue;
+        }
+        var ts = vec_get(tk, t * 2);
+        var sug = _sl_classify_a(a, p, ts, ts + vec_get(tk, t * 2 + 1));
+        if (sug != 0) { vec_push_a(a, out, sug); }
+        t = t + 1;
+    }
+    return out;
+}
+
+# Rust's suggest_redactions, on the default allocator.
+#must_use
+fn selah_suggest_redactions(p, n): i64 {
+    return selah_suggest_redactions_a(default_alloc(), p, n);
+}
+
+# ── smart crop ────────────────────────────────────────────────────────────────────────
+
+# Rust's f32::clamp(x, lo, hi) for lo <= hi: NaN stays NaN.
+fn _sl_f32_clamp(x: f32, lo: f32, hi: f32, out: *f32): i64 {
+    var dx: f64 = f32_to(x);
+    var dl: f64 = f32_to(lo);
+    var dh: f64 = f32_to(hi);
+    *out = x;
+    if (dx < dl) { *out = lo; }
+    if (dx > dh) { *out = hi; }
+    return 0;
+}
+
+# A crop suggestion on allocator a.
+#must_use
+fn _sl_crop_a(a, r: SlRect, reason, conf: f64): *SlSmartCropSuggestion {
+    var c: *SlSmartCropSuggestion = _sl_as_crop(alloc_via(a, sizeof(SlSmartCropSuggestion)));
+    if (c == 0) { return 0; }
+    c.region = r;
+    c.reason = str_from_a(a, reason);
+    c.confidence = conf;
+    return c;
+}
+
+# Rust's suggest_smart_crop, on allocator a: half-size crops centred on the four rule-of-thirds points (kept inside
+# the image), then a centre crop, all in f32 as Rust computes them. Empty for a zero (or out-of-u32-range) size.
+#must_use
+fn selah_suggest_smart_crop_a(a, width, height): i64 {
+    var out = vec_new_a(a);
+    if (out == 0) { return 0; }
+    if (width <= 0 || height <= 0 || width > 4294967295 || height > 4294967295) { return out; }
+    var w: f32 = f32_from(f64_from(width));
+    var h: f32 = f32_from(f64_from(height));
+    var half: f32 = f32_from(0.5);
+    var two: f32 = f32_from(2.0);
+    var three: f32 = f32_from(3.0);
+    var zero: f32 = f32_from(0.0);
+    var cw: f32 = w * half;
+    var chh: f32 = h * half;
+    var tx: f32[2];
+    var ty: f32[2];
+    tx[0] = w / three;
+    var w2: f32 = two * w;
+    tx[1] = w2 / three;
+    ty[0] = h / three;
+    var h2: f32 = two * h;
+    ty[1] = h2 / three;
+    var labels: i64[4];
+    labels[0] = "rule-of-thirds: upper-left third";
+    labels[1] = "rule-of-thirds: upper-right third";
+    labels[2] = "rule-of-thirds: lower-left third";
+    labels[3] = "rule-of-thirds: lower-right third";
+    var hw: f32 = cw / two;
+    var hh: f32 = chh / two;
+    var maxx: f32 = w - cw;
+    var maxy: f32 = h - chh;
+    var k = 0;
+    while (k < 4) {
+        var px: f32 = tx[k % 2];
+        var py: f32 = ty[k / 2];
+        var x0: f32 = px - hw;
+        var y0: f32 = py - hh;
+        var x: f32 = zero;
+        var y: f32 = zero;
+        _sl_f32_clamp(x0, zero, maxx, &x);
+        _sl_f32_clamp(y0, zero, maxy, &y);
+        vec_push_a(a, out, _sl_crop_a(a, SlRect_new(x, y, cw, chh), labels[k], 0.6));
+        k = k + 1;
+    }
+    var cx: f32 = maxx / two;
+    var cy: f32 = maxy / two;
+    vec_push_a(a, out, _sl_crop_a(a, SlRect_new(cx, cy, cw, chh), "center crop", 0.5));
+    return out;
+}
+
+# Rust's suggest_smart_crop, on the default allocator.
+#must_use
+fn selah_suggest_smart_crop(width, height): i64 {
+    return selah_suggest_smart_crop_a(default_alloc(), width, height);
+}

@@ -14,12 +14,17 @@ mod m_fmtf;
 mod m_geometry;
 mod m_rfc3339;
 mod m_uuid;
+mod m_ai;
+mod t_ai;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Every file the oracle owns, keyed by its path under `tests/golden/`.
 pub type Out = BTreeMap<String, Vec<u8>>;
+
+/// Generated Cyrius sources (port plan: tables are generated, never typed), keyed by their path from the repo root.
+pub type SrcOut = BTreeMap<String, Vec<u8>>;
 
 /// The provenance line every `.tsv` carries.
 pub const PROVENANCE: &str =
@@ -142,6 +147,10 @@ fn main() {
     modules.push("uuid");
     m_rfc3339::emit(&mut out);
     modules.push("rfc3339");
+    m_ai::emit(&mut out, &fixtures);
+    modules.push("ai");
+    let mut src_out = SrcOut::new();
+    t_ai::emit(&mut src_out);
     out.insert("modules.txt".to_string(), format!("{}\n", modules.join("\n")).into_bytes());
 
     let mut existing = Vec::new();
@@ -167,11 +176,20 @@ fn main() {
             eprintln!("STALE    tests/golden/{rel} (no emitter writes it)");
             bad += 1;
         }
+        for (rel, bytes) in &src_out {
+            match std::fs::read(repo_root().join(rel)) {
+                Ok(have) if have == *bytes => {}
+                _ => {
+                    eprintln!("DIFFERS  {rel} (generated source)");
+                    bad += 1;
+                }
+            }
+        }
         if bad > 0 {
             eprintln!("oracle --check: {bad} file(s) out of date; regenerate with the command in any .tsv header");
             std::process::exit(1);
         }
-        println!("oracle --check: {} files up to date", out.len());
+        println!("oracle --check: {} files up to date", out.len() + src_out.len());
     } else {
         for rel in &stale {
             std::fs::remove_file(golden.join(rel)).expect("remove stale");
@@ -181,6 +199,9 @@ fn main() {
             std::fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
             std::fs::write(&p, bytes).expect("write");
         }
-        println!("oracle: wrote {} files ({} stale removed)", out.len(), stale.len());
+        for (rel, bytes) in &src_out {
+            std::fs::write(repo_root().join(rel), bytes).expect("write generated source");
+        }
+        println!("oracle: wrote {} files ({} stale removed)", out.len() + src_out.len(), stale.len());
     }
 }

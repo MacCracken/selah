@@ -26,11 +26,11 @@ MODULES = {
     "error": {"enums": set(), "structs": set()},
     "geometry": {"enums": set(), "structs": {"Rect"}},
     "core": {"enums": {"ImageFormat"}, "structs": {"Annotation", "Color", "RedactionTarget"}},
+    "ai": {"enums": set(), "structs": set()},
 }
 
 # Rust files whose milestone has not come yet (port plan §3): counted, not checked. M7 empties this.
 PENDING_MODULES = {
-    "ai": "M2",
     "annotate": "M3/M4",
     "lib": "M4 (the facade: annotate_image, redact_image, decode_image_data)",
     "fsutil": "M5",

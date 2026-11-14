@@ -69,4 +69,6 @@ modules = [
     "src/rfc3339.cyr",
     "src/geometry.cyr",
     "src/core.cyr",
+    "src/ai_data.cyr",
+    "src/ai.cyr",
 ]

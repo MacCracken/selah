@@ -1,0 +1,399 @@
+# ai.tcyr — rust-old/src/ai.rs's tests and doctest, ported (port plan M2). Golden parity: tests/golden/ai.tsv.
+
+include "tests/selah_src.cyr"
+include "tests/support.cyr"
+
+# The suggestions of a cstring.
+fn _t_sug(text): i64 {
+    return selah_suggest_redactions(text, strlen(text));
+}
+
+# The matched texts (Strs) of the suggestions of `kind`, in order (Rust's of_type helper).
+fn _t_of_type(text, kind): i64 {
+    var all = _t_sug(text);
+    var out = vec_new();
+    var i = 0;
+    while (i < vec_len(all)) {
+        var s: *SlRedactionSuggestion = _sl_as_suggestion(vec_get(all, i));
+        if (s.target.kind == kind) { vec_push(out, s.matched_text); }
+        i = i + 1;
+    }
+    return out;
+}
+
+# 1 when of_type(text, kind) is exactly the one match `m`.
+fn _t_one(text, kind, m): i64 {
+    var v = _t_of_type(text, kind);
+    return vec_len(v) == 1 && _t_str_is(vec_get(v, 0), m) == 1;
+}
+
+# The number of matches of `kind`.
+fn _t_count(text, kind): i64 {
+    return vec_len(_t_of_type(text, kind));
+}
+
+# The kind of the k-th suggestion.
+fn _t_kind_at(v, k): i64 {
+    var s: *SlRedactionSuggestion = _sl_as_suggestion(vec_get(v, k));
+    return s.target.kind;
+}
+
+fn _t_extract_text_from_ascii_bytes(): i64 {
+    test_group("test_extract_text_from_ascii_bytes");
+    var o: *SlOcrResult = selah_extract_text_regions("....Hello World!....", 20);
+    assert(_t_str_has(o.text, "Hello World!"), "text");
+    assert(o.confidence > 0.0, "confidence");
+    assert(o.is_stub == 1, "stub");
+    return 0;
+}
+
+fn _t_extract_text_empty_input(): i64 {
+    test_group("test_extract_text_empty_input");
+    var o: *SlOcrResult = selah_extract_text_regions("", 0);
+    assert(str_len(o.text) == 0, "empty");
+    assert(o.confidence == 0.0, "confidence 0");
+    return 0;
+}
+
+fn _t_extract_text_binary_garbage(): i64 {
+    test_group("test_extract_text_binary_garbage");
+    var data: u8[100];
+    var i = 0;
+    while (i < 100) {
+        store8(&data + i, (i * 7) % 20);
+        i = i + 1;
+    }
+    var o: *SlOcrResult = selah_extract_text_regions(&data, 100);
+    assert(str_len(o.text) < 20, "little text");
+    return 0;
+}
+
+fn _t_detect_email(): i64 {
+    test_group("test_detect_email");
+    assert(_t_one("contact user@example.com for info", SL_TARGET_EMAIL, "user@example.com"), "email");
+    return 0;
+}
+
+fn _t_detect_phone_with_separator(): i64 {
+    test_group("test_detect_phone_with_separator");
+    assert(_t_one("call 555-123-4567 now", SL_TARGET_PHONE, "555-123-4567"), "phone");
+    return 0;
+}
+
+fn _t_no_phone_without_separator(): i64 {
+    test_group("test_no_phone_without_separator");
+    assert(_t_count("id 5551234567 here", SL_TARGET_PHONE) == 0, "no phone");
+    return 0;
+}
+
+fn _t_detect_ip_address(): i64 {
+    test_group("test_detect_ip_address");
+    assert(_t_one("server at 192.168.1.100 is down", SL_TARGET_IP_ADDRESS, "192.168.1.100"), "ip");
+    return 0;
+}
+
+fn _t_detect_invalid_ip(): i64 {
+    test_group("test_detect_invalid_ip");
+    assert(_t_count("not an IP: 999.999.999.999", SL_TARGET_IP_ADDRESS) == 0, "no ip");
+    return 0;
+}
+
+fn _t_detect_credit_card(): i64 {
+    test_group("test_detect_credit_card");
+    assert(_t_count("card: 4111111111111111", SL_TARGET_CREDIT_CARD) == 1, "card");
+    return 0;
+}
+
+fn _t_no_false_credit_card(): i64 {
+    test_group("test_no_false_credit_card");
+    assert(_t_count("id: 1234567890123", SL_TARGET_CREDIT_CARD) == 0, "no card");
+    return 0;
+}
+
+fn _t_detect_nothing_in_clean_text(): i64 {
+    test_group("test_detect_nothing_in_clean_text");
+    assert(vec_len(_t_sug("this is perfectly clean text with no PII")) == 0, "none");
+    return 0;
+}
+
+fn _t_smart_crop_returns_five_suggestions(): i64 {
+    test_group("test_smart_crop_returns_five_suggestions");
+    assert(vec_len(selah_suggest_smart_crop(1920, 1080)) == 5, "five");
+    return 0;
+}
+
+fn _t_smart_crop_zero_dimensions(): i64 {
+    test_group("test_smart_crop_zero_dimensions");
+    assert(vec_len(selah_suggest_smart_crop(0, 0)) == 0, "none");
+    return 0;
+}
+
+fn _t_smart_crop_regions_within_bounds(): i64 {
+    test_group("test_smart_crop_regions_within_bounds");
+    var v = selah_suggest_smart_crop(1920, 1080);
+    var i = 0;
+    while (i < vec_len(v)) {
+        var c: *SlSmartCropSuggestion = _sl_as_crop(vec_get(v, i));
+        var x: f64 = c.region.x();
+        var y: f64 = c.region.y();
+        var w: f64 = c.region.width();
+        var h: f64 = c.region.height();
+        # Rust adds in f32: x() + width() as f32 sums; both are exact here, so f64 sums agree.
+        assert(x >= 0.0 && y >= 0.0, "origin");
+        assert(x + w <= 1920.0 && y + h <= 1080.0, "inside");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn _t_luhn_check_valid(): i64 {
+    test_group("test_luhn_check_valid");
+    assert(_sl_luhn_check("4111111111111111", 16), "visa");
+    assert(_sl_luhn_check("5500000000000004", 16), "mastercard");
+    return 0;
+}
+
+fn _t_luhn_check_invalid(): i64 {
+    test_group("test_luhn_check_invalid");
+    assert(_sl_luhn_check("1234567890123", 13) == 0, "a");
+    assert(_sl_luhn_check("1111111111111", 13) == 0, "b");
+    return 0;
+}
+
+fn _t_email_no_tld(): i64 {
+    test_group("test_email_no_tld");
+    assert(_t_count("bad email: user@localhost", SL_TARGET_EMAIL) == 0, "none");
+    return 0;
+}
+
+fn _t_email_short_tld(): i64 {
+    test_group("test_email_short_tld");
+    assert(_t_count("test user@example.x", SL_TARGET_EMAIL) == 0, "none");
+    return 0;
+}
+
+fn _t_email_numeric_tld(): i64 {
+    test_group("test_email_numeric_tld");
+    assert(_t_count("test user@example.123", SL_TARGET_EMAIL) == 0, "none");
+    return 0;
+}
+
+fn _t_credit_card_with_dashes(): i64 {
+    test_group("test_credit_card_with_dashes");
+    assert(_t_one("card: 4111-1111-1111-1111", SL_TARGET_CREDIT_CARD, "4111-1111-1111-1111"), "card");
+    return 0;
+}
+
+fn _t_ip_zero(): i64 {
+    test_group("test_ip_zero");
+    assert(_t_one("addr 0.0.0.0 here", SL_TARGET_IP_ADDRESS, "0.0.0.0"), "ip");
+    return 0;
+}
+
+fn _t_ip_broadcast(): i64 {
+    test_group("test_ip_broadcast");
+    assert(_t_count("addr 255.255.255.255 here", SL_TARGET_IP_ADDRESS) == 1, "ip");
+    return 0;
+}
+
+fn _t_ip_partial_invalid(): i64 {
+    test_group("test_ip_partial_invalid");
+    assert(_t_count("not ip: 192.168.1", SL_TARGET_IP_ADDRESS) == 0, "none");
+    return 0;
+}
+
+fn _t_multiple_pii_types(): i64 {
+    test_group("test_multiple_pii_types");
+    var text = "email user@test.com phone 555-123-4567 ip 10.0.0.1";
+    assert(_t_count(text, SL_TARGET_EMAIL) >= 1, "email");
+    assert(_t_count(text, SL_TARGET_PHONE) >= 1, "phone");
+    assert(_t_count(text, SL_TARGET_IP_ADDRESS) >= 1, "ip");
+    return 0;
+}
+
+fn _t_luhn_check_non_digit(): i64 {
+    test_group("test_luhn_check_non_digit");
+    assert(_sl_luhn_check("4111abcd11111111", 16) == 0, "non-digit");
+    return 0;
+}
+
+fn _t_smart_crop_single_pixel(): i64 {
+    test_group("test_smart_crop_single_pixel");
+    assert(vec_len(selah_suggest_smart_crop(1, 1)) == 5, "five");
+    return 0;
+}
+
+fn _t_email_with_surrounding_punctuation(): i64 {
+    test_group("test_email_with_surrounding_punctuation");
+    assert(_t_one("mail me at user@example.com.", SL_TARGET_EMAIL, "user@example.com"), "trailing dot");
+    var v = _t_of_type("<admin@corp.io>, (ops@corp.io)", SL_TARGET_EMAIL);
+    assert(vec_len(v) == 2, "two");
+    assert(_t_str_is(vec_get(v, 0), "admin@corp.io") && _t_str_is(vec_get(v, 1), "ops@corp.io"), "both");
+    return 0;
+}
+
+fn _t_ip_at_end_of_sentence(): i64 {
+    test_group("test_ip_at_end_of_sentence");
+    assert(_t_one("server is 10.0.0.1.", SL_TARGET_IP_ADDRESS, "10.0.0.1"), "trailing dot");
+    assert(_t_one("host=192.168.0.7,", SL_TARGET_IP_ADDRESS, "192.168.0.7"), "key=value,");
+    return 0;
+}
+
+fn _t_ip_not_double_reported_as_phone(): i64 {
+    test_group("test_ip_not_double_reported_as_phone");
+    var s = _t_sug("ip 192.168.100.200");
+    assert(vec_len(s) == 1, "one");
+    assert(_t_kind_at(s, 0) == SL_TARGET_IP_ADDRESS, "ip");
+    return 0;
+}
+
+fn _t_ip_rejects_extra_octets_and_long_parts(): i64 {
+    test_group("test_ip_rejects_extra_octets_and_long_parts");
+    assert(_t_count("1.2.3.4.5", SL_TARGET_IP_ADDRESS) == 0, "five parts");
+    assert(_t_count("1.2.3.0004", SL_TARGET_IP_ADDRESS) == 0, "long part");
+    return 0;
+}
+
+fn _t_credit_card_space_grouped(): i64 {
+    test_group("test_credit_card_space_grouped");
+    assert(_t_one("card 4111 1111 1111 1111 exp 12/30", SL_TARGET_CREDIT_CARD, "4111 1111 1111 1111"), "visa");
+    assert(_t_one("amex 3782 822463 10005.", SL_TARGET_CREDIT_CARD, "3782 822463 10005"), "amex");
+    return 0;
+}
+
+fn _t_credit_card_grouped_failing_luhn_not_matched(): i64 {
+    test_group("test_credit_card_grouped_failing_luhn_not_matched");
+    assert(_t_count("1234 5678 9012 3456", SL_TARGET_CREDIT_CARD) == 0, "luhn fails");
+    assert(_t_count("2020 2021", SL_TARGET_CREDIT_CARD) == 0, "years");
+    return 0;
+}
+
+fn _t_credit_card_with_trailing_punctuation(): i64 {
+    test_group("test_credit_card_with_trailing_punctuation");
+    assert(_t_one("card:4111111111111111.", SL_TARGET_CREDIT_CARD, "4111111111111111"), "card");
+    return 0;
+}
+
+fn _t_amex_dashed_is_card_not_phone(): i64 {
+    test_group("test_amex_dashed_is_card_not_phone");
+    var s = _t_sug("3782-822463-10005");
+    assert(vec_len(s) == 1 && _t_kind_at(s, 0) == SL_TARGET_CREDIT_CARD, "card");
+    return 0;
+}
+
+fn _t_phone_split_area_code(): i64 {
+    test_group("test_phone_split_area_code");
+    assert(_t_one("call (555) 123-4567 today", SL_TARGET_PHONE, "(555) 123-4567"), "split");
+    return 0;
+}
+
+fn _t_phone_with_trailing_punctuation(): i64 {
+    test_group("test_phone_with_trailing_punctuation");
+    assert(_t_one("call 555-123-4567.", SL_TARGET_PHONE, "555-123-4567"), "phone");
+    return 0;
+}
+
+fn _t_suggestions_in_text_order(): i64 {
+    test_group("test_suggestions_in_text_order");
+    var s = _t_sug("10.0.0.1 then a@b.co then 555-123-4567");
+    assert(vec_len(s) == 3, "three");
+    assert(_t_kind_at(s, 0) == SL_TARGET_IP_ADDRESS, "ip first");
+    assert(_t_kind_at(s, 1) == SL_TARGET_EMAIL, "email second");
+    assert(_t_kind_at(s, 2) == SL_TARGET_PHONE, "phone third");
+    return 0;
+}
+
+fn _t_suggest_redactions_unicode_no_panic(): i64 {
+    test_group("test_suggest_redactions_unicode_no_panic");
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "\xc3\xbcn\xc3\xafc\xc3\xb6d\xc3\xa9@\xe4\xbe\x8b\xe3\x81\x88.jp ");
+    str_builder_add_cstr(sb, "(\xef\xbc\x95\xef\xbc\x95\xef\xbc\x95) ");
+    str_builder_add_cstr(sb, "\xef\xbc\x94\xef\xbc\x91\xef\xbc\x91\xef\xbc\x91 \xe2\x80\x94 ");
+    str_builder_add_cstr(sb, "\xf0\x9f\x8e\x89 user@\xe4\xbe\x8b\xe5\xad\x90.");
+    str_builder_add_cstr(sb, "\xe5\x85\xac\xe5\x8f\xb8 \xc2\xaba@b.cd\xc2\xbb");
+    var mixed = str_builder_build(sb);
+    var all = selah_suggest_redactions(str_data(mixed), str_len(mixed));
+    assert(vec_len(all) >= 0, "no fault on multibyte text");
+    assert(_t_one("\xc2\xaba@b.cd\xc2\xbb", SL_TARGET_EMAIL, "a@b.cd"), "guillemets");
+    return 0;
+}
+
+fn _t_extract_text_preserves_runs_and_separators(): i64 {
+    test_group("test_extract_text_preserves_runs_and_separators");
+    var o: *SlOcrResult = selah_extract_text_regions("\x00abcd\x01\x02efgh\x00ab\x00ijkl", 19);
+    assert(_t_str_is(o.text, "abcd efgh ijkl"), "runs");
+    return 0;
+}
+
+# doctest (suggest_redactions)
+fn _t_doctest_suggest_redactions(): i64 {
+    test_group("doctest ai::suggest_redactions");
+    var s = _t_sug("contact user@example.com for info");
+    assert(vec_len(s) == 1, "one");
+    var g: *SlRedactionSuggestion = _sl_as_suggestion(vec_get(s, 0));
+    assert(_t_str_is(g.matched_text, "user@example.com"), "matched");
+    return 0;
+}
+
+# Cyrius-only: the _a forms put a call's results in an arena that a reset reclaims.
+fn _t_arena_forms(): i64 {
+    test_group("allocator forms");
+    var al = arena_allocator(65536);
+    var v = selah_suggest_redactions_a(al, "a@b.co 10.0.0.1", 15);
+    assert(vec_len(v) == 2, "two");
+    reset_via(al);
+    var w = selah_suggest_smart_crop_a(al, 100, 50);
+    assert(vec_len(w) == 5, "five after reset");
+    return 0;
+}
+
+# Runs the suite; the exit code is the failure count, clamped.
+fn main(): i64 {
+    alloc_init();
+    _t_extract_text_from_ascii_bytes();
+    _t_extract_text_empty_input();
+    _t_extract_text_binary_garbage();
+    _t_detect_email();
+    _t_detect_phone_with_separator();
+    _t_no_phone_without_separator();
+    _t_detect_ip_address();
+    _t_detect_invalid_ip();
+    _t_detect_credit_card();
+    _t_no_false_credit_card();
+    _t_detect_nothing_in_clean_text();
+    _t_smart_crop_returns_five_suggestions();
+    _t_smart_crop_zero_dimensions();
+    _t_smart_crop_regions_within_bounds();
+    _t_luhn_check_valid();
+    _t_luhn_check_invalid();
+    _t_email_no_tld();
+    _t_email_short_tld();
+    _t_email_numeric_tld();
+    _t_credit_card_with_dashes();
+    _t_ip_zero();
+    _t_ip_broadcast();
+    _t_ip_partial_invalid();
+    _t_multiple_pii_types();
+    _t_luhn_check_non_digit();
+    _t_smart_crop_single_pixel();
+    _t_email_with_surrounding_punctuation();
+    _t_ip_at_end_of_sentence();
+    _t_ip_not_double_reported_as_phone();
+    _t_ip_rejects_extra_octets_and_long_parts();
+    _t_credit_card_space_grouped();
+    _t_credit_card_grouped_failing_luhn_not_matched();
+    _t_credit_card_with_trailing_punctuation();
+    _t_amex_dashed_is_card_not_phone();
+    _t_phone_split_area_code();
+    _t_phone_with_trailing_punctuation();
+    _t_suggestions_in_text_order();
+    _t_suggest_redactions_unicode_no_panic();
+    _t_extract_text_preserves_runs_and_separators();
+    _t_doctest_suggest_redactions();
+    _t_arena_forms();
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

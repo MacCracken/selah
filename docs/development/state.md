@@ -20,24 +20,27 @@ oracle. The Cyrius port is in progress and ships as **1.0.0** at M7. Plan of rec
 |---|---|
 | M0 Initialize | ✅ done 2026-11-14 |
 | M1 Foundation | ✅ done 2026-11-14 |
-| M2–M7 | not started |
+| M2 PII and smart crop | ✅ done 2026-11-14 |
+| M3–M7 | not started |
 
 ## Source
 
 - Rust oracle: `rust-old/` (7,160 lines in `src/`, 289 tests), frozen; green from its new location (2026-11-14).
-- Cyrius: `src/` holds error, log, fmtf, json, uuid, rfc3339, geometry and core (about 2,200 lines), bundled as
+- Cyrius: `src/` holds error, log, fmtf, json, uuid, rfc3339, geometry, core, ai and the generated ai_data (about
+  3,100 lines), bundled as
   `dist/selah.cyr` (`[lib]`); `src/main.cyr` is the build-smoke stub.
-- Surface parity: 34/34 for the ported modules (`scripts/surface_parity.py`); ai, annotate, lib, fsutil, http,
+- Surface parity: 37/37 for the ported modules (`scripts/surface_parity.py`); annotate, lib, fsutil, http,
   history, capture, daimon and mcp are pending their milestones.
 
 ## Tests
 
 - `cyrius test`: `tests/parity.tcyr` (the golden corpus), the ported Rust tests (`error.tcyr`, `geometry.tcyr`,
-  `core.tcyr`: 64 Rust tests and 7 doctests, 186 assertions), and `selah.tcyr` (the bundle, as a consumer sees it).
-- Golden corpus: 34,926 rows. M1's 34,863 are all class A and all pass, identical on x86_64 ELF, aarch64 (qemu)
-  and x86_64 PE (wine). `decode` (63, not gated until M3): 47 ok, 14 measured, 2 accepted; findings F1–F5 in
+  `core.tcyr`, `ai.tcyr`: 103 Rust tests and 8 doctests, 256 assertions), and `selah.tcyr` (the bundle, as a
+  consumer sees it).
+- Golden corpus: 43,377 rows. M1's 34,863 and M2's 8,451 are all class A and all pass, identical on x86_64 ELF,
+  aarch64 (qemu) and x86_64 PE (wine). `decode` (63, not gated until M3): 47 ok, 14 measured, 2 accepted; findings F1–F5 in
   [`port-parity.md`](port-parity.md).
-- Benches: 6 of 13 ported, recorded against Rust in [`../benchmarks-rust-v-cyrius.md`](../benchmarks-rust-v-cyrius.md).
+- Benches: 10 of 13 ported, recorded against Rust in [`../benchmarks-rust-v-cyrius.md`](../benchmarks-rust-v-cyrius.md).
 
 ## Dependencies
 
@@ -65,4 +68,5 @@ taswir, aethersafta, kiran (planned): none is in Cyrius yet. Rust consumers stay
 
 ## Next
 
-M2 PII and smart crop (`ai`). M3 starts by settling port-parity.md §2 F1–F5.
+M3 Codecs. It starts by settling port-parity.md §2 F1–F5 (JPEG upsampling, K_jpeg, 16-bit BMP, 32-bit `BI_RGB`
+alpha, CMYK) — decisions for the maintainer.

@@ -117,7 +117,18 @@ NaN rows matching as NaN. Three facts the corpus taught (each now pinned):
 - Rust's `f32::min` / `f32::max` (glam 0.29.3's `Vec2::min` / `max`) give the second operand on equal operands,
   ±0 included, and the non-NaN one when one is NaN.
 
-## 4. Bounds
+## 4. M2 (2026-11-14): everything class A
+
+`ai`'s 8,451 rows are all class A and all equal, identical on x86_64 ELF, aarch64 and x86_64 PE. Two facts the corpus
+taught:
+
+- rustc 1.100's `char` methods are **Unicode 18.0.0**; the stdlib's `lib/unicode` is 17.0.0. The email trim
+  (`!c.is_alphanumeric()`) therefore reads a table generated from Rust itself (`src/ai_data.cyr`), not general
+  categories.
+- serde's array form of a struct may leave off a trailing field that has `#[serde(default)]` (`OcrResult`'s
+  `is_stub`).
+
+## 5. Bounds
 
 | Bound | Value | Set | Gates from |
 |---|---|---|---|

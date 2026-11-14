@@ -1,6 +1,6 @@
 # selah benchmarks — the Rust criterion suite's benches (rust-old/benches/benchmarks.rs), same names and inputs, so
 # docs/benchmarks-rust-v-cyrius.md can set them side by side. Benches join as their modules are ported (M1: rect
-# operations, xml_escape).
+# operations, xml_escape; M2: suggest_redactions, extract_text_regions).
 #
 # Pattern: bench_new -> bench_batch_start -> tight loop -> bench_batch_stop -> bench_report.
 
@@ -82,6 +82,49 @@ fn _b_xml(name, p, len, n): i64 {
     return sink;
 }
 
+# suggest_redactions over `p[0..len)`, `n` times, each call's results in an arena reset after it (Rust frees its Vec).
+fn _b_redact(name, p, len, n): i64 {
+    var al = arena_allocator_growable(65536);
+    var sink = 0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        var v = selah_suggest_redactions_a(al, p, len);
+        sink = sink + vec_len(v);
+        reset_via(al);
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return sink;
+}
+
+# extract_text_regions_64k: 64 KiB alternating 64-byte runs of letters and of control bytes, as Rust's bench builds it.
+fn _b_extract(): i64 {
+    var data = alloc(65536);
+    var k = 0;
+    while (k < 65536) {
+        if ((k / 64) % 2 == 0) { store8(data + k, 97 + k % 26); } else { store8(data + k, k % 31); }
+        k = k + 1;
+    }
+    var al = arena_allocator_growable(262144);
+    var n = 2000;
+    var sink = 0;
+    var b = bench_new("extract_text_regions_64k");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        var o: *SlOcrResult = selah_extract_text_regions_a(al, data, 65536);
+        sink = sink + str_len(o.text);
+        reset_via(al);
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return sink;
+}
+
 # Runs every bench.
 fn main(): i64 {
     alloc_init();
@@ -100,6 +143,19 @@ fn main(): i64 {
     _b_xml("xml_escape_plain", plain, strlen(plain), 1000000);
     _b_xml("xml_escape_special", special, strlen(special), 1000000);
     _b_xml("xml_escape_long", str_data(long), str_len(long), 100000);
+    var clean = "This is a perfectly normal sentence with no sensitive data at all.";
+    var pii = "Contact user@example.com at 192.168.1.100 or call 555-123-4567. Card: 4111111111111111";
+    var lsb = str_builder_new();
+    var r = 0;
+    while (r < 100) {
+        str_builder_add_cstr(lsb, clean);
+        r = r + 1;
+    }
+    var ltext = str_builder_build(lsb);
+    _b_redact("suggest_redactions_clean", clean, strlen(clean), 200000);
+    _b_redact("suggest_redactions_pii", pii, strlen(pii), 200000);
+    _b_redact("suggest_redactions_long", str_data(ltext), str_len(ltext), 5000);
+    _b_extract();
     return 0;
 }
 

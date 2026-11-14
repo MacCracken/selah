@@ -14,6 +14,8 @@ include "src/uuid.cyr"
 include "src/rfc3339.cyr"
 include "src/geometry.cyr"
 include "src/core.cyr"
+include "src/ai_data.cyr"
+include "src/ai.cyr"
 
 # ---------------------------------------------------------------- decode
 #
@@ -617,6 +619,142 @@ fn _par_rfc3339_row(): i64 {
     return _pc_check(str_builder_build(out));
 }
 
+# ---------------------------------------------------------------- ai
+
+# Decode an h: token (field f, token i) into a fresh buffer; stores its length.
+fn _par_tok_h(f, i, len_out): i64 {
+    var p = 0;
+    var n = 0;
+    _pc_tok(f, i, &p, &n);
+    var bytes = (n - 2) / 2;
+    var buf = alloc(bytes + 1);
+    var k = 0;
+    while (k < bytes) {
+        store8(buf + k, _pc_hex(p + 2 + k * 2, 2));
+        k = k + 1;
+    }
+    store64(len_out, bytes);
+    return buf;
+}
+
+fn _par_put_target_kind(sb, kind): i64 {
+    var t = SlRedactionTarget_new(kind, 0);
+    return _par_put_target(sb, t);
+}
+
+# The rect whose layout is the four g tokens from token i of the inputs.
+fn _par_layout_at(i): SlRect {
+    var r: SlRect = SlRect_default();
+    store32(_sl_addr(&r), _pc_tok_num(2, i));
+    store32(_sl_addr(&r) + 4, _pc_tok_num(2, i + 1));
+    store32(_sl_addr(&r) + 8, _pc_tok_num(2, i + 2));
+    store32(_sl_addr(&r) + 12, _pc_tok_num(2, i + 3));
+    return r;
+}
+
+fn _par_put_ocr(sb, o: *SlOcrResult): i64 {
+    _pc_put_sstr(sb, o.text);
+    _pc_sp(sb);
+    _pc_put_f(sb, o.confidence);
+    _pc_sp(sb);
+    var nb = vec_len(o.bounding_boxes);
+    _pc_put_i(sb, nb);
+    var i = 0;
+    while (i < nb) {
+        _pc_sp(sb);
+        var r: *SlRect = _sl_as_rect(vec_get(o.bounding_boxes, i));
+        _par_put_layout(sb, *r);
+        i = i + 1;
+    }
+    _pc_sp(sb);
+    _pc_put_b(sb, o.is_stub);
+    return 0;
+}
+
+fn _par_ai_row(): i64 {
+    var out = str_builder_new();
+    var sb = str_builder_new();
+    var n = 0;
+    if (_pc_fn_is("extract_text_regions") == 1) {
+        var data = _par_tok_h(2, 0, &n);
+        var o: *SlOcrResult = selah_extract_text_regions(data, n);
+        _pc_put_sstr(out, o.text);
+        _pc_sp(out);
+        _pc_put_f(out, o.confidence);
+        _pc_sp(out);
+        _pc_put_b(out, o.is_stub);
+    } elif (_pc_fn_is("suggest_redactions") == 1) {
+        var text = _pc_tok_s(2, 0, &n);
+        var v = selah_suggest_redactions(text, n);
+        _pc_put_i(out, vec_len(v));
+        var i = 0;
+        while (i < vec_len(v)) {
+            var g: *SlRedactionSuggestion = _sl_as_suggestion(vec_get(v, i));
+            _pc_sp(out);
+            _par_put_target_kind(out, g.target.kind);
+            _pc_sp(out);
+            _pc_put_sstr(out, g.matched_text);
+            _pc_sp(out);
+            _pc_put_f(out, g.confidence);
+            i = i + 1;
+        }
+    } elif (_pc_fn_is("RedactionSuggestion::to_json") == 1) {
+        var text2 = _pc_tok_s(2, 0, &n);
+        var v2 = selah_suggest_redactions(text2, n);
+        var k = _pc_tok_num(2, 1);
+        if (k < vec_len(v2)) { SlRedactionSuggestion_to_json(_sl_as_suggestion(vec_get(v2, k)), sb); }
+        _pc_put_sstr(out, str_builder_build(sb));
+    } elif (_pc_fn_is("suggest_smart_crop") == 1) {
+        var v3 = selah_suggest_smart_crop(_pc_tok_num(2, 0), _pc_tok_num(2, 1));
+        _pc_put_i(out, vec_len(v3));
+        var j = 0;
+        while (j < vec_len(v3)) {
+            var c: *SlSmartCropSuggestion = _sl_as_crop(vec_get(v3, j));
+            _pc_sp(out);
+            _par_put_layout(out, c.region);
+            _pc_sp(out);
+            _pc_put_sstr(out, c.reason);
+            _pc_sp(out);
+            _pc_put_f(out, c.confidence);
+            j = j + 1;
+        }
+    } elif (_pc_fn_is("SmartCropSuggestion::to_json") == 1) {
+        var c2: *SlSmartCropSuggestion = _sl_as_crop(alloc(sizeof(SlSmartCropSuggestion)));
+        c2.region = _par_layout_at(0);
+        var rp = _pc_tok_s(2, 4, &n);
+        c2.reason = str_new(rp, n);
+        c2.confidence = _pc_tok_num(2, 5);
+        SlSmartCropSuggestion_to_json(c2, sb);
+        _pc_put_sstr(out, str_builder_build(sb));
+    } elif (_pc_fn_is("char::is_alphanumeric") == 1) {
+        _pc_put_b(out, _sl_is_alnum(_pc_tok_num(2, 0)));
+    } elif (_pc_fn_is("OcrResult::to_json") == 1) {
+        var o2: *SlOcrResult = _sl_as_ocr(alloc(sizeof(SlOcrResult)));
+        var tp = _pc_tok_s(2, 0, &n);
+        o2.text = str_new(tp, n);
+        o2.confidence = _pc_tok_num(2, 1);
+        var nb = _pc_tok_num(2, 2);
+        o2.bounding_boxes = vec_new();
+        var q = 0;
+        while (q < nb) {
+            var r: *SlRect = _sl_as_rect(alloc(sizeof(SlRect)));
+            *r = _par_layout_at(3 + q * 4);
+            vec_push(o2.bounding_boxes, r);
+            q = q + 1;
+        }
+        o2.is_stub = _pc_tok_num(2, 3 + nb * 4);
+        SlOcrResult_to_json(o2, sb);
+        _pc_put_sstr(out, str_builder_build(sb));
+    } elif (_pc_fn_is("OcrResult::from_json") == 1) {
+        var doc = _pc_tok_s(2, 0, &n);
+        var t, o3 = SlOcrResult_from_json(doc, n);
+        if (is_err_result(t) == 1) { _pc_put_raw(out, "E:serde"); } else { _par_put_ocr(out, o3); }
+    } else {
+        return _pc_record(PC_PENDING, "no dispatcher");
+    }
+    return _pc_check(str_builder_build(out));
+}
+
 # ---------------------------------------------------------------- driver
 
 # Replay one module's .tsv. Returns 1 when the module failed.
@@ -642,6 +780,7 @@ fn _par_module(name, n): i64 {
     elif (n == 4 && memeq(name, "core", 4) == 1) { which = 5; }
     elif (n == 4 && memeq(name, "uuid", 4) == 1) { which = 6; }
     elif (n == 7 && memeq(name, "rfc3339", 7) == 1) { which = 7; }
+    elif (n == 2 && memeq(name, "ai", 2) == 1) { which = 8; }
     if (which != 1) { _pc_print_limit = 10; }
     var pos = 0;
     while (pos < len) {
@@ -656,6 +795,7 @@ fn _par_module(name, n): i64 {
             elif (which == 5) { _par_core_row(); }
             elif (which == 6) { _par_uuid_row(); }
             elif (which == 7) { _par_rfc3339_row(); }
+            elif (which == 8) { _par_ai_row(); }
             else { _pc_record(PC_PENDING, "no dispatcher"); }
         }
         pos = e + 1;

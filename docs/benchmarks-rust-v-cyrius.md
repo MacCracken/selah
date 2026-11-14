@@ -17,10 +17,10 @@ The Cyrius benches (`tests/selah.bcyr`, `cyrius bench`) carry the Rust criterion
 | `xml_escape_plain` | 21.2 ns | 110 ns | 5.2× | M1 | Cyrius escapes into one reused builder; Rust allocates a `String` per call (a bump heap would grow by the whole run's output) |
 | `xml_escape_special` | 129 ns | 874 ns | 6.8× | M1 | as above |
 | `xml_escape_long` | 604 ns | 8.04 µs | 13× | M1 | as above; plain runs are scanned through a 256-byte table and copied whole (was 42.9 µs) |
-| `suggest_redactions_clean` | 392 ns | — | | M2 | |
-| `suggest_redactions_pii` | 461 ns | — | | M2 | |
-| `suggest_redactions_long` | 36.7 µs | — | | M2 | |
-| `extract_text_regions_64k` | 61.9 µs | — | | M2 | |
+| `suggest_redactions_clean` | 392 ns | 2.46 µs | 6.3× | M2 | each call's results in an arena reset after it (Rust frees its Vec); the tokenizer skips printable ASCII before the Unicode whitespace test (was 3.13 µs) |
+| `suggest_redactions_pii` | 461 ns | 2.60 µs | 5.6× | M2 | as above (was 3.52 µs) |
+| `suggest_redactions_long` | 36.7 µs | 232 µs | 6.3× | M2 | as above (was 290 µs) |
+| `extract_text_regions_64k` | 61.9 µs | 446 µs | 7.2× | M2 | the result in an arena reset after it; plain runs are copied whole |
 | `render_to_image_64x64` | 16.2 µs | — | | M4 | |
 | `render_to_image_512_bmp` | 1.29 ms | — | | M4 | |
 | `to_svg_100` | 40.0 µs | — | | M4 | |
