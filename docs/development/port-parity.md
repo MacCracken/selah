@@ -153,7 +153,7 @@ taught:
 ## 5. Bounds
 
 Each bound is set before the first gated comparison, and none is ever widened. The one exception, the JPEG encoder's
-bound, is recorded below with its history.
+bound, is recorded below with its history and the maintainer's approval.
 
 | Bound | Value | Set | Gates from |
 |---|---|---|---|
@@ -167,7 +167,7 @@ bound, is recorded below with its history.
 ### The JPEG encoder's bound: what was set first, and why it changed
 
 This change was made **after a first comparison**, which CLAUDE.md's rule forbids for a widening. So it is written
-down in full here, and was put to the maintainer when M3 closed.
+down in full here. It was put to the maintainer when M3 closed, and **approved on 2026-11-14**.
 
 1. **Set first (M3 start):** per image, the port's JPEG decoded to the input no worse than Rust's own JPEG of the
    same pixels: mean error + 0.050 and max + 2, the class B margins.

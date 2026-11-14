@@ -123,8 +123,8 @@ The Rust crate stays at 0.30.x on crates.io.
 - **The JPEG encoder's bound changed after its first comparison.** It started per image, "no worse than Rust's own
   JPEG + 0.050 mean / + 2 max", and 7 synthetic-noise images failed it. Two correct encoders differ there by
   rounding noise: −1.28 to +0.55 dB per image, while the port is ahead over the corpus, 28.542 against 28.531 dB.
-  It now gates on the exact mathematics instead. The history is in port-parity.md §5, and it is flagged for the
-  maintainer.
+  It now gates on the exact mathematics instead, which the maintainer approved on 2026-11-14. The history is in
+  port-parity.md §5.
 - **Tests:** `tests/codec.tcyr`: 8 Rust tests and the `convert_format` doctest, plus round trips, the F4 guard and
   the refusal codes (57 assertions). The bundle smoke test converts PNG to BMP.
 - **Benches:** six codec benches. Encoders run at 1.1–5.6× Rust; chitra's decoding at 19–23× (L18).

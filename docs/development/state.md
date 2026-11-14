@@ -90,6 +90,5 @@ taswir, aethersafta, kiran (planned): none is in Cyrius yet. Rust consumers stay
 ## Next
 
 M4 Annotation (raster, annotate, the selah facade). It draws onto `SlImage` pixels from `src/codec.cyr`, so
-`render_to_image` inherits the codec gates. The open question from M3 is the JPEG encoder's bound
-([`port-parity.md`](port-parity.md) §5): it was replaced after its first comparison, and the maintainer decides
-whether that stands.
+`render_to_image` inherits the codec gates. No decision is open: the maintainer approved M3's JPEG encoder bound,
+which gates on the exact mathematics ([`port-parity.md`](port-parity.md) §5).
