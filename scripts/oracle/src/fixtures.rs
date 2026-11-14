@@ -393,6 +393,19 @@ pub fn build() -> Vec<Fixture> {
     add("png-idat-badcrc.png", "png", badcrc, "png-rgba8-33x17.png with the IDAT CRC corrupted", None);
     add("png-too-wide-40000x1.png", "png", png_header_only(40000, 1), "IHDR 40000x1 (over MAX_IMAGE_DIMENSION 32768), one-row IDAT", None);
     add("png-too-big-20000x20000.png", "png", png_header_only(20000, 20000), "IHDR 20000x20000 RGBA8 (1.6 GB, over MAX_DECODE_ALLOC 512 MiB), tiny IDAT", None);
+    // M4: the render grid's large source, and a PNG whose tEXt chunk carries PII (redact_image's stub OCR reads it).
+    add("png-rgba8-512x512-grad.png", "png", png_enc(512, 512, C::Rgba, D::Eight, &grad(512, 512, 4), None, None), "png 0.18.1 RGBA8 gradient, 512x512", None);
+    let mut pii = Vec::new();
+    {
+        let mut e = png::Encoder::new(&mut pii, 7, 3);
+        e.set_color(C::Rgba);
+        e.set_depth(D::Eight);
+        e.add_text_chunk("Comment".to_string(), "mail user@example.com from 192.168.1.20, card 4111 1111 1111 1111".to_string())
+            .expect("tEXt");
+        let mut wr = e.write_header().expect("png header");
+        wr.write_image_data(&noise(84, 1)).expect("png data");
+    }
+    add("png-rgba8-7x3-text-pii.png", "png", pii, "png 0.18.1 RGBA8 noise with a tEXt chunk holding an email, an IPv4 and a card number", None);
     // Inside selah's limits but over chitra 1.3.1's fixed 16,777,216-pixel cap (chitra issue
     // 2026-11-14-fixed-16-mp-cap-refuses-screenshots): 64-pixel tiles, so it compresses to a few KB. Its decode row
     // carries the RGBA's CRC-32, not the 67 MB of pixels.

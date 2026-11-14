@@ -9,7 +9,7 @@ fn _s_is(s, text): i64 {
     return s != 0 && str_len(s) == n && memeq(str_data(s), text, n) == 1;
 }
 
-# Smoke-tests the bundle: geometry, core, errors, JSON, codecs.
+# Smoke-tests the bundle: geometry, core, errors, JSON, codecs, annotation.
 fn main(): i64 {
     alloc_init();
     test_group("bundle");
@@ -33,6 +33,14 @@ fn main(): i64 {
     var bn = 0;
     var ct, bmp = selah_convert_format(png, pn, SL_FMT_BMP, &bn);
     assert(is_ok(ct) == 1 && load8(bmp) == 66 && load8(bmp + 1) == 77, "convert_format PNG -> BMP");
+    var anns = vec_new();
+    vec_push(anns, SlAnnotation_new(SL_KIND_REDACTION, r, SL_COLOR_BLACK));
+    var an = 0;
+    var at, out = selah_annotate_image(png, pn, anns, SL_FMT_PNG, &an);
+    assert(is_ok(at) == 1 && an > 0, "annotate_image");
+    var c: *SlAnnotationCanvas = SlAnnotationCanvas_new(2, 2);
+    SlAnnotationCanvas_apply_redaction(c, r);
+    assert(SlAnnotationCanvas_count(c) == 1 && str_len(SlAnnotationCanvas_to_svg(c)) > 0, "canvas and SVG");
     return assert_summary();
 }
 

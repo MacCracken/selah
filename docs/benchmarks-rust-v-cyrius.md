@@ -21,9 +21,9 @@ The Cyrius benches (`tests/selah.bcyr`, `cyrius bench`) carry the Rust criterion
 | `suggest_redactions_pii` | 461 ns | 2.60 µs | 5.6× | M2 | as above (was 3.52 µs) |
 | `suggest_redactions_long` | 36.7 µs | 232 µs | 6.3× | M2 | as above (was 290 µs) |
 | `extract_text_regions_64k` | 61.9 µs | 446 µs | 7.2× | M2 | the result in an arena reset after it; plain runs are copied whole |
-| `render_to_image_64x64` | 16.2 µs | — | | M4 | |
-| `render_to_image_512_bmp` | 1.29 ms | — | | M4 | |
-| `to_svg_100` | 40.0 µs | — | | M4 | |
+| `render_to_image_64x64` | 16.2 µs | 995 µs | 61× | M4 | decode + draw + PNG encode of 64 × 64: sankoch's ~110 µs per compression (L20), chitra's ~200 µs per small decode (L18), the PNG filter (its loop was 22 ns/byte, now ~15) |
+| `render_to_image_512_bmp` | 1.29 ms | 10.6 ms | 8.2× | M4 | BMP in and out, so the drawing dominates; the ellipse's 1,600 sin / cos pairs go through fdlibm |
+| `to_svg_100` | 40.0 µs | 201 µs | 5.0× | M4 | an integer fast path in the f32 printer (was 380 µs: 684 ns a coordinate through the general shortest-digits path) |
 
 ### M3 codecs (Cyrius-only benches; Rust's numbers from `oracle --bench`)
 
@@ -34,7 +34,7 @@ the iterations shown in the bench, measured 2026-11-14 on the same machine.
 
 | Bench | Rust | Cyrius | Ratio | Notes |
 |---|---|---|---|---|
-| `encode_png_512` | 10.4 ms | 58.9 ms | 5.6× | kii's filter heuristic and sankoch's level-6 deflate (Rust: png 0.18.1's defaults) |
+| `encode_png_512` | 10.4 ms | 48.7 ms | 4.7× | kii's filter heuristic and sankoch's level-6 deflate (Rust: png 0.18.1's defaults). M4 tightened the filter loop (59 → 49 ms); about 21 ms is sankoch's deflate, at about the same time on every level (L20) |
 | `encode_bmp_512` | 2.14 ms | 2.45 ms | 1.1× | |
 | `encode_jpeg_512` | 12.9 ms | 32.5 ms | 2.5× | 4:4:4 q75; the Cyrius encoder computes to the exact mathematics (ADR 0002 #17) |
 | `decode_png_512` | 1.31 ms | 24.9 ms | 19× | chitra 1.3.1; filed (L18) |

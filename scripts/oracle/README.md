@@ -31,15 +31,16 @@ cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --chec
 
 | Module | Milestone | Rows | Emitter | Notes |
 |---|---|---|---|---|
-| `decode` | M0 (baseline), gated at M3 | 64 | `src/m_decode.rs` | the fixtures in `tests/golden/fixtures/`, built by `src/fixtures.rs` |
+| `decode` | M0 (baseline), gated at M3 | 66 | `src/m_decode.rs` | the fixtures in `tests/golden/fixtures/`, built by `src/fixtures.rs` |
 | `error` | M1 | 30 | `src/m_error.rs` | `SelahError`'s Display |
 | `fmtf` | M1 | 24,060 | `src/m_fmtf.rs` | f32 / f64 through Rust's Display and serde_json (zmij): every binade, powers of ten, a seeded sweep |
 | `geometry` | M1 | 8,129 | `src/m_geometry.rs` | `Rect` (rects given as `Rect::new`'s arguments, returned as the layout), its JSON both ways |
 | `core` | M1 | 1,331 | `src/m_core.rs` | the enums, `xml_escape`, `derive_output_path`, `Color`, `RedactionTarget`, `CaptureSource`, `Annotation` JSON |
 | `uuid` | M1 | 144 | `src/m_uuid.rs` | ids written (hyphenated, simple, JSON) and read (`Uuid::parse_str`'s forms) |
 | `rfc3339` | M1 | 1,169 | `src/m_rfc3339.rs` | chrono's `DateTime<Utc>` through serde, both ways |
-| `ai` | M2 | 8,453 | `src/m_ai.rs` | PII detection over Rust's test inputs and a seeded generator; the stub OCR over every fixture; smart crop; the JSON shapes |
-| `codec` | M3 | 464 | `src/m_codec.rs` | `convert_format`'s verdict and dimensions for every fixture of at most 1 MP against every target; `encode` rows for the encoders' round trips (below) |
+| `ai` | M2 | 8,457 | `src/m_ai.rs` | PII detection over Rust's test inputs and a seeded generator; the stub OCR over every fixture; smart crop; the JSON shapes |
+| `codec` | M3 | 480 | `src/m_codec.rs` | `convert_format`'s verdict and dimensions for every fixture of at most 1 MP against every target; `encode` rows for the encoders' round trips (below) |
+| `annotate` | M4 | 3,457 | `src/m_annotate.rs` | `render` (by CRC of the RGBA), `to_svg`, `layer_json`, `layer_load`, `decode_image_data`, `redact_image`; the token groups are in the emitter's header |
 
 ## Fixtures
 
@@ -118,7 +119,9 @@ refusal; class B for a decoded JPEG.
 - `--reverse [dir]` (default `build/reverse`): class R's other half. `cyrius test` writes every file the port
   encodes there, beside its input pixels (`.rgba`) and size (`.dims`). Rust must decode each at the right size, and
   every PNG and BMP to exactly the pixels. JPEG accuracy against Rust's own encoding is printed per file (with
-  `SELAH_REVERSE_VERBOSE=1`) and over the corpus. Exit 1 on a failure.
+  `SELAH_REVERSE_VERBOSE=1`) and over the corpus. The harness also writes every layer file it builds
+  (`layer-<n>.layer.json` beside `.layer.dims`), and Rust's `AnnotationCanvas::load_from_file` must load each with that
+  size and count. Exit 1 on a failure.
 - `--bench`: Rust selah's codec paths timed on the image `tests/selah.bcyr` builds, decoding the files it wrote to
   `build/bench/` (`docs/benchmarks-rust-v-cyrius.md`).
 

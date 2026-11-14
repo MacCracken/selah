@@ -27,19 +27,17 @@ MODULES = {
     "geometry": {"enums": set(), "structs": {"Rect"}},
     "core": {"enums": {"ImageFormat"}, "structs": {"Annotation", "Color", "RedactionTarget"}},
     "ai": {"enums": set(), "structs": set()},
+    "annotate": {"enums": set(), "structs": {"AnnotationCanvas"}},
+    "lib": {"enums": set(), "structs": set()},
+    "fsutil": {"enums": set(), "structs": set()},
 }
 
-# A pending module's items that an earlier milestone ports: checked now, by the same rules (M3 ports annotate.rs's
-# codec half; M4 the rest).
-PARTIAL = {
-    "annotate": {"convert_format", "const MAX_IMAGE_DIMENSION", "const MAX_DECODE_ALLOC"},
-}
+# A pending module's items that an earlier milestone ports: checked now, by the same rules. (M3 ported annotate.rs's
+# codec half through this; M4 the rest.)
+PARTIAL = {}
 
 # Rust files whose milestone has not come yet (port plan §3): counted, not checked (bar PARTIAL). M7 empties this.
 PENDING_MODULES = {
-    "annotate": "M4 (the codec half, M3, is checked through PARTIAL)",
-    "lib": "M4 (the facade: annotate_image, redact_image, decode_image_data)",
-    "fsutil": "M5",
     "http": "M5",
     "history": "M5",
     "capture": "M5",

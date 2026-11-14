@@ -20,6 +20,10 @@ include "src/png_enc.cyr"
 include "src/bmp_enc.cyr"
 include "src/jpeg_enc.cyr"
 include "src/codec.cyr"
+include "src/fsutil.cyr"
+include "src/raster.cyr"
+include "src/annotate.cyr"
+include "src/selah.cyr"
 
 # ---------------------------------------------------------------- decode, convert_format, encode
 #
@@ -654,6 +658,272 @@ fn _par_encode_row(): i64 {
     return _pc_record(PC_FAILED, why);
 }
 
+# ---------------------------------------------------------------- annotate (M4)
+#
+# render, to_svg, layer_json, layer_load, decode_image_data and redact_image: all class A. A render row's pixels are
+# compared by the CRC-32 of the RGBA; the port draws onto its own decode of the source (each source decoded once and
+# copied per row), which is render_to_image without the lossless encode the codec rows already gate.
+
+# The number of tokens in field f.
+fn _par_ntok(f): i64 {
+    var p = 0;
+    var n = 0;
+    var k = 0;
+    while (_pc_tok(f, k, &p, &n) == 1) { k = k + 1; }
+    return k;
+}
+
+# Appends "c:<crc32 of p[0..n)>", lowercase hex, 8 digits.
+fn _par_put_crc(sb, p, n): i64 {
+    crc32_init_table();
+    var c = crc32(p, n);
+    str_builder_add_cstr(sb, "c:");
+    var k = 28;
+    while (k >= 0) {
+        str_builder_putc(sb, load8("0123456789abcdef" + ((c >> k) & 15)));
+        k = k - 4;
+    }
+    return 0;
+}
+
+# An annotation from the render group at input token i: e:kind, four g (Rect::new's arguments), four i (colour).
+fn _par_group_ann(i): i64 {
+    var kind = _par_enum(i, "e:AnnotationKind.", &_par_kind_name, SL_KIND_FREEFORM);
+    return SlAnnotation_new(kind, _par_rect(i + 1), _par_color(i + 5));
+}
+
+# An annotation from the full group at input token i: h:id, then a render group, then s:text or N.
+fn _par_full_ann(i): i64 {
+    var a: *SlAnnotation = _sl_as_annotation(_par_group_ann(i + 1));
+    var idl = 0;
+    var idb = _par_tok_h(2, i, &idl);
+    memcpy(a, idb, 16);
+    var tl = 0;
+    var tx = _pc_tok_s(2, i + 10, &tl);
+    if (tx != 0) { a.text = str_from_buf(tx, tl); }
+    return a;
+}
+
+# The decoded sources of render rows, cached by fixture: (name pointer, name length, SlImage or 0, error code).
+var _par_src_name = 0;
+var _par_src_len = 0;
+var _par_src_img = 0;
+var _par_src_err = 0;
+
+fn _par_render_row(): i64 {
+    var nt = _par_ntok(2);
+    var groups = (nt - 2) / 9;
+    var tp = 0;
+    var tn = 0;
+    _pc_tok(2, 0, &tp, &tn);
+    var anns = vec_new();
+    var g = 0;
+    while (g < groups) {
+        vec_push(anns, _par_group_ann(1 + g * 9));
+        g = g + 1;
+    }
+    var sb = str_builder_new();
+    var ct, cv = _sl_render_check(anns);
+    if (is_err_result(ct) == 1) {
+        str_builder_add_cstr(sb, "E:");
+        str_builder_add_cstr(sb, selah_error_name(cv));
+    } else {
+        if (_par_src_name == 0 || _par_src_len != tn || memeq(_par_src_name, tp, tn) != 1) {
+            if (_par_src_img != 0) { SlImage_free(_par_src_img); }
+            _par_src_img = 0;
+            _par_src_err = 0;
+            _par_src_name = tp;
+            _par_src_len = tn;
+            var len = 0;
+            var src = _pc_read(tp + 2, tn - 2, &len);
+            var dt, dv = _sl_decode_image(src, len);
+            if (is_err_result(dt) == 1) { _par_src_err = dv; } else { _par_src_img = dv; }
+        }
+        if (_par_src_img == 0) {
+            str_builder_add_cstr(sb, "E:");
+            str_builder_add_cstr(sb, selah_error_name(_par_src_err));
+        } else {
+            var base: *SlImage = _sl_as_image(_par_src_img);
+            var img: *SlImage = SlImage_new(base.width, base.height);
+            var bytes = base.width * base.height * 4;
+            memcpy(img.pixels, base.pixels, bytes);
+            _sl_draw_all(img, anns);
+            _pc_put_i(sb, img.width);
+            _pc_sp(sb);
+            _pc_put_i(sb, img.height);
+            _pc_sp(sb);
+            _par_put_crc(sb, img.pixels, bytes);
+            SlImage_free(img);
+        }
+    }
+    g = 0;
+    while (g < groups) {
+        SlAnnotation_free(vec_get(anns, g));
+        g = g + 1;
+    }
+    return _pc_check(str_builder_build(sb));
+}
+
+# A canvas of i:w i:h with the full groups from input token `from`.
+fn _par_canvas(from): *SlAnnotationCanvas {
+    var c: *SlAnnotationCanvas = SlAnnotationCanvas_new(_pc_tok_num(2, 0), _pc_tok_num(2, 1));
+    var nt = _par_ntok(2);
+    var i = from;
+    while (i + 11 <= nt) {
+        SlAnnotationCanvas_add_annotation(c, _par_full_ann(i));
+        i = i + 11;
+    }
+    return c;
+}
+
+fn _par_svg_row(): i64 {
+    var c: *SlAnnotationCanvas = _par_canvas(2);
+    var svg = SlAnnotationCanvas_to_svg(c);
+    SlAnnotationCanvas_free(c);
+    var sb = str_builder_new();
+    _pc_put_s(sb, str_data(svg), str_len(svg));
+    return _pc_check(str_builder_build(sb));
+}
+
+var _par_layer_seq = 0;
+
+fn _par_layer_json_row(): i64 {
+    var c: *SlAnnotationCanvas = _par_canvas(4);
+    var kt, kv = _sl_layer_check(c.annotations);
+    if (is_err_result(kt) == 1) {
+        SlAnnotationCanvas_free(c);
+        var eb = str_builder_new();
+        str_builder_add_cstr(eb, "E:");
+        str_builder_add_cstr(eb, selah_error_name(kv));
+        return _pc_check(str_builder_build(eb));
+    }
+    var js = str_builder_new();
+    _sl_layer_json(js, c.width, c.height, c.annotations, _pc_tok_num(2, 2), _pc_tok_num(2, 3));
+    # For the reverse oracle: build/reverse/layer-<n>.layer.json beside layer-<n>.layer.dims (width height count).
+    var dims = str_builder_new();
+    str_builder_add_int(dims, c.width);
+    str_builder_putc(dims, 32);
+    str_builder_add_int(dims, c.height);
+    str_builder_putc(dims, 32);
+    str_builder_add_int(dims, SlAnnotationCanvas_count(c));
+    str_builder_putc(dims, 10);
+    var ds = str_builder_build(dims);
+    SlAnnotationCanvas_free(c);
+    var json = str_builder_build(js);
+    if (_par_rev_ready == 0) {
+        sys_mkdir("build", 493);
+        sys_mkdir("build/reverse", 493);
+        _par_rev_ready = 1;
+    }
+    var nb = str_builder_new();
+    str_builder_add_cstr(nb, "build/reverse/layer-");
+    str_builder_add_int(nb, _par_layer_seq);
+    str_builder_add_cstr(nb, ".layer.json");
+    var jpath = str_builder_build(nb);
+    file_write_all(str_data(jpath), str_data(json), str_len(json));
+    memcpy(str_data(jpath) + str_len(jpath) - 4, "dims", 4);
+    file_write_all(str_data(jpath), str_data(ds), str_len(ds));
+    _par_layer_seq = _par_layer_seq + 1;
+    var sb = str_builder_new();
+    _pc_put_s(sb, str_data(json), str_len(json));
+    return _pc_check(str_builder_build(sb));
+}
+
+fn _par_layer_load_row(): i64 {
+    var jl = 0;
+    var jp = _pc_tok_s(2, 0, &jl);
+    var sb = str_builder_new();
+    var t, v = _sl_canvas_from_layer_json(jp, jl);
+    if (is_err_result(t) == 1) {
+        str_builder_add_cstr(sb, "E:");
+        str_builder_add_cstr(sb, selah_error_name(v));
+        return _pc_check(str_builder_build(sb));
+    }
+    var c: *SlAnnotationCanvas = _sl_as_canvas(v);
+    _pc_put_i(sb, c.width);
+    _pc_sp(sb);
+    _pc_put_i(sb, c.height);
+    _pc_sp(sb);
+    _pc_put_i(sb, SlAnnotationCanvas_count(c));
+    var i = 0;
+    while (i < SlAnnotationCanvas_count(c)) {
+        var ab = str_builder_new();
+        SlAnnotation_to_json(_sl_as_annotation(vec_get(c.annotations, i)), ab);
+        var aj = str_builder_build(ab);
+        _pc_sp(sb);
+        _pc_put_s(sb, str_data(aj), str_len(aj));
+        i = i + 1;
+    }
+    SlAnnotationCanvas_free(c);
+    return _pc_check(str_builder_build(sb));
+}
+
+fn _par_decode_data_row(): i64 {
+    var bl = 0;
+    var bp = _pc_tok_s(2, 0, &bl);
+    var sb = str_builder_new();
+    var on = 0;
+    var t, v = selah_decode_image_data(bp, bl, &on);
+    if (is_err_result(t) == 1) {
+        str_builder_add_cstr(sb, "E:");
+        str_builder_add_cstr(sb, selah_error_name(v));
+    } else {
+        _pc_put_h(sb, v, on);
+        selah_bytes_free(v);
+    }
+    return _pc_check(str_builder_build(sb));
+}
+
+fn _par_redact_row(): i64 {
+    var tp = 0;
+    var tn = 0;
+    _pc_tok(2, 0, &tp, &tn);
+    var len = 0;
+    var src = _pc_read(tp + 2, tn - 2, &len);
+    var nt = _par_ntok(2);
+    var targets = 0;
+    if (_par_tok_is(2, 1, "N") == 0) {
+        targets = vec_new();
+        var k = 1;
+        while (k < nt - 1) {
+            var sl = 0;
+            var sp = _pc_tok_s(2, k, &sl);
+            var tgt: *SlRedactionTarget = _sl_as_target(alloc(sizeof(SlRedactionTarget)));
+            SlRedactionTarget_from_json(sp, sl, tgt);
+            vec_push(targets, tgt);
+            k = k + 1;
+        }
+    }
+    var adr = _par_adr();
+    var known = _par_known(tp + 11, tn - 11);
+    var on = 0;
+    var sugg = 0;
+    var t, v = selah_redact_image(src, len, targets, SL_FMT_PNG, &on, &sugg);
+    var sb = str_builder_new();
+    if (is_err_result(t) == 1) {
+        if (adr != 0 && v == SL_ERR_UNSUPPORTED_FORMAT) { return _pc_record(PC_ACCEPTED, _PAR_ADR_OK); }
+        str_builder_add_cstr(sb, "E:");
+        str_builder_add_cstr(sb, selah_error_name(v));
+        return _pc_check(str_builder_build(sb));
+    }
+    var dt, dv = _sl_decode_image(v, on);
+    selah_bytes_free(v);
+    if (is_err_result(dt) == 1) { return _pc_record(PC_FAILED, "the port cannot decode its own output"); }
+    var img: *SlImage = _sl_as_image(dv);
+    _pc_put_i(sb, img.width);
+    _pc_sp(sb);
+    _pc_put_i(sb, img.height);
+    _pc_sp(sb);
+    _par_put_crc(sb, img.pixels, img.width * img.height * 4);
+    _pc_sp(sb);
+    _pc_put_i(sb, vec_len(sugg));
+    SlImage_free(img);
+    var actual = str_builder_build(sb);
+    if (known == 0) { return _pc_check(actual); }
+    var same = str_len(actual) == _pc_f[7] && memeq(str_data(actual), _pc_f[6], _pc_f[7]) == 1;
+    return _par_gate(same, known, _pc_diff_msg(str_data(actual), str_len(actual)));
+}
+
 # ---------------------------------------------------------------- M1 helpers
 
 # An f32 from its bits.
@@ -1250,6 +1520,7 @@ fn _par_module(name, n): i64 {
     elif (n == 7 && memeq(name, "rfc3339", 7) == 1) { which = 7; }
     elif (n == 2 && memeq(name, "ai", 2) == 1) { which = 8; }
     elif (n == 5 && memeq(name, "codec", 5) == 1) { which = 9; }
+    elif (n == 8 && memeq(name, "annotate", 8) == 1) { which = 10; }
     if (which != 1) { _pc_print_limit = 10; }
     var pos = 0;
     while (pos < len) {
@@ -1267,6 +1538,12 @@ fn _par_module(name, n): i64 {
             elif (which == 8) { _par_ai_row(); }
             elif (which == 9 && _pc_fn_is("convert_format") == 1) { _par_convert_row(); }
             elif (which == 9 && _pc_fn_is("encode") == 1) { _par_encode_row(); }
+            elif (which == 10 && _pc_fn_is("render") == 1) { _par_render_row(); }
+            elif (which == 10 && _pc_fn_is("to_svg") == 1) { _par_svg_row(); }
+            elif (which == 10 && _pc_fn_is("layer_json") == 1) { _par_layer_json_row(); }
+            elif (which == 10 && _pc_fn_is("layer_load") == 1) { _par_layer_load_row(); }
+            elif (which == 10 && _pc_fn_is("decode_image_data") == 1) { _par_decode_data_row(); }
+            elif (which == 10 && _pc_fn_is("redact_image") == 1) { _par_redact_row(); }
             else { _pc_record(PC_PENDING, "no dispatcher"); }
         }
         pos = e + 1;

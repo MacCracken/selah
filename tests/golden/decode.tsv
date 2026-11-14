@@ -2,7 +2,7 @@
 # oracle: selah 0.30.0 (rust-old/, tag 0.30.0), image 0.25.10, png 0.18.1, zune-jpeg 0.5.15, image-webp 0.2.4
 # regenerate: cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml
 # columns: fn<TAB>class<TAB>inputs<TAB>outputs<TAB>note · decode: E:<variant> on refusal, the message in the note; adr=0002#N marks an accepted divergence
-# rows: 64
+# rows: 66
 decode	A	p:fixtures/png-rgba8-1x1.png	i:1 i:1 p:decode/png-rgba8-1x1.png.rgba	png: png 0.18.1 RGBA8
 decode	A	p:fixtures/png-rgba8-7x3.png	i:7 i:3 p:decode/png-rgba8-7x3.png.rgba	png: png 0.18.1 RGBA8 noise
 decode	A	p:fixtures/png-rgba8-33x17.png	i:33 i:17 p:decode/png-rgba8-33x17.png.rgba	png: png 0.18.1 RGBA8 noise
@@ -31,6 +31,8 @@ decode	A	p:fixtures/png-truncated.png	E:AnnotationError	png: png-rgba8-33x17.png
 decode	A	p:fixtures/png-idat-badcrc.png	E:AnnotationError	png: png-rgba8-33x17.png with the IDAT CRC corrupted -- refused: annotation error: failed to load image: Format error decoding Png: CRC error: expected 0x46119b7f have 0x46119b80 while decoding ChunkType { type: IDAT, critical: true, private: false, reserved: false, safecopy: false } chunk.
 decode	A	p:fixtures/png-too-wide-40000x1.png	E:AnnotationError	png: IHDR 40000x1 (over MAX_IMAGE_DIMENSION 32768), one-row IDAT -- refused: annotation error: failed to load image: Image size exceeds limit
 decode	A	p:fixtures/png-too-big-20000x20000.png	E:AnnotationError	png: IHDR 20000x20000 RGBA8 (1.6 GB, over MAX_DECODE_ALLOC 512 MiB), tiny IDAT -- refused: annotation error: failed to load image: 20000x20000 needs 1600000000 bytes, limit 536870912
+decode	A	p:fixtures/png-rgba8-512x512-grad.png	i:512 i:512 p:decode/png-rgba8-512x512-grad.png.rgba	png: png 0.18.1 RGBA8 gradient, 512x512
+decode	A	p:fixtures/png-rgba8-7x3-text-pii.png	i:7 i:3 p:decode/png-rgba8-7x3-text-pii.png.rgba	png: png 0.18.1 RGBA8 noise with a tEXt chunk holding an email, an IPv4 and a card number
 decode	A	p:fixtures/png-gray1-4100x4100.png	i:4100 i:4100 c:cf6e5ed8	png: png 0.18.1 gray 1-bit, 4100x4100 (16.8 MP) 64-px tiles: inside selah's limits, over chitra's 16.7 MP cap
 decode	A	p:fixtures/bmp-image-rgb8-33x17.bmp	i:33 i:17 p:decode/bmp-image-rgb8-33x17.bmp.rgba	bmp: image 0.25.10 BmpEncoder, RGB8
 decode	A	p:fixtures/bmp-image-rgba8-33x17.bmp	i:33 i:17 p:decode/bmp-image-rgba8-33x17.bmp.rgba	bmp: image 0.25.10 BmpEncoder, RGBA8

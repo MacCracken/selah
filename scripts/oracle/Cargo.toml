@@ -22,6 +22,8 @@ jpeg-encoder = "=0.6.1"
 serde = "=1.0.229"
 serde_json = "=1.0.154"
 uuid = "=1.29.2"
+# M4: decode_image_data's inputs are encoded with the base64 selah 0.30.0 decodes with.
+base64 = "=0.23.1"
 chrono = { version = "=0.4.45", default-features = false, features = ["std", "serde"] }
 
 [[bin]]

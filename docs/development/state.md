@@ -22,36 +22,38 @@ reference oracle. Accuracy is the bar, and Rust is the floor ([ADR 0003](../adr/
 | M1 Foundation | ✅ done 2026-11-14 |
 | M2 PII and smart crop | ✅ done 2026-11-14 |
 | M3 Codecs | ✅ done 2026-11-14 |
-| M4–M7 | not started |
+| M4 Annotation | ✅ done 2026-11-14 |
+| M5–M7 | not started |
 
 ## Source
 
 - Rust oracle: `rust-old/` (7,160 lines in `src/`, 289 tests), frozen; green from its new location (2026-11-14).
 - Cyrius: `src/` holds error, log, fmtf, json, uuid, rfc3339, geometry, core, ai, the generated ai_data, png_enc,
-  bmp_enc, jpeg_enc and codec (about 4,360 lines), bundled as `dist/selah.cyr` (`[lib]`); `src/main.cyr` is the
-  build-smoke stub.
-- Surface parity: 40/40 (`scripts/surface_parity.py`): error, geometry, core and ai whole, and annotate.rs's codec
-  half (`convert_format`, `MAX_IMAGE_DIMENSION`, `MAX_DECODE_ALLOC`). The rest of annotate, and lib, fsutil, http,
-  history, capture, daimon and mcp, are pending their milestones.
-- **Known limits, each filed with chitra:**
-  - every decode's memory stays with the process (L16), which matters for the MCP server;
-  - images over 16.7 MP are refused (L17);
-  - decoding runs about 20× slower than Rust (L18).
+  bmp_enc, jpeg_enc, codec, fsutil, raster, annotate and the selah facade (about 5,680 lines), bundled as
+  `dist/selah.cyr` (`[lib]`); `src/main.cyr` is the build-smoke stub.
+- Surface parity: 56/56 (`scripts/surface_parity.py`): error, geometry, core, ai, annotate, lib (the facade) and
+  fsutil whole. http, history, capture, daimon and mcp are pending their milestones.
+- **Known limits, each filed upstream:**
+  - every decode's memory stays with the process (chitra, L16), which matters for the MCP server, and so does every
+    base64 decode (bayan, L19);
+  - images over 16.7 MP are refused (chitra, L17);
+  - decoding runs about 20× slower than Rust (chitra, L18), and every PNG compression pays about 110 µs up front
+    (sankoch, L20).
 
 ## Tests
 
-- `cyrius test`: `tests/parity.tcyr` (the golden corpus), the ported Rust tests (`error.tcyr`, `geometry.tcyr`,
-  `core.tcyr`, `ai.tcyr`, `codec.tcyr`: 111 Rust tests and 9 doctests, 313 assertions), and `selah.tcyr` (the
-  bundle, as a consumer sees it).
-- Golden corpus: 43,844 rows, every module gated, the harness output identical on x86_64 ELF, aarch64 (qemu) and
+- `cyrius test`: `tests/parity.tcyr` (the golden corpus), the ported Rust tests (`error`, `geometry`, `core`, `ai`,
+  `codec`, `annotate`, `fsutil` and `integration`: 170 Rust tests and 13 doctests, 443 assertions), and `selah.tcyr`
+  (the bundle, as a consumer sees it).
+- Golden corpus: 47,323 rows, every module gated, the harness output identical on x86_64 ELF, aarch64 (qemu) and
   x86_64 PE (wine).
-  - M1's 34,863 and `ai`'s 8,453 are all class A and all pass.
-  - `decode` (64): 53 ok, 3 accepted (ADR 0002 #1, #2, #16), 8 upstream: the known-defect list, under chitra issues
-    for F1, F3 and the pixel cap.
-  - `codec` (464): 349 ok, 115 accepted (WebP).
-  - `scripts/oracle -- --reverse`: Rust decodes all 159 Cyrius-encoded files.
-  - See [`port-parity.md`](port-parity.md) §2, §5 and §6.
-- Benches: 10 of 13 criterion benches ported, plus 6 codec benches with Rust numbers from `oracle --bench`
+  - M1's 34,863 and `ai`'s 8,457 are all class A and all pass.
+  - `decode` (66): 55 ok, 3 accepted (ADR 0002 #1, #2, #16), 8 upstream (F1, F3 and the pixel cap, filed with chitra).
+  - `codec` (480): 361 ok, 119 accepted (WebP).
+  - `annotate` (3,457): 3,445 ok, 4 accepted (WebP), 8 upstream (the 16-bpp BMPs under F3).
+  - `scripts/oracle -- --reverse`: Rust decodes all 165 Cyrius-encoded images and loads all 45 Cyrius-written layers.
+  - See [`port-parity.md`](port-parity.md) §2, §5, §6 and §7.
+- Benches: all 13 criterion benches ported, plus 6 codec benches with Rust numbers from `oracle --bench`
   ([`../benchmarks-rust-v-cyrius.md`](../benchmarks-rust-v-cyrius.md)).
 
 ## Dependencies
@@ -86,9 +88,13 @@ taswir, aethersafta, kiran (planned): none is in Cyrius yet. Rust consumers stay
   - memory (`every-decode-leaks-in-a-long-running-consumer`, L16);
   - the 16.7 MP cap (`fixed-16-mp-cap-refuses-screenshots`, L17);
   - decode speed (`decode-throughput-is-about-20x-rust-image`, L18)
+- bayan: base64 decoding with an allocator (`bayan/docs/development/issues/2026-11-14-base64-decode-has-no-allocator-form.md`,
+  L19)
+- sankoch: the per-call LZ77 table reset and the deflate rate
+  (`sankoch/docs/development/issues/2026-11-14-every-compress-call-pays-110-us-to-reset-the-lz77-tables.md`, L20)
 
 ## Next
 
-M4 Annotation (raster, annotate, the selah facade). It draws onto `SlImage` pixels from `src/codec.cyr`, so
-`render_to_image` inherits the codec gates. No decision is open: the maintainer approved M3's JPEG encoder bound,
-which gates on the exact mathematics ([`port-parity.md`](port-parity.md) §5).
+M5 System and clients: history (JSONL with `xflock`, on fsutil, which is already here), the clipboard spawn helper
+(L3), the HTTP layer over sandhi, capture, and the daimon and hoosh clients retargeted (D2). Live capture waits on
+daimon's routes (L9).

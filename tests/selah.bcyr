@@ -126,6 +126,92 @@ fn _b_extract(): i64 {
     return sink;
 }
 
+# ---- M4: rendering and SVG (Rust's render_to_image_64x64, render_to_image_512_bmp, to_svg_100: same inputs).
+
+# A solid (128, 128, 128, 255) w × h image encoded as fmt (Rust's make_image), its length at len_out.
+fn _b_solid(w, h, fmt, len_out): i64 {
+    var img: *SlImage = SlImage_new(w, h);
+    var i = 0;
+    while (i < w * h) {
+        store32(img.pixels + i * 4, 128 | (128 << 8) | (128 << 16) | (255 << 24));
+        i = i + 1;
+    }
+    var t, v = _sl_encode_image(img, fmt, len_out);
+    SlImage_free(img);
+    return v;
+}
+
+fn _b_ann(anns, kind, x: f64, y: f64, w: f64, h: f64, c: SlColor): i64 {
+    vec_push(anns, SlAnnotation_new(kind, SlRect_new(f32_from(x), f32_from(y), f32_from(w), f32_from(h)), c));
+    return 0;
+}
+
+# render_to_image n times, its output in fmt.
+fn _b_render(name, src, len, anns, fmt, n): i64 {
+    var sink = 0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        var on = 0;
+        var t, v = SlAnnotationCanvas_render_to_image(src, len, anns, fmt, &on);
+        sink = sink + on;
+        selah_bytes_free(v);
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return sink;
+}
+
+fn _b_m4(): i64 {
+    var pn = 0;
+    var png = _b_solid(64, 64, SL_FMT_PNG, &pn);
+    var a64 = vec_new();
+    _b_ann(a64, SL_KIND_REDACTION, 0.0, 0.0, 32.0, 32.0, SL_COLOR_BLACK);
+    _b_ann(a64, SL_KIND_RECTANGLE, 10.0, 10.0, 44.0, 44.0, SL_COLOR_RED);
+    _b_ann(a64, SL_KIND_HIGHLIGHT, 20.0, 20.0, 30.0, 30.0, SL_COLOR_YELLOW);
+    _b_render("render_to_image_64x64", png, pn, a64, SL_FMT_PNG, 1000);
+    var bn = 0;
+    var bmp = _b_solid(512, 512, SL_FMT_BMP, &bn);
+    var a512 = vec_new();
+    _b_ann(a512, SL_KIND_REDACTION, 0.0, 0.0, 256.0, 256.0, SL_COLOR_BLACK);
+    _b_ann(a512, SL_KIND_HIGHLIGHT, 64.0, 64.0, 384.0, 384.0, SL_COLOR_YELLOW);
+    _b_ann(a512, SL_KIND_RECTANGLE, 10.0, 10.0, 490.0, 490.0, SL_COLOR_RED);
+    _b_ann(a512, SL_KIND_CIRCLE, 100.0, 100.0, 300.0, 200.0, SL_COLOR_GREEN);
+    _b_ann(a512, SL_KIND_ARROW, 0.0, 511.0, 511.0, -511.0, SL_COLOR_BLUE);
+    _b_render("render_to_image_512_bmp", bmp, bn, a512, SL_FMT_BMP, 50);
+    # to_svg_100: Rectangle, Circle, Arrow, Highlight, Redaction in turn at (10i, 5i), 100 × 50, red.
+    var c: *SlAnnotationCanvas = SlAnnotationCanvas_new(1920, 1080);
+    var kinds: i64[5];
+    kinds[0] = SL_KIND_RECTANGLE;
+    kinds[1] = SL_KIND_CIRCLE;
+    kinds[2] = SL_KIND_ARROW;
+    kinds[3] = SL_KIND_HIGHLIGHT;
+    kinds[4] = SL_KIND_REDACTION;
+    var k = 0;
+    while (k < 100) {
+        var f: f64 = f64_from(k);
+        var x: f64 = f * 10.0;
+        var y: f64 = f * 5.0;
+        _b_ann(c.annotations, kinds[k % 5], x, y, 100.0, 50.0, SL_COLOR_RED);
+        k = k + 1;
+    }
+    var sink = 0;
+    var n = 2000;
+    var b = bench_new("to_svg_100");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        var svg = SlAnnotationCanvas_to_svg(c);
+        sink = sink + str_len(svg);
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return sink;
+}
+
 # ---- M3: codecs, on one 512 x 512 RGBA image the oracle's --bench builds identically:
 # (x ^ y, 3x + y, 5y ^ x, 255) mod 256, a pattern with edges and gradients, neither flat nor noise.
 fn _b_image(): *SlImage {
@@ -251,6 +337,7 @@ fn main(): i64 {
     _b_redact("suggest_redactions_pii", pii, strlen(pii), 200000);
     _b_redact("suggest_redactions_long", str_data(ltext), str_len(ltext), 5000);
     _b_extract();
+    _b_m4();
     _b_codecs();
     return 0;
 }

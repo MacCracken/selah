@@ -157,6 +157,7 @@ pub fn emit(out: &mut Out, fixtures: &[Fixture]) {
 ///
 /// Returns the number of failures.
 pub fn reverse(dir: &std::path::Path) -> usize {
+    let layer_bad = reverse_layers(dir);
     let mut names: Vec<_> = std::fs::read_dir(dir)
         .expect("read the reverse directory")
         .filter_map(Result::ok)
@@ -238,5 +239,37 @@ pub fn reverse(dir: &std::path::Path) -> usize {
         "oracle --reverse: JPEG corpus PSNR Cyrius {:.3} dB vs Rust {:.3} dB; worst file {:+.3} dB",
         psnr(sse_c, sse_n), psnr(sse_r, sse_n), worst_psnr
     );
+    bad + layer_bad
+}
+
+/// The layer files the Cyrius harness wrote (`<stem>.layer.json` beside `<stem>.layer.dims`, "width height count"):
+/// Rust's own `AnnotationCanvas::load_from_file` must load each, with that size and count. Returns the failures.
+fn reverse_layers(dir: &std::path::Path) -> usize {
+    let mut names: Vec<_> = std::fs::read_dir(dir)
+        .expect("read the reverse directory")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().ends_with(".layer.json"))
+        .collect();
+    names.sort();
+    let mut bad = 0usize;
+    for p in &names {
+        let dims_path = p.to_string_lossy().replace(".layer.json", ".layer.dims");
+        let dims = std::fs::read_to_string(&dims_path).expect("the .layer.dims beside it");
+        let want: Vec<usize> = dims.split_whitespace().map(|t| t.parse().expect("dims")).collect();
+        match selah::AnnotationCanvas::load_from_file(p) {
+            Ok(c) if [c.width as usize, c.height as usize, c.count()] == want[..] => {}
+            Ok(c) => {
+                eprintln!("FAILED   {}: Rust loads {}x{} with {}, expected {want:?}", p.display(), c.width, c.height, c.count());
+                bad += 1;
+            }
+            Err(e) => {
+                eprintln!("FAILED   {}: Rust cannot load it: {e}", p.display());
+                bad += 1;
+            }
+        }
+    }
+    println!("oracle --reverse: {} Cyrius-written layer files, {} load in Rust", names.len(), names.len() - bad);
     bad
 }
+

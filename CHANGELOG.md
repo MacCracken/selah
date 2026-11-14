@@ -98,6 +98,40 @@ The Rust crate stays at 0.30.x on crates.io.
 - **Benches**: the four M2 benches, at 5.6× to 7.2× Rust.
 - **Surface parity**: 37/37.
 
+### Port — M4 (annotation)
+
+- **`src/raster.cyr`:** Rust's rasterizer in Rust's arithmetic.
+  - Rect geometry in f32, pixel bounds rounded outward, saturating float → int casts.
+  - Fill, ranga `blend_row` for highlights, stroke, and stamp.
+  - The ellipse, sampled at a bound of 2^20 points; lines clipped with Liang–Barsky, then Bresenham.
+- **`src/annotate.cyr`:**
+  - `SlAnnotationCanvas`: add, remove, clear, count, `apply_redaction`.
+  - The layer file is serde_json's pretty print, byte for byte, read back as serde reads it.
+  - `to_svg`, and `render_to_image`, which refuses NaN redactions first.
+- **`src/selah.cyr`:** `selah_decode_image_data`, `selah_annotate_image`, `selah_redact_image`.
+- **`src/fsutil.cyr`** (brought forward from M5): bounded reads that refuse non-regular files, atomic 0600 writes, and
+  private directories.
+- **Divergences (ADR 0002):**
+  - #18: the layer file is written atomically and 0600.
+  - #19, a Rust defect: Rust wrote a layer it could not load back when a region was not finite. The port refuses
+    that save.
+  - #20: the API shapes of ids, vecs and returned bytes.
+- **Golden:** a new `annotate` module, 3,457 rows: render by CRC of the RGBA over every kind × 29 rect classes × 3
+  colours on 1×1 to 512×512, SVG, layers both ways, base64 verdicts, and `redact_image`. All match.
+  - Rust loads every Cyrius-written layer (`oracle --reverse`).
+  - Two mutation probes showed the gates bite.
+  - New fixtures: a 512×512 gradient, and a PNG carrying PII in tEXt.
+- **Tests:**
+  - `annotate.tcyr`: 38 Rust tests and the canvas doctest.
+  - `integration.tcyr`: 14 integration tests and the three `lib.rs` doctests.
+  - `fsutil.tcyr`: 7 Rust tests.
+- **Benches:** `render_to_image_64x64` 61×, `render_to_image_512_bmp` 8.2×, `to_svg_100` 5.0× Rust.
+  - M1's f32 printer gained an integer fast path, which took `to_svg` from 380 to 201 µs.
+  - The PNG filter loop got tighter, which took `encode_png_512` from 59 to 49 ms.
+- **Filed:**
+  - bayan: base64 has no allocator form (L19);
+  - sankoch: about 110 µs of LZ77 table reset per compression, and a level-blind rate (L20).
+
 ### Port — M3 (codecs)
 
 - **`src/codec.cyr`:**

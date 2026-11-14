@@ -47,11 +47,78 @@ fn _sl_png_paeth(a, b, c): i64 {
     return c;
 }
 
+# The filter heuristic's score of a filtered byte, |byte| read as signed: v for v < 128, else 256 - v. Built once.
+var _sl_png_abs: u8[256];
+var _sl_png_abs_ready = 0;
+
+fn _sl_png_abs_init(): i64 {
+    if (_sl_png_abs_ready == 1) { return 0; }
+    var v = 0;
+    while (v < 256) {
+        var a = v;
+        if (a >= 128) { a = 256 - a; }
+        store8(&_sl_png_abs + v, a);
+        v = v + 1;
+    }
+    _sl_png_abs_ready = 1;
+    return 0;
+}
+
+# Writes row `cur` filtered by filter f into o (the filter-type byte first), with `prev` the row above.
+fn _sl_png_write_row(o, cur, prev, stride, f): i64 {
+    store8(o, f);
+    o = o + 1;
+    var i = 0;
+    if (f == 0) { memcpy(o, cur, stride); }
+    if (f == 1) {
+        while (i < 4) {
+            store8(o + i, load8(cur + i));
+            i = i + 1;
+        }
+        while (i < stride) {
+            store8(o + i, (load8(cur + i) - load8(cur + i - 4)) & 255);
+            i = i + 1;
+        }
+    }
+    if (f == 2) {
+        while (i < stride) {
+            store8(o + i, (load8(cur + i) - load8(prev + i)) & 255);
+            i = i + 1;
+        }
+    }
+    if (f == 3) {
+        while (i < 4) {
+            store8(o + i, (load8(cur + i) - (load8(prev + i) >> 1)) & 255);
+            i = i + 1;
+        }
+        while (i < stride) {
+            store8(o + i, (load8(cur + i) - ((load8(cur + i - 4) + load8(prev + i)) >> 1)) & 255);
+            i = i + 1;
+        }
+    }
+    if (f == 4) {
+        while (i < 4) {
+            store8(o + i, (load8(cur + i) - load8(prev + i)) & 255);
+            i = i + 1;
+        }
+        while (i < stride) {
+            var pv = _sl_png_paeth(load8(cur + i - 4), load8(prev + i), load8(prev + i - 4));
+            store8(o + i, (load8(cur + i) - pv) & 255);
+            i = i + 1;
+        }
+    }
+    return 0;
+}
+
 # The filtered scanlines of the w × h RGBA8 image at `rgba` into `dst` (h × (1 + 4w) bytes), each row by the filter
-# with the least sum of |byte| (a byte read as signed). One pass scores all five filters with the left (a), up (b)
-# and up-left (c) neighbours loaded once a byte; the first row's "row above" is zeros, as the specification defines
-# it. A second pass writes the winner. Returns 0, or -1 when the zero row cannot be allocated.
+# with the least sum of |byte| (a byte read as signed). One pass scores all five filters; the first pixel of a row
+# has no left neighbour (a = c = 0) and is scored apart, so the main loop has no edge test; the first row's "row
+# above" is zeros, as the specification defines it. Paeth's distances are taken in their reduced forms
+# (|p - a| = |b - c|, |p - b| = |a - c|, |p - c| = |a + b - 2c|). A second pass writes the winner. Returns 0, or -1
+# when the zero row cannot be allocated.
 fn _sl_png_filter_rows(rgba, w, h, dst): i64 {
+    _sl_png_abs_init();
+    var ab = &_sl_png_abs;
     var stride = w * 4;
     var zero = fl_calloc(stride);
     if (zero == 0) { return -1; }
@@ -66,41 +133,36 @@ fn _sl_png_filter_rows(rgba, w, h, dst): i64 {
         var s3 = 0;
         var s4 = 0;
         var i = 0;
+        while (i < 4) {
+            var x0 = load8(cur + i);
+            var b0 = load8(prev + i);
+            var sx = load8(ab + x0);
+            s0 = s0 + sx;
+            s1 = s1 + sx;
+            s2 = s2 + load8(ab + ((x0 - b0) & 255));
+            s3 = s3 + load8(ab + ((x0 - (b0 >> 1)) & 255));
+            s4 = s4 + load8(ab + ((x0 - b0) & 255));
+            i = i + 1;
+        }
         while (i < stride) {
             var x = load8(cur + i);
+            var a = load8(cur + i - 4);
             var b = load8(prev + i);
-            var a = 0;
-            var c = 0;
-            if (i >= 4) {
-                a = load8(cur + i - 4);
-                c = load8(prev + i - 4);
-            }
-            var v = x;
-            if (v >= 128) { v = 256 - v; }
-            s0 = s0 + v;
-            v = (x - a) & 255;
-            if (v >= 128) { v = 256 - v; }
-            s1 = s1 + v;
-            v = (x - b) & 255;
-            if (v >= 128) { v = 256 - v; }
-            s2 = s2 + v;
-            v = (x - ((a + b) >> 1)) & 255;
-            if (v >= 128) { v = 256 - v; }
-            s3 = s3 + v;
-            # Paeth, inline: the neighbour nearest a + b - c.
-            var p = a + b - c;
-            var pa = p - a;
+            var c = load8(prev + i - 4);
+            s0 = s0 + load8(ab + x);
+            s1 = s1 + load8(ab + ((x - a) & 255));
+            s2 = s2 + load8(ab + ((x - b) & 255));
+            s3 = s3 + load8(ab + ((x - ((a + b) >> 1)) & 255));
+            var pa = b - c;
             if (pa < 0) { pa = -pa; }
-            var pb = p - b;
+            var pb = a - c;
             if (pb < 0) { pb = -pb; }
-            var pc = p - c;
+            var pc = a + b - c - c;
             if (pc < 0) { pc = -pc; }
             var pr = c;
             if (pb <= pc) { pr = b; }
             if (pa <= pb && pa <= pc) { pr = a; }
-            v = (x - pr) & 255;
-            if (v >= 128) { v = 256 - v; }
-            s4 = s4 + v;
+            s4 = s4 + load8(ab + ((x - pr) & 255));
             i = i + 1;
         }
         var f = 0;
@@ -121,48 +183,7 @@ fn _sl_png_filter_rows(rgba, w, h, dst): i64 {
             f = 4;
             best = s4;
         }
-        var o = dst + y * (stride + 1);
-        store8(o, f);
-        o = o + 1;
-        i = 0;
-        if (f == 0) { memcpy(o, cur, stride); }
-        if (f == 1) {
-            while (i < 4) {
-                store8(o + i, load8(cur + i));
-                i = i + 1;
-            }
-            while (i < stride) {
-                store8(o + i, (load8(cur + i) - load8(cur + i - 4)) & 255);
-                i = i + 1;
-            }
-        }
-        if (f == 2) {
-            while (i < stride) {
-                store8(o + i, (load8(cur + i) - load8(prev + i)) & 255);
-                i = i + 1;
-            }
-        }
-        if (f == 3) {
-            while (i < 4) {
-                store8(o + i, (load8(cur + i) - (load8(prev + i) >> 1)) & 255);
-                i = i + 1;
-            }
-            while (i < stride) {
-                store8(o + i, (load8(cur + i) - ((load8(cur + i - 4) + load8(prev + i)) >> 1)) & 255);
-                i = i + 1;
-            }
-        }
-        if (f == 4) {
-            while (i < 4) {
-                store8(o + i, (load8(cur + i) - load8(prev + i)) & 255);
-                i = i + 1;
-            }
-            while (i < stride) {
-                var pv = _sl_png_paeth(load8(cur + i - 4), load8(prev + i), load8(prev + i - 4));
-                store8(o + i, (load8(cur + i) - pv) & 255);
-                i = i + 1;
-            }
-        }
+        _sl_png_write_row(dst + y * (stride + 1), cur, prev, stride, f);
         y = y + 1;
     }
     fl_free(zero);

@@ -213,3 +213,28 @@ reproduce it.
 - the pixel cap, `2026-11-14-fixed-16-mp-cap-refuses-screenshots` (L17);
 - decode speed, `2026-11-14-decode-throughput-is-about-20x-rust-image` (L18; numbers in
   `docs/benchmarks-rust-v-cyrius.md`).
+
+## 7. M4 (2026-11-14): annotation, all class A
+
+| Rows | Result |
+|---|---|
+| `render` 2,663 | the RGBA of every rendering equal (by CRC-32) to Rust's: 7 kinds × 29 rect classes (normal, full, fractional, negative, partly and wholly off-canvas, NaN in each component, ±∞, 1e20 to 3e38, zero, tiny, subnormal, −0, arrows through and from off-canvas) × 3 colours (alpha 255, 128, 0) on 1×1, 7×3, 33×17 and 64×64 sources, one colour on 512×512, and overlapping sets; refused sources and NaN redactions refused alike |
+| `to_svg` 415 | equal text |
+| `layer_json` 61 | serde_json's pretty print byte for byte; 16 canvases with a non-finite region expect the corrected refusal (ADR 0002 #19) |
+| `layer_load` 84 | Rust-written layers and hand-written variants (array form, unknown fields, version 0 / 2 / u32::MAX / 2^32 / 1.0, negative size, bad dates, missing fields, a duplicate key, an f32-overflowing rect, trailing text, whitespace): every verdict, size and annotation equal |
+| `decode_image_data` 34 | every verdict equal: bayan's base64 is canonical-only, like Rust's STANDARD engine |
+| `redact_image` 200 | equal, with the WebP rows accepted (ADR 0002 #1) and the 16-bpp BMP rows upstream (F3) |
+| `oracle --reverse` | Rust loads all 45 Cyrius-written layers (and decodes the 165 encoded images) |
+
+The harness output is identical on x86_64 ELF, aarch64 (qemu) and x86_64 PE (wine).
+
+**Facts the grid taught:**
+- ranga 2.4.0's `blend_row` and Rust ranga 1.0.0's (AVX2 on this host) agree to the bit on every highlight.
+- The ellipse's `cos` / `sin` (fdlibm polyfills in Cyrius, glibc's libm in Rust) give the same pixels on the whole
+  grid, so there is no class to set.
+- Rust writes a layer file it cannot read back when an annotation's region is not finite (`null` in JSON). Fixed in
+  the port: the save is refused (ADR 0002 #19).
+
+Two mutation probes confirmed the gates bite: a highlight opacity of 77 for 76 failed 185 render rows, and one SVG
+radius from the wrong side failed 37.
+

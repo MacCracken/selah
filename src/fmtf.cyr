@@ -459,6 +459,20 @@ fn _sl_fmt_f64_json(sb, x: f64): i64 {
     return _sl_sb_json_digits(sb, &digits, n, k, -5, 15);
 }
 
+# The value of a positive f32 magnitude (bits) when it is an integer below 2^24, else -1. Such a value's shortest
+# digits are its integer digits, so both writers below print it directly: the fast path for whole-number coordinates
+# (SVG, layer files), with output identical to the general path.
+#must_use
+#pure
+fn _sl_f32_small_int(mag): i64 {
+    var e = (mag >> 23) - 127;
+    if (e < 0 || e > 23) { return -1; }
+    var m = (mag & 8388607) | 8388608;
+    var sh = 23 - e;
+    if ((m & ((1 << sh) - 1)) != 0) { return -1; }
+    return m >> sh;
+}
+
 # Appends x as Rust's `Display` (`{}`) writes an f32: its own shortest digits.
 fn _sl_fmt_f32_display(sb, x: f32): i64 {
     var w = _sl_f32_bits(x);
@@ -474,6 +488,11 @@ fn _sl_fmt_f32_display(sb, x: f32): i64 {
     }
     if (mag == 0) {
         str_builder_putc(sb, 48);
+        return 0;
+    }
+    var iv = _sl_f32_small_int(mag);
+    if (iv > 0) {
+        str_builder_add_int(sb, iv);
         return 0;
     }
     var digits[24];
@@ -492,6 +511,12 @@ fn _sl_fmt_f32_json(sb, x: f32): i64 {
     if (((w >> 31) & 1) == 1) { str_builder_putc(sb, 45); }
     if (mag == 0) {
         str_builder_add_cstr(sb, "0.0");
+        return 0;
+    }
+    var iv = _sl_f32_small_int(mag);
+    if (iv > 0) {
+        str_builder_add_int(sb, iv);
+        str_builder_add_cstr(sb, ".0");
         return 0;
     }
     var digits[24];

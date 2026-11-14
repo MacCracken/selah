@@ -1,0 +1,295 @@
+# integration.tcyr — rust-old/tests/integration.rs and the lib.rs doctests, ported (port plan M4). The two codec
+# integration tests are in codec.tcyr; test_history_store_integration waits for M5's history.
+
+include "tests/selah_src.cyr"
+include "tests/support.cyr"
+
+# A w × h PNG of one colour (Rust's make_png), its length at len_out.
+fn _t_png(w, h, r, g, b, a, len_out): i64 {
+    var img: *SlImage = SlImage_new(w, h);
+    var px = r | (g << 8) | (b << 16) | (a << 24);
+    var i = 0;
+    while (i < w * h) {
+        store32(img.pixels + i * 4, px);
+        i = i + 1;
+    }
+    var out = _sl_png_encode(img.pixels, w, h, len_out);
+    SlImage_free(img);
+    return out;
+}
+
+# Decodes bytes to an image, or 0.
+fn _t_decode(p, n): *SlImage {
+    var t, v = _sl_decode_image(p, n);
+    if (is_err_result(t) == 1) { return 0; }
+    return _sl_as_image(v);
+}
+
+# A vec holding one new annotation.
+fn _t_one(kind, x, y, w, h, c: SlColor): i64 {
+    var v = vec_new();
+    vec_push(v, SlAnnotation_new(kind, _t_rect(x, y, w, h), c));
+    return v;
+}
+
+fn _t_px(img: *SlImage, x, y, r, g, b, a): i64 {
+    var p = img.pixels + (y * img.width + x) * 4;
+    return load8(p) == r && load8(p + 1) == g && load8(p + 2) == b && load8(p + 3) == a;
+}
+
+fn _t_annotate_image_roundtrip(): i64 {
+    test_group("test_annotate_image_roundtrip");
+    var n = 0;
+    var png = _t_png(4, 4, 255, 0, 0, 255, &n);
+    var on = 0;
+    var t, out = selah_annotate_image(png, n, _t_one(SL_KIND_RECTANGLE, 0.0, 0.0, 4.0, 4.0, SL_COLOR_BLUE),
+      SL_FMT_PNG, &on);
+    var img: *SlImage = _t_decode(out, on);
+    assert(is_ok(t) == 1 && img != 0 && img.width == 4 && img.height == 4, "4x4 PNG");
+    return 0;
+}
+
+fn _t_annotate_image_with_redaction(): i64 {
+    test_group("test_annotate_image_with_redaction");
+    var n = 0;
+    var png = _t_png(2, 2, 255, 255, 255, 255, &n);
+    var on = 0;
+    var t, out = selah_annotate_image(png, n, _t_one(SL_KIND_REDACTION, 0.0, 0.0, 2.0, 2.0, SL_COLOR_BLACK),
+      SL_FMT_PNG, &on);
+    var img: *SlImage = _t_decode(out, on);
+    var all = 1;
+    var i = 0;
+    while (i < 4) {
+        if (_t_px(img, i % 2, i / 2, 0, 0, 0, 255) == 0) { all = 0; }
+        i = i + 1;
+    }
+    assert(is_ok(t) == 1 && all == 1, "every pixel black");
+    return 0;
+}
+
+fn _t_redact_image_with_no_pii(): i64 {
+    test_group("test_redact_image_with_no_pii");
+    var n = 0;
+    var png = _t_png(2, 2, 128, 128, 128, 255, &n);
+    var on = 0;
+    var sugg = 0;
+    var t, out = selah_redact_image(png, n, 0, SL_FMT_PNG, &on, &sugg);
+    assert(is_ok(t) == 1 && vec_len(sugg) == 0, "no suggestions");
+    var img: *SlImage = _t_decode(out, on);
+    assert(img != 0 && img.width == 2 && img.height == 2, "2x2");
+    return 0;
+}
+
+fn _t_geometry_serde_backward_compat(): i64 {
+    test_group("test_geometry_serde_backward_compat");
+    var json = "{\"x\": 10.123456789012345, \"y\": 20.987654321098765, \"width\": 100.0, \"height\": 50.0}";
+    var r: SlRect = SlRect_default();
+    var t, v = SlRect_from_json(json, strlen(json), &r);
+    assert(is_ok(t) == 1, "parsed");
+    var x: f64 = r.x();
+    var y: f64 = r.y();
+    var dx: f64 = x - 10.1234;
+    var dy: f64 = y - 20.9876;
+    assert(f64_abs(dx) < 0.01 && f64_abs(dy) < 0.01, "x, y");
+    assert(r.width() == 100.0 && r.height() == 50.0, "width, height");
+    return 0;
+}
+
+fn _t_decode_image_data_valid(): i64 {
+    test_group("test_decode_image_data_valid");
+    var data: u8[4];
+    store8(&data, 1);
+    store8(&data + 1, 2);
+    store8(&data + 2, 3);
+    store8(&data + 3, 4);
+    var enc = bayan_base64_encode(&data, 4);
+    var on = 0;
+    var t, v = selah_decode_image_data(enc, strlen(enc), &on);
+    assert(is_ok(t) == 1 && on == 4 && memeq(v, &data, 4) == 1, "round trip");
+    return 0;
+}
+
+fn _t_decode_image_data_invalid(): i64 {
+    test_group("test_decode_image_data_invalid");
+    var on = 0;
+    var t, v = selah_decode_image_data("not-valid-base64!!!", 19, &on);
+    assert(is_err_result(t) == 1 && v == SL_ERR_API, "refused");
+    return 0;
+}
+
+fn _t_annotation_canvas_svg_workflow(): i64 {
+    test_group("test_annotation_canvas_svg_workflow");
+    var c: *SlAnnotationCanvas = SlAnnotationCanvas_new(800, 600);
+    SlAnnotationCanvas_add_annotation(c, SlAnnotation_new(SL_KIND_RECTANGLE, _t_rect(10.0, 10.0, 100.0, 50.0),
+        SL_COLOR_RED));
+    SlAnnotationCanvas_add_annotation(c, SlAnnotation_with_text(SL_KIND_TEXT, _t_rect(50.0, 50.0, 200.0, 30.0),
+        SL_COLOR_BLACK, str_from("Hello")));
+    SlAnnotationCanvas_apply_redaction(c, _t_rect(300.0, 100.0, 150.0, 40.0));
+    var svg = SlAnnotationCanvas_to_svg(c);
+    assert(_t_str_has(svg, "<svg") == 1 && _t_str_has(svg, "</svg>") == 1, "svg");
+    assert(_t_str_has(svg, "<rect") == 1 && _t_str_has(svg, "<text") == 1, "rect, text");
+    assert(_t_str_has(svg, "Hello") == 1 && _t_str_has(svg, "fill=\"black\"") == 1, "text, redaction");
+    assert(SlAnnotationCanvas_count(c) == 3, "three");
+    return 0;
+}
+
+fn _t_suggest_redactions_and_smart_crop_together(): i64 {
+    test_group("test_suggest_redactions_and_smart_crop_together");
+    var text = "Contact user@example.com at 192.168.1.1";
+    assert(vec_len(selah_suggest_redactions(text, strlen(text))) >= 2, "two or more");
+    assert(vec_len(selah_suggest_smart_crop(1920, 1080)) == 5, "five crops");
+    return 0;
+}
+
+fn _t_extract_text_and_suggest_redactions_pipeline(): i64 {
+    test_group("test_extract_text_and_suggest_redactions_pipeline");
+    var data = "\x00\x00 user@example.com \x00\x00 192.168.1.100 \x00\x00";
+    var ocr: *SlOcrResult = selah_extract_text_regions(data, 39);
+    assert(str_len(ocr.text) > 0, "text found");
+    var s = selah_suggest_redactions(str_data(ocr.text), str_len(ocr.text));
+    var email = 0;
+    var ip = 0;
+    var i = 0;
+    while (i < vec_len(s)) {
+        var g: *SlRedactionSuggestion = _sl_as_suggestion(vec_get(s, i));
+        if (g.target.kind == SL_TARGET_EMAIL) { email = 1; }
+        if (g.target.kind == SL_TARGET_IP_ADDRESS) { ip = 1; }
+        i = i + 1;
+    }
+    assert(email == 1 && ip == 1, "email and IP");
+    return 0;
+}
+
+fn _t_vec2_re_export(): i64 {
+    test_group("test_vec2_re_export");
+    var r = _t_rect(0.0, 0.0, 100.0, 100.0);
+    assert(r.contains_point(_t_vec2(10.0, 20.0)) == true, "contains");
+    return 0;
+}
+
+fn _t_annotate_image_to_jpeg(): i64 {
+    test_group("test_annotate_image_to_jpeg");
+    var n = 0;
+    var png = _t_png(8, 8, 10, 200, 30, 255, &n);
+    var on = 0;
+    var t, jpg = selah_annotate_image(png, n, _t_one(SL_KIND_HIGHLIGHT, 0.0, 0.0, 4.0, 4.0, SL_COLOR_YELLOW),
+      SL_FMT_JPEG, &on);
+    var img: *SlImage = _t_decode(jpg, on);
+    assert(is_ok(t) == 1 && img != 0 && img.width == 8 && img.height == 8, "8x8 JPEG");
+    return 0;
+}
+
+fn _t_redaction_rect_from_any_corner_covers_region(): i64 {
+    test_group("test_redaction_rect_from_any_corner_covers_region");
+    var n = 0;
+    var png = _t_png(8, 8, 255, 255, 255, 255, &n);
+    var on = 0;
+    var t, out = selah_annotate_image(png, n, _t_one(SL_KIND_REDACTION, 5.5, 5.5, -5.0, -5.0, SL_COLOR_BLACK),
+      SL_FMT_PNG, &on);
+    var img: *SlImage = _t_decode(out, on);
+    var ok = 1;
+    var y = 0;
+    while (y <= 5) {
+        var x = 0;
+        while (x <= 5) {
+            if (_t_px(img, x, y, 0, 0, 0, 255) == 0) { ok = 0; }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    assert(ok == 1, "no pixel leaked");
+    assert(_t_px(img, 7, 7, 255, 255, 255, 255) == 1, "outside untouched");
+    return 0;
+}
+
+fn _t_redact_image_unlocated_pii_is_not_reported_as_applied(): i64 {
+    test_group("test_redact_image_unlocated_pii_is_not_reported_as_applied");
+    var n = 0;
+    var png = _t_png(4, 4, 0, 0, 0, 255, &n);
+    var tail = "\x00email admin@example.com\x00";
+    var buf = alloc(n + 25);
+    memcpy(buf, png, n);
+    memcpy(buf + n, tail, 25);
+    var on = 0;
+    var sugg = 0;
+    var t, out = selah_redact_image(buf, n + 25, 0, SL_FMT_PNG, &on, &sugg);
+    assert(is_ok(t) == 1 && vec_len(sugg) == 0, "nothing applied");
+    assert(_t_decode(out, on) != 0, "decodes");
+    var found = 0;
+    var i = 0;
+    while (i + 17 <= on) {
+        if (memeq(out + i, "admin@example.com", 17) == 1) { found = 1; }
+        i = i + 1;
+    }
+    assert(found == 0, "re-encoding drops the embedded bytes");
+    return 0;
+}
+
+fn _t_pii_detection_common_formats(): i64 {
+    test_group("test_pii_detection_common_formats");
+    var text = "Reach me at <jane.doe@example.org>, card 4111 1111 1111 1111, server 10.1.2.3. Office: (555) 123-4567.";
+    var s = selah_suggest_redactions(text, strlen(text));
+    assert(vec_len(s) == 4, "four");
+    var kinds: i64[4];
+    kinds[0] = SL_TARGET_EMAIL;
+    kinds[1] = SL_TARGET_CREDIT_CARD;
+    kinds[2] = SL_TARGET_IP_ADDRESS;
+    kinds[3] = SL_TARGET_PHONE;
+    var texts: i64[4];
+    texts[0] = "jane.doe@example.org";
+    texts[1] = "4111 1111 1111 1111";
+    texts[2] = "10.1.2.3";
+    texts[3] = "(555) 123-4567";
+    var i = 0;
+    while (i < 4 && i < vec_len(s)) {
+        var g: *SlRedactionSuggestion = _sl_as_suggestion(vec_get(s, i));
+        assert(g.target.kind == kinds[i] && _t_str_is(g.matched_text, texts[i]) == 1, "match");
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The decode_image_data, annotate_image and redact_image doctests.
+fn _t_doctests_lib(): i64 {
+    test_group("doctests lib");
+    var on = 0;
+    var enc = bayan_base64_encode("hello", 5);
+    var t, v = selah_decode_image_data(enc, strlen(enc), &on);
+    assert(is_ok(t) == 1 && on == 5 && memeq(v, "hello", 5) == 1, "decode_image_data");
+    var n = 0;
+    var png = _t_png(4, 4, 0, 0, 0, 0, &n);
+    var an = 0;
+    var at, av = selah_annotate_image(png, n, _t_one(SL_KIND_RECTANGLE, 0.0, 0.0, 2.0, 2.0, SL_COLOR_RED), SL_FMT_PNG,
+      &an);
+    assert(is_ok(at) == 1 && an > 0, "annotate_image");
+    var rn = 0;
+    var sugg = 0;
+    var rt, rv = selah_redact_image(png, n, 0, SL_FMT_PNG, &rn, &sugg);
+    assert(is_ok(rt) == 1 && rn > 0, "redact_image");
+    return 0;
+}
+
+# Runs the suite; the exit code is the failure count, clamped.
+fn main(): i64 {
+    alloc_init();
+    _t_annotate_image_roundtrip();
+    _t_annotate_image_with_redaction();
+    _t_redact_image_with_no_pii();
+    _t_geometry_serde_backward_compat();
+    _t_decode_image_data_valid();
+    _t_decode_image_data_invalid();
+    _t_annotation_canvas_svg_workflow();
+    _t_suggest_redactions_and_smart_crop_together();
+    _t_extract_text_and_suggest_redactions_pipeline();
+    _t_vec2_re_export();
+    _t_annotate_image_to_jpeg();
+    _t_redaction_rect_from_any_corner_covers_region();
+    _t_redact_image_unlocated_pii_is_not_reported_as_applied();
+    _t_pii_detection_common_formats();
+    _t_doctests_lib();
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

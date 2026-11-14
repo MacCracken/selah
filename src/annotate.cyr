@@ -1,0 +1,561 @@
+# annotate.cyr — the annotation canvas, its layer file, the SVG overlay and rendering (Rust: rust-old/src/annotate.rs).
+#
+# - SlAnnotationCanvas holds a width, a height and its annotations (owned: removing or clearing frees them).
+# - The layer file is serde_json's pretty print of Rust's AnnotationLayer {version, width, height, created,
+#   annotations}, byte for byte (class A), so a layer either side writes loads on the other. It is written atomically
+#   and 0600 (ADR 0002 #18; Rust 0.30.0 used std::fs::write), and read through _sl_read_limited, refusing more than
+#   MAX_LAYER_FILE_BYTES and a layer newer than LAYER_VERSION.
+# - to_svg is Rust's overlay text, f32 values in Rust's Display form (class A).
+# - render_to_image decodes (codec.cyr), refuses a redaction with a NaN region, draws (raster.cyr) and encodes.
+
+# Rust's MAX_LAYER_FILE_BYTES and LAYER_VERSION.
+var SL_MAX_LAYER_FILE_BYTES = 67108864;
+var SL_LAYER_VERSION = 1;
+
+# A canvas: the underlying image's size and its annotations (a vec of *SlAnnotation, owned).
+struct SlAnnotationCanvas { width: i64; height: i64; annotations: i64; }
+
+# Rust's AnnotationLayer, the layer file's contents: `created` is unix seconds and nanoseconds; `annotations` a vec of
+# *SlAnnotation.
+struct SlAnnotationLayer {
+    version: i64;
+    width: i64;
+    height: i64;
+    created_secs: i64;
+    created_nanos: i64;
+    annotations: i64;
+}
+
+# An allocation as a *SlAnnotationLayer.
+#must_use
+fn _sl_as_layer(p): *SlAnnotationLayer {
+    return p;
+}
+
+# An allocation as a *SlAnnotationCanvas.
+#must_use
+fn _sl_as_canvas(p): *SlAnnotationCanvas {
+    return p;
+}
+
+# A new empty canvas for a w × h image on the freelist (free it with SlAnnotationCanvas_free); 0 when out of memory.
+#must_use
+fn SlAnnotationCanvas_new(width, height): *SlAnnotationCanvas {
+    var c: *SlAnnotationCanvas = _sl_as_canvas(fl_alloc(sizeof(SlAnnotationCanvas)));
+    if (c == 0) { return 0; }
+    c.width = width;
+    c.height = height;
+    c.annotations = vec_new();
+    return c;
+}
+
+# Frees the canvas and every annotation it holds. Safe on 0.
+fn SlAnnotationCanvas_free(c: *SlAnnotationCanvas): i64 {
+    if (c == 0) { return 0; }
+    SlAnnotationCanvas_clear(c);
+    fl_free(c);
+    return 0;
+}
+
+# Adds an annotation; the canvas owns it from here. Returns its id (the annotation's first 16 bytes).
+fn SlAnnotationCanvas_add_annotation(c: *SlAnnotationCanvas, a: *SlAnnotation): i64 {
+    vec_push(c.annotations, a);
+    return _sl_addr(a);
+}
+
+# Removes (and frees) every annotation whose id is the 16 bytes at `id`. Returns 1 when one was found.
+fn SlAnnotationCanvas_remove_annotation(c: *SlAnnotationCanvas, id): i64 {
+    var v = c.annotations;
+    var found = 0;
+    var i = 0;
+    while (i < vec_len(v)) {
+        var a = vec_get(v, i);
+        if (memeq(a, id, 16) == 1) {
+            vec_remove(v, i);
+            SlAnnotation_free(a);
+            found = 1;
+        } else {
+            i = i + 1;
+        }
+    }
+    return found;
+}
+
+# Removes (and frees) every annotation.
+fn SlAnnotationCanvas_clear(c: *SlAnnotationCanvas): i64 {
+    var v = c.annotations;
+    var i = 0;
+    while (i < vec_len(v)) {
+        SlAnnotation_free(vec_get(v, i));
+        i = i + 1;
+    }
+    vec_truncate(v, 0);
+    return 0;
+}
+
+# The annotations, in order (a vec of *SlAnnotation the canvas owns).
+#must_use
+fn SlAnnotationCanvas_get_annotations(c: *SlAnnotationCanvas): i64 {
+    return c.annotations;
+}
+
+# How many annotations the canvas holds.
+#must_use
+fn SlAnnotationCanvas_count(c: *SlAnnotationCanvas): i64 {
+    return vec_len(c.annotations);
+}
+
+# Adds a black redaction over `rect`. Returns its id, or 0 when out of memory.
+fn SlAnnotationCanvas_apply_redaction(c: *SlAnnotationCanvas, rect: SlRect): i64 {
+    var a: *SlAnnotation = SlAnnotation_new(SL_KIND_REDACTION, rect, SL_COLOR_BLACK);
+    if (a == 0) { return 0; }
+    return SlAnnotationCanvas_add_annotation(c, a);
+}
+
+# ---------------------------------------------------------------- the layer file
+
+# Appends compact JSON p[0..n) as serde_json's PrettyFormatter writes it: two-space indent, "key": value, one member
+# or element a line, and `{}` / `[]` for an empty object or array. The input has no whitespace outside strings.
+fn _sl_json_pretty(sb, p, n): i64 {
+    var depth = 0;
+    var i = 0;
+    while (i < n) {
+        var ch = load8(p + i);
+        if (ch == 34) {
+            var j = i + 1;
+            while (j < n) {
+                var cj = load8(p + j);
+                if (cj == 92) {
+                    j = j + 2;
+                } elif (cj == 34) {
+                    break;
+                } else {
+                    j = j + 1;
+                }
+            }
+            if (j >= n) { j = n - 1; }
+            _sl_sb_bytes(sb, p + i, j + 1 - i);
+            i = j + 1;
+        } elif (ch == 123 || ch == 91) {
+            var close = 125;
+            if (ch == 91) { close = 93; }
+            str_builder_putc(sb, ch);
+            if (i + 1 < n && load8(p + i + 1) == close) {
+                str_builder_putc(sb, close);
+                i = i + 2;
+            } else {
+                depth = depth + 1;
+                _sl_json_newline(sb, depth);
+                i = i + 1;
+            }
+        } elif (ch == 125 || ch == 93) {
+            depth = depth - 1;
+            _sl_json_newline(sb, depth);
+            str_builder_putc(sb, ch);
+            i = i + 1;
+        } elif (ch == 44) {
+            str_builder_putc(sb, 44);
+            _sl_json_newline(sb, depth);
+            i = i + 1;
+        } elif (ch == 58) {
+            str_builder_putc(sb, 58);
+            str_builder_putc(sb, 32);
+            i = i + 1;
+        } else {
+            str_builder_putc(sb, ch);
+            i = i + 1;
+        }
+    }
+    return 0;
+}
+
+# A newline and `depth` two-space indents.
+fn _sl_json_newline(sb, depth): i64 {
+    str_builder_putc(sb, 10);
+    var k = 0;
+    while (k < depth) {
+        str_builder_putc(sb, 32);
+        str_builder_putc(sb, 32);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Appends the layer file Rust's save_to_file writes for a w × h canvas holding `anns` (a vec of *SlAnnotation),
+# created at (secs, nanos): serde_json::to_string_pretty of AnnotationLayer.
+fn _sl_layer_json(sb, w, h, anns, secs, nanos): i64 {
+    var cb = str_builder_new();
+    str_builder_add_cstr(cb, "{\"version\":");
+    str_builder_add_int(cb, SL_LAYER_VERSION);
+    str_builder_add_cstr(cb, ",\"width\":");
+    str_builder_add_int(cb, w);
+    str_builder_add_cstr(cb, ",\"height\":");
+    str_builder_add_int(cb, h);
+    str_builder_add_cstr(cb, ",\"created\":\"");
+    _sl_rfc3339_fmt(cb, secs, nanos);
+    str_builder_add_cstr(cb, "\",\"annotations\":[");
+    var i = 0;
+    while (i < vec_len(anns)) {
+        if (i > 0) { str_builder_putc(cb, 44); }
+        SlAnnotation_to_json(_sl_as_annotation(vec_get(anns, i)), cb);
+        i = i + 1;
+    }
+    str_builder_add_cstr(cb, "]}");
+    var compact = str_builder_build(cb);
+    return _sl_json_pretty(sb, str_data(compact), str_len(compact));
+}
+
+# Refuses a canvas whose layer file could not be read back: an annotation whose x, y, width or height (as written,
+# in f32) is not finite. serde_json writes those as `null`, which the reader refuses, so Rust's save_to_file wrote a
+# file its own load_from_file rejects; the port refuses the save instead (ADR 0002 #19, a Rust defect fixed).
+# Ok(0) or Err(SL_ERR_ANNOTATION).
+fn _sl_layer_check(anns, detail_out = 0): Result {
+    var i = 0;
+    while (i < vec_len(anns)) {
+        var a: *SlAnnotation = _sl_as_annotation(vec_get(anns, i));
+        var r: SlRect = a.position;
+        var w: f32 = r.max_x - r.min_x;
+        var h: f32 = r.max_y - r.min_y;
+        var ok = _sl_f32_finite(r.min_x) && _sl_f32_finite(r.min_y) && _sl_f32_finite(w) && _sl_f32_finite(h);
+        if (ok == false) {
+            if (detail_out == 0) { return Err(SL_ERR_ANNOTATION); }
+            var sb = str_builder_new();
+            str_builder_add_cstr(sb, "annotation ");
+            _sl_uuid_fmt(sb, _sl_addr(a), 1);
+            str_builder_add_cstr(sb, " has a non-finite region; a layer file could not hold it");
+            str_builder_add_cstr(sb, " (JSON has no NaN or infinity)");
+            return _sl_fail(SL_ERR_ANNOTATION, detail_out, str_builder_build(sb));
+        }
+        i = i + 1;
+    }
+    return Ok(0);
+}
+
+# "failed to deserialize annotations: <what>" through detail_out; Err(SL_ERR_ANNOTATION).
+fn _sl_layer_fail(detail_out, what): Result {
+    if (detail_out == 0) { return Err(SL_ERR_ANNOTATION); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "failed to deserialize annotations: ");
+    str_builder_add_cstr(sb, what);
+    return _sl_fail(SL_ERR_ANNOTATION, detail_out, str_builder_build(sb));
+}
+
+# A u32 field of a layer, or -1 when it is missing or not an integer in 0..=u32::MAX.
+#must_use
+fn _sl_layer_u32(v, key, i): i64 {
+    var f = _sl_json_field(v, key, 5, i);
+    if (f == 0 || bayan_json_v_tag(f) != JTAG_INT) { return -1; }
+    var x = bayan_json_v_int(f);
+    if (x < 0 || x > 4294967295) { return -1; }
+    return x;
+}
+
+# Reads an AnnotationLayer from layer-file JSON p[0..n) as serde does (an object, or the array of its five fields),
+# without the version check. Ok(*SlAnnotationLayer on the freelist) or Err(SL_ERR_ANNOTATION).
+fn _sl_layer_from_json(p, n, detail_out = 0): Result {
+    var v = _sl_json_parse(p, n);
+    if (v == 0) { return _sl_layer_fail(detail_out, "not a JSON document"); }
+    if (bayan_json_v_is_obj(v) == false && bayan_json_v_is_arr(v) == false) {
+        return _sl_layer_fail(detail_out, "invalid type: expected struct AnnotationLayer");
+    }
+    var version = _sl_layer_u32(v, "version", 0);
+    var width = _sl_layer_u32(v, "width", 1);
+    var height = _sl_layer_u32(v, "height", 2);
+    if (version < 0 || width < 0 || height < 0) {
+        return _sl_layer_fail(detail_out, "`version`, `width` and `height` must be u32 integers");
+    }
+    var cs = _sl_json_as_str(_sl_json_field(v, "created", 5, 3));
+    var secs = 0;
+    var nanos = 0;
+    if (cs == 0 || _sl_rfc3339_parse(str_data(cs), str_len(cs), &secs, &nanos) == 0) {
+        return _sl_layer_fail(detail_out, "`created` is missing or not an RFC 3339 date-time");
+    }
+    var arr = _sl_json_field(v, "annotations", 5, 4);
+    if (arr == 0 || bayan_json_v_is_arr(arr) == false) {
+        return _sl_layer_fail(detail_out, "`annotations` is missing or not a sequence");
+    }
+    var anns = vec_new();
+    var k = 0;
+    var cnt = bayan_json_v_arr_len(arr);
+    while (k < cnt) {
+        var d = 0;
+        var t, a = _sl_annotation_from_value(bayan_json_v_arr_get(arr, k), &d);
+        if (is_err_result(t) == 1) {
+            var j = 0;
+            while (j < vec_len(anns)) {
+                SlAnnotation_free(vec_get(anns, j));
+                j = j + 1;
+            }
+            if (detail_out == 0) { return Err(SL_ERR_ANNOTATION); }
+            var sb = str_builder_new();
+            str_builder_add_cstr(sb, "failed to deserialize annotations: ");
+            if (d != 0) { str_builder_add(sb, d); }
+            return _sl_fail(SL_ERR_ANNOTATION, detail_out, str_builder_build(sb));
+        }
+        vec_push(anns, a);
+        k = k + 1;
+    }
+    var l: *SlAnnotationLayer = _sl_as_layer(fl_alloc(sizeof(SlAnnotationLayer)));
+    if (l == 0) { return _sl_layer_fail(detail_out, "out of memory"); }
+    l.version = version;
+    l.width = width;
+    l.height = height;
+    l.created_secs = secs;
+    l.created_nanos = nanos;
+    l.annotations = anns;
+    return Ok(l);
+}
+
+# A canvas from layer-file JSON p[0..n) (Rust: load_from_file after the read): the layer, then the version check.
+# Ok(*SlAnnotationCanvas) or Err(SL_ERR_ANNOTATION).
+fn _sl_canvas_from_layer_json(p, n, detail_out = 0): Result {
+    var t, v = _sl_layer_from_json(p, n, detail_out);
+    if (is_err_result(t) == 1) { return Err(v); }
+    var l: *SlAnnotationLayer = _sl_as_layer(v);
+    if (l.version > SL_LAYER_VERSION) {
+        var ver = l.version;
+        var j = 0;
+        while (j < vec_len(l.annotations)) {
+            SlAnnotation_free(vec_get(l.annotations, j));
+            j = j + 1;
+        }
+        fl_free(l);
+        if (detail_out == 0) { return Err(SL_ERR_ANNOTATION); }
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "unsupported annotation layer version ");
+        str_builder_add_int(sb, ver);
+        str_builder_add_cstr(sb, " (this build supports up to ");
+        str_builder_add_int(sb, SL_LAYER_VERSION);
+        str_builder_add_cstr(sb, ")");
+        return _sl_fail(SL_ERR_ANNOTATION, detail_out, str_builder_build(sb));
+    }
+    var c: *SlAnnotationCanvas = _sl_as_canvas(fl_alloc(sizeof(SlAnnotationCanvas)));
+    if (c == 0) { return _sl_layer_fail(detail_out, "out of memory"); }
+    c.width = l.width;
+    c.height = l.height;
+    c.annotations = l.annotations;
+    fl_free(l);
+    return Ok(c);
+}
+
+# Saves the canvas as a layer file at `path` (NUL-terminated), created now. Ok(0), Err(SL_ERR_IO), or
+# Err(SL_ERR_ANNOTATION) for an annotation with a non-finite region, which the file could not hold (ADR 0002 #19).
+fn SlAnnotationCanvas_save_to_file(c: *SlAnnotationCanvas, path, detail_out = 0): Result {
+    var kt, kv = _sl_layer_check(c.annotations, detail_out);
+    if (is_err_result(kt) == 1) { return Err(kv); }
+    var ns = clock_epoch_ns();
+    var sb = str_builder_new();
+    _sl_layer_json(sb, c.width, c.height, c.annotations, ns / 1000000000, ns % 1000000000);
+    var json = str_builder_build(sb);
+    var t, v = _sl_write_atomic(path, str_data(json), str_len(json), detail_out);
+    if (is_err_result(t) == 1) { return Err(v); }
+    _sl_log_kv(SK_DEBUG, "saved annotation layer", "path", path);
+    return Ok(0);
+}
+
+# Loads a canvas from a layer file at `path` (NUL-terminated): at most MAX_LAYER_FILE_BYTES, and no newer than
+# LAYER_VERSION. Ok(*SlAnnotationCanvas) or Err(SL_ERR_IO / SL_ERR_ANNOTATION).
+fn SlAnnotationCanvas_load_from_file(path, detail_out = 0): Result {
+    var n = 0;
+    var rt, buf = _sl_read_limited(path, SL_MAX_LAYER_FILE_BYTES, &n, detail_out);
+    if (is_err_result(rt) == 1) { return Err(buf); }
+    var t, v = _sl_canvas_from_layer_json(buf, n, detail_out);
+    fl_free(buf);
+    if (is_err_result(t) == 1) { return Err(v); }
+    _sl_log_kv(SK_DEBUG, "loaded annotation layer", "path", path);
+    return Ok(v);
+}
+
+# ---------------------------------------------------------------- SVG
+
+# Rust's num(): a non-finite f32 is written as 0. The f32 comes back as its exact f64 (no f32 return type).
+#must_use
+fn _sl_svg_num(v: f32): f64 {
+    if (_sl_f32_finite(v) == true) {
+        var d: f64 = f32_to(v);
+        return d;
+    }
+    return 0.0;
+}
+
+# Appends ` name="<f32 Display>"`.
+fn _sl_svg_attr(sb, name, v: f32): i64 {
+    str_builder_putc(sb, 32);
+    str_builder_add_cstr(sb, name);
+    str_builder_add_cstr(sb, "=\"");
+    _sl_fmt_f32_display(sb, v);
+    str_builder_putc(sb, 34);
+    return 0;
+}
+
+# Appends one annotation's SVG element (Rust: write_svg_element).
+fn _sl_svg_element(sb, a: *SlAnnotation): i64 {
+    var col: SlColor = a.color;
+    var n: SlRect = a.position.normalized();
+    var x: f32 = f32_from(_sl_svg_num(n.min_x));
+    var y: f32 = f32_from(_sl_svg_num(n.min_y));
+    var nw: f32 = n.max_x - n.min_x;
+    var nh: f32 = n.max_y - n.min_y;
+    var w: f32 = f32_from(_sl_svg_num(nw));
+    var h: f32 = f32_from(_sl_svg_num(nh));
+    var kind = a.kind;
+    if (kind == SL_KIND_CIRCLE) {
+        var two: f32 = f32_from(2.0);
+        var rx: f32 = w / two;
+        var ry: f32 = h / two;
+        var cx: f32 = x + rx;
+        var cy: f32 = y + ry;
+        str_builder_add_cstr(sb, "  <ellipse");
+        _sl_svg_attr(sb, "cx", cx);
+        _sl_svg_attr(sb, "cy", cy);
+        _sl_svg_attr(sb, "rx", rx);
+        _sl_svg_attr(sb, "ry", ry);
+        str_builder_add_cstr(sb, " stroke=\"");
+        col.css(sb);
+        str_builder_add_cstr(sb, "\" fill=\"none\" stroke-width=\"2\"/>");
+        return 0;
+    }
+    if (kind == SL_KIND_ARROW) {
+        var p: SlRect = a.position;
+        var pw: f32 = p.max_x - p.min_x;
+        var ph: f32 = p.max_y - p.min_y;
+        var px2: f32 = p.min_x + pw;
+        var py2: f32 = p.min_y + ph;
+        var x1: f32 = f32_from(_sl_svg_num(p.min_x));
+        var y1: f32 = f32_from(_sl_svg_num(p.min_y));
+        var x2: f32 = f32_from(_sl_svg_num(px2));
+        var y2: f32 = f32_from(_sl_svg_num(py2));
+        str_builder_add_cstr(sb, "  <defs><marker id=\"arrow-");
+        _sl_uuid_fmt(sb, _sl_addr(a), 0);
+        str_builder_add_cstr(sb, "\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\"");
+        str_builder_add_cstr(sb, " orient=\"auto\"><path d=\"M0,0 L10,5 L0,10 z\" fill=\"");
+        col.css(sb);
+        str_builder_add_cstr(sb, "\"/></marker></defs><line");
+        _sl_svg_attr(sb, "x1", x1);
+        _sl_svg_attr(sb, "y1", y1);
+        _sl_svg_attr(sb, "x2", x2);
+        _sl_svg_attr(sb, "y2", y2);
+        str_builder_add_cstr(sb, " stroke=\"");
+        col.css(sb);
+        str_builder_add_cstr(sb, "\" stroke-width=\"2\" marker-end=\"url(#arrow-");
+        _sl_uuid_fmt(sb, _sl_addr(a), 0);
+        str_builder_add_cstr(sb, ")\"/>");
+        return 0;
+    }
+    if (kind == SL_KIND_TEXT) {
+        var sixteen: f32 = f32_from(16.0);
+        var ty: f32 = y + sixteen;
+        str_builder_add_cstr(sb, "  <text");
+        _sl_svg_attr(sb, "x", x);
+        _sl_svg_attr(sb, "y", ty);
+        str_builder_add_cstr(sb, " fill=\"");
+        col.css(sb);
+        str_builder_add_cstr(sb, "\" font-size=\"16\">");
+        if (a.text != 0) { _sl_push_xml_escaped(sb, str_data(a.text), str_len(a.text)); }
+        str_builder_add_cstr(sb, "</text>");
+        return 0;
+    }
+    var area = kind == SL_KIND_RECTANGLE || kind == SL_KIND_HIGHLIGHT;
+    if (area == false && kind != SL_KIND_REDACTION && kind != SL_KIND_FREEFORM) { return 0; }
+    str_builder_add_cstr(sb, "  <rect");
+    _sl_svg_attr(sb, "x", x);
+    _sl_svg_attr(sb, "y", y);
+    _sl_svg_attr(sb, "width", w);
+    _sl_svg_attr(sb, "height", h);
+    if (kind == SL_KIND_REDACTION) {
+        str_builder_add_cstr(sb, " fill=\"black\"/>");
+    } elif (kind == SL_KIND_HIGHLIGHT) {
+        str_builder_add_cstr(sb, " fill=\"");
+        col.css(sb);
+        str_builder_add_cstr(sb, "\" opacity=\"0.3\"/>");
+    } else {
+        str_builder_add_cstr(sb, " stroke=\"");
+        col.css(sb);
+        str_builder_add_cstr(sb, "\" fill=\"none\" stroke-width=\"2\"");
+        if (kind == SL_KIND_FREEFORM) { str_builder_add_cstr(sb, " stroke-dasharray=\"4\""); }
+        str_builder_add_cstr(sb, "/>");
+    }
+    return 0;
+}
+
+# The canvas as an SVG overlay (Rust: to_svg): text XML-escaped, area shapes normalized, non-finite values as 0, each
+# arrow with its own arrowhead marker in its stroke colour.
+#must_use
+fn SlAnnotationCanvas_to_svg(c: *SlAnnotationCanvas): Str {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
+    str_builder_add_int(sb, c.width);
+    str_builder_add_cstr(sb, "\" height=\"");
+    str_builder_add_int(sb, c.height);
+    str_builder_add_cstr(sb, "\">\n");
+    var v = c.annotations;
+    var i = 0;
+    while (i < vec_len(v)) {
+        _sl_svg_element(sb, _sl_as_annotation(vec_get(v, i)));
+        str_builder_putc(sb, 10);
+        i = i + 1;
+    }
+    str_builder_add_cstr(sb, "</svg>");
+    return str_builder_build(sb);
+}
+
+# ---------------------------------------------------------------- rendering
+
+# 1 when a rect's x, y, width or height (each as Rust computes it, in f32) is NaN (Rust: rect_has_nan).
+#must_use
+fn _sl_rect_has_nan(r: SlRect): i64 {
+    var w: f32 = r.max_x - r.min_x;
+    var h: f32 = r.max_y - r.min_y;
+    var a: f64 = f32_to(r.min_x);
+    var b: f64 = f32_to(r.min_y);
+    var cw: f64 = f32_to(w);
+    var ch: f64 = f32_to(h);
+    if (a != a || b != b || cw != cw || ch != ch) { return 1; }
+    return 0;
+}
+
+# Refuses a redaction whose region has a NaN (Rust checks this before decoding). Ok(0) or Err(SL_ERR_ANNOTATION).
+fn _sl_render_check(anns, detail_out = 0): Result {
+    var i = 0;
+    while (i < vec_len(anns)) {
+        var a: *SlAnnotation = _sl_as_annotation(vec_get(anns, i));
+        if (a.kind == SL_KIND_REDACTION && _sl_rect_has_nan(a.position) == 1) {
+            if (detail_out == 0) { return Err(SL_ERR_ANNOTATION); }
+            var sb = str_builder_new();
+            str_builder_add_cstr(sb, "redaction ");
+            _sl_uuid_fmt(sb, _sl_addr(a), 1);
+            str_builder_add_cstr(sb, " has a non-numeric (NaN) region");
+            return _sl_fail(SL_ERR_ANNOTATION, detail_out, str_builder_build(sb));
+        }
+        i = i + 1;
+    }
+    return Ok(0);
+}
+
+# Draws every annotation onto the image, in order.
+fn _sl_draw_all(img: *SlImage, anns): i64 {
+    var i = 0;
+    while (i < vec_len(anns)) {
+        _sl_draw_annotation(img, _sl_as_annotation(vec_get(anns, i)));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Renders annotations (a vec of *SlAnnotation, drawn in order) onto the image bytes src[0..n) and encodes the result
+# as `fmt` (Rust: AnnotationCanvas::render_to_image). A redaction whose region has a NaN is refused before decoding.
+# Ok(bytes on the freelist; free them with selah_bytes_free), their length at `len_out`.
+fn SlAnnotationCanvas_render_to_image(src, n, anns, fmt, len_out, detail_out = 0): Result {
+    store64(len_out, 0);
+    var ct, cv = _sl_render_check(anns, detail_out);
+    if (is_err_result(ct) == 1) { return Err(cv); }
+    var dt, dv = _sl_decode_image(src, n, detail_out);
+    if (is_err_result(dt) == 1) { return Err(dv); }
+    var img: *SlImage = _sl_as_image(dv);
+    _sl_log_kv(SK_DEBUG, "render_to_image", "format", selah_image_format_extension(fmt));
+    _sl_draw_all(img, anns);
+    var et, ev = _sl_encode_image(img, fmt, len_out, detail_out);
+    SlImage_free(img);
+    if (is_err_result(et) == 1) { return Err(ev); }
+    return Ok(ev);
+}

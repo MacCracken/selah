@@ -12,6 +12,7 @@
 
 mod b_codec;
 mod fixtures;
+mod m_annotate;
 mod m_codec;
 mod m_core;
 mod m_decode;
@@ -167,6 +168,8 @@ fn main() {
     modules.push("ai");
     m_codec::emit(&mut out, &fixtures);
     modules.push("codec");
+    m_annotate::emit(&mut out, &fixtures);
+    modules.push("annotate");
     let mut src_out = SrcOut::new();
     t_ai::emit(&mut src_out);
     out.insert("modules.txt".to_string(), format!("{}\n", modules.join("\n")).into_bytes());

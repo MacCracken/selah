@@ -10,6 +10,8 @@ include "lib/result.cyr"
 include "lib/bayan.cyr"
 include "lib/random.cyr"
 include "lib/tagged.cyr"
+include "lib/io.cyr"
+include "lib/chrono.cyr"
 
 # --- error.cyr ---
 
@@ -602,6 +604,20 @@ fn _sl_fmt_f64_json(sb, x: f64): i64 {
     return _sl_sb_json_digits(sb, &digits, n, k, -5, 15);
 }
 
+# The value of a positive f32 magnitude (bits) when it is an integer below 2^24, else -1. Such a value's shortest
+# digits are its integer digits, so both writers below print it directly: the fast path for whole-number coordinates
+# (SVG, layer files), with output identical to the general path.
+#must_use
+#pure
+fn _sl_f32_small_int(mag): i64 {
+    var e = (mag >> 23) - 127;
+    if (e < 0 || e > 23) { return -1; }
+    var m = (mag & 8388607) | 8388608;
+    var sh = 23 - e;
+    if ((m & ((1 << sh) - 1)) != 0) { return -1; }
+    return m >> sh;
+}
+
 # Appends x as Rust's `Display` (`{}`) writes an f32: its own shortest digits.
 fn _sl_fmt_f32_display(sb, x: f32): i64 {
     var w = _sl_f32_bits(x);
@@ -617,6 +633,11 @@ fn _sl_fmt_f32_display(sb, x: f32): i64 {
     }
     if (mag == 0) {
         str_builder_putc(sb, 48);
+        return 0;
+    }
+    var iv = _sl_f32_small_int(mag);
+    if (iv > 0) {
+        str_builder_add_int(sb, iv);
         return 0;
     }
     var digits[24];
@@ -635,6 +656,12 @@ fn _sl_fmt_f32_json(sb, x: f32): i64 {
     if (((w >> 31) & 1) == 1) { str_builder_putc(sb, 45); }
     if (mag == 0) {
         str_builder_add_cstr(sb, "0.0");
+        return 0;
+    }
+    var iv = _sl_f32_small_int(mag);
+    if (iv > 0) {
+        str_builder_add_int(sb, iv);
+        str_builder_add_cstr(sb, ".0");
         return 0;
     }
     var digits[24];
@@ -3174,11 +3201,78 @@ fn _sl_png_paeth(a, b, c): i64 {
     return c;
 }
 
+# The filter heuristic's score of a filtered byte, |byte| read as signed: v for v < 128, else 256 - v. Built once.
+var _sl_png_abs: u8[256];
+var _sl_png_abs_ready = 0;
+
+fn _sl_png_abs_init(): i64 {
+    if (_sl_png_abs_ready == 1) { return 0; }
+    var v = 0;
+    while (v < 256) {
+        var a = v;
+        if (a >= 128) { a = 256 - a; }
+        store8(&_sl_png_abs + v, a);
+        v = v + 1;
+    }
+    _sl_png_abs_ready = 1;
+    return 0;
+}
+
+# Writes row `cur` filtered by filter f into o (the filter-type byte first), with `prev` the row above.
+fn _sl_png_write_row(o, cur, prev, stride, f): i64 {
+    store8(o, f);
+    o = o + 1;
+    var i = 0;
+    if (f == 0) { memcpy(o, cur, stride); }
+    if (f == 1) {
+        while (i < 4) {
+            store8(o + i, load8(cur + i));
+            i = i + 1;
+        }
+        while (i < stride) {
+            store8(o + i, (load8(cur + i) - load8(cur + i - 4)) & 255);
+            i = i + 1;
+        }
+    }
+    if (f == 2) {
+        while (i < stride) {
+            store8(o + i, (load8(cur + i) - load8(prev + i)) & 255);
+            i = i + 1;
+        }
+    }
+    if (f == 3) {
+        while (i < 4) {
+            store8(o + i, (load8(cur + i) - (load8(prev + i) >> 1)) & 255);
+            i = i + 1;
+        }
+        while (i < stride) {
+            store8(o + i, (load8(cur + i) - ((load8(cur + i - 4) + load8(prev + i)) >> 1)) & 255);
+            i = i + 1;
+        }
+    }
+    if (f == 4) {
+        while (i < 4) {
+            store8(o + i, (load8(cur + i) - load8(prev + i)) & 255);
+            i = i + 1;
+        }
+        while (i < stride) {
+            var pv = _sl_png_paeth(load8(cur + i - 4), load8(prev + i), load8(prev + i - 4));
+            store8(o + i, (load8(cur + i) - pv) & 255);
+            i = i + 1;
+        }
+    }
+    return 0;
+}
+
 # The filtered scanlines of the w × h RGBA8 image at `rgba` into `dst` (h × (1 + 4w) bytes), each row by the filter
-# with the least sum of |byte| (a byte read as signed). One pass scores all five filters with the left (a), up (b)
-# and up-left (c) neighbours loaded once a byte; the first row's "row above" is zeros, as the specification defines
-# it. A second pass writes the winner. Returns 0, or -1 when the zero row cannot be allocated.
+# with the least sum of |byte| (a byte read as signed). One pass scores all five filters; the first pixel of a row
+# has no left neighbour (a = c = 0) and is scored apart, so the main loop has no edge test; the first row's "row
+# above" is zeros, as the specification defines it. Paeth's distances are taken in their reduced forms
+# (|p - a| = |b - c|, |p - b| = |a - c|, |p - c| = |a + b - 2c|). A second pass writes the winner. Returns 0, or -1
+# when the zero row cannot be allocated.
 fn _sl_png_filter_rows(rgba, w, h, dst): i64 {
+    _sl_png_abs_init();
+    var ab = &_sl_png_abs;
     var stride = w * 4;
     var zero = fl_calloc(stride);
     if (zero == 0) { return -1; }
@@ -3193,41 +3287,36 @@ fn _sl_png_filter_rows(rgba, w, h, dst): i64 {
         var s3 = 0;
         var s4 = 0;
         var i = 0;
+        while (i < 4) {
+            var x0 = load8(cur + i);
+            var b0 = load8(prev + i);
+            var sx = load8(ab + x0);
+            s0 = s0 + sx;
+            s1 = s1 + sx;
+            s2 = s2 + load8(ab + ((x0 - b0) & 255));
+            s3 = s3 + load8(ab + ((x0 - (b0 >> 1)) & 255));
+            s4 = s4 + load8(ab + ((x0 - b0) & 255));
+            i = i + 1;
+        }
         while (i < stride) {
             var x = load8(cur + i);
+            var a = load8(cur + i - 4);
             var b = load8(prev + i);
-            var a = 0;
-            var c = 0;
-            if (i >= 4) {
-                a = load8(cur + i - 4);
-                c = load8(prev + i - 4);
-            }
-            var v = x;
-            if (v >= 128) { v = 256 - v; }
-            s0 = s0 + v;
-            v = (x - a) & 255;
-            if (v >= 128) { v = 256 - v; }
-            s1 = s1 + v;
-            v = (x - b) & 255;
-            if (v >= 128) { v = 256 - v; }
-            s2 = s2 + v;
-            v = (x - ((a + b) >> 1)) & 255;
-            if (v >= 128) { v = 256 - v; }
-            s3 = s3 + v;
-            # Paeth, inline: the neighbour nearest a + b - c.
-            var p = a + b - c;
-            var pa = p - a;
+            var c = load8(prev + i - 4);
+            s0 = s0 + load8(ab + x);
+            s1 = s1 + load8(ab + ((x - a) & 255));
+            s2 = s2 + load8(ab + ((x - b) & 255));
+            s3 = s3 + load8(ab + ((x - ((a + b) >> 1)) & 255));
+            var pa = b - c;
             if (pa < 0) { pa = -pa; }
-            var pb = p - b;
+            var pb = a - c;
             if (pb < 0) { pb = -pb; }
-            var pc = p - c;
+            var pc = a + b - c - c;
             if (pc < 0) { pc = -pc; }
             var pr = c;
             if (pb <= pc) { pr = b; }
             if (pa <= pb && pa <= pc) { pr = a; }
-            v = (x - pr) & 255;
-            if (v >= 128) { v = 256 - v; }
-            s4 = s4 + v;
+            s4 = s4 + load8(ab + ((x - pr) & 255));
             i = i + 1;
         }
         var f = 0;
@@ -3248,48 +3337,7 @@ fn _sl_png_filter_rows(rgba, w, h, dst): i64 {
             f = 4;
             best = s4;
         }
-        var o = dst + y * (stride + 1);
-        store8(o, f);
-        o = o + 1;
-        i = 0;
-        if (f == 0) { memcpy(o, cur, stride); }
-        if (f == 1) {
-            while (i < 4) {
-                store8(o + i, load8(cur + i));
-                i = i + 1;
-            }
-            while (i < stride) {
-                store8(o + i, (load8(cur + i) - load8(cur + i - 4)) & 255);
-                i = i + 1;
-            }
-        }
-        if (f == 2) {
-            while (i < stride) {
-                store8(o + i, (load8(cur + i) - load8(prev + i)) & 255);
-                i = i + 1;
-            }
-        }
-        if (f == 3) {
-            while (i < 4) {
-                store8(o + i, (load8(cur + i) - (load8(prev + i) >> 1)) & 255);
-                i = i + 1;
-            }
-            while (i < stride) {
-                store8(o + i, (load8(cur + i) - ((load8(cur + i - 4) + load8(prev + i)) >> 1)) & 255);
-                i = i + 1;
-            }
-        }
-        if (f == 4) {
-            while (i < 4) {
-                store8(o + i, (load8(cur + i) - load8(prev + i)) & 255);
-                i = i + 1;
-            }
-            while (i < stride) {
-                var pv = _sl_png_paeth(load8(cur + i - 4), load8(prev + i), load8(prev + i - 4));
-                store8(o + i, (load8(cur + i) - pv) & 255);
-                i = i + 1;
-            }
-        }
+        _sl_png_write_row(dst + y * (stride + 1), cur, prev, stride, f);
         y = y + 1;
     }
     fl_free(zero);
@@ -4398,4 +4446,1286 @@ fn selah_convert_format(src, n, target, len_out, detail_out = 0): Result {
     SlImage_free(img);
     if (is_err_result(et) == 1) { return Err(ev); }
     return Ok(ev);
+}
+
+# --- fsutil.cyr ---
+
+# fsutil.cyr — bounded reads, atomic private writes, private directories (Rust: rust-old/src/fsutil.rs).
+#
+# Port plan D10. Ported at M4 rather than M5: the annotation layer's save and load need it. Paths are NUL-terminated
+# strings. Failures are SL_ERR_IO, with Rust's io::Error text through `detail_out`.
+#   - _sl_read_limited refuses anything that is not a regular file *before* opening it (a FIFO would block, /dev/zero
+#     would never end), refuses a file over the limit from its size, and caps the read itself in case the file grows.
+#   - _sl_write_atomic writes a uniquely named sibling temp created 0600 (O_EXCL), syncs it and renames it over the
+#     target, so a reader never sees a half-written file and a crash leaves the old one. The temp is removed on any
+#     failure.
+#   - _sl_create_private_dir_all creates a directory and its missing parents at 0700.
+
+# Appends Rust's io::Error text for a negative errno: the message for the common ones, then "(os error N)".
+fn _sl_errno_text(sb, err): i64 {
+    var e = -err;
+    var m = 0;
+    if (e == 1) { m = "Operation not permitted"; }
+    if (e == 2) { m = "No such file or directory"; }
+    if (e == 13) { m = "Permission denied"; }
+    if (e == 17) { m = "File exists"; }
+    if (e == 20) { m = "Not a directory"; }
+    if (e == 21) { m = "Is a directory"; }
+    if (e == 27) { m = "File too large"; }
+    if (e == 28) { m = "No space left on device"; }
+    if (e == 30) { m = "Read-only file system"; }
+    if (e == 36) { m = "File name too long"; }
+    if (m != 0) {
+        str_builder_add_cstr(sb, m);
+        str_builder_add_cstr(sb, " ");
+    }
+    str_builder_add_cstr(sb, "(os error ");
+    str_builder_add_int(sb, e);
+    str_builder_add_cstr(sb, ")");
+    return 0;
+}
+
+# Err(SL_ERR_IO) with an errno's text.
+fn _sl_io_errno(detail_out, err): Result {
+    if (detail_out == 0) { return Err(SL_ERR_IO); }
+    var sb = str_builder_new();
+    _sl_errno_text(sb, err);
+    return _sl_fail(SL_ERR_IO, detail_out, str_builder_build(sb));
+}
+
+# Err(SL_ERR_IO) with "<path><what>".
+fn _sl_io_path(detail_out, path, what): Result {
+    if (detail_out == 0) { return Err(SL_ERR_IO); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, path);
+    str_builder_add_cstr(sb, what);
+    return _sl_fail(SL_ERR_IO, detail_out, str_builder_build(sb));
+}
+
+# Err(SL_ERR_IO): "<path> is too large (<len> bytes, limit <max> bytes)".
+fn _sl_io_too_large(detail_out, path, len, max): Result {
+    if (detail_out == 0) { return Err(SL_ERR_IO); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, path);
+    str_builder_add_cstr(sb, " is too large (");
+    str_builder_add_int(sb, len);
+    str_builder_add_cstr(sb, " bytes, limit ");
+    str_builder_add_int(sb, max);
+    str_builder_add_cstr(sb, " bytes)");
+    return _sl_fail(SL_ERR_IO, detail_out, str_builder_build(sb));
+}
+
+# Reads the regular file at `path` whole, refusing more than `max_bytes`. Returns Ok(bytes on the freelist,
+# NUL-terminated; free them with fl_free), the length stored at `len_out`.
+fn _sl_read_limited(path, max_bytes, len_out, detail_out = 0): Result {
+    store64(len_out, 0);
+    var cap = 4096;
+    #ifndef CYRIUS_TARGET_WIN
+    var st[256];
+    var sr = xstat(path, &st);
+    if (sr < 0) { return _sl_io_errno(detail_out, sr); }
+    if (sr != 0) { return _sl_io_errno(detail_out, -2); }
+    if ((load32(&st + STAT_MODE) & 61440) != 32768) { return _sl_io_path(detail_out, path, " is not a regular file"); }
+    var size = load64(&st + STAT_SIZE);
+    if (size > max_bytes) { return _sl_io_too_large(detail_out, path, size, max_bytes); }
+    cap = size + 1;
+    #endif
+    if (cap > max_bytes + 1) { cap = max_bytes + 1; }
+    if (cap < 1) { cap = 1; }
+    var fd = file_open(path, O_RDONLY, 0);
+    if (fd < 0) { return _sl_io_errno(detail_out, fd); }
+    var buf = fl_alloc(cap + 1);
+    if (buf == 0) {
+        file_close(fd);
+        return _sl_io_errno(detail_out, -12);
+    }
+    var len = 0;
+    while (1 == 1) {
+        if (len == cap) {
+            # The file grew past its stat size: grow, but never past one byte over the limit.
+            if (cap > max_bytes) { break; }
+            var ncap = cap * 2;
+            if (ncap > max_bytes + 1) { ncap = max_bytes + 1; }
+            var nb = fl_alloc(ncap + 1);
+            if (nb == 0) {
+                fl_free(buf);
+                file_close(fd);
+                return _sl_io_errno(detail_out, -12);
+            }
+            memcpy(nb, buf, len);
+            fl_free(buf);
+            buf = nb;
+            cap = ncap;
+        }
+        var r = file_read(fd, buf + len, cap - len);
+        if (r < 0) {
+            fl_free(buf);
+            file_close(fd);
+            return _sl_io_errno(detail_out, r);
+        }
+        if (r == 0) { break; }
+        len = len + r;
+    }
+    file_close(fd);
+    if (len > max_bytes) {
+        fl_free(buf);
+        return _sl_io_too_large(detail_out, path, len, max_bytes);
+    }
+    store8(buf + len, 0);
+    store64(len_out, len);
+    return Ok(buf);
+}
+
+# The byte length of the directory part of `path` (up to its last '/', which is excluded unless it is the root),
+# or -1 when `path` has no directory part. Trailing slashes are not part of the file name.
+fn _sl_path_split(path, n, name_at_out, name_len_out): i64 {
+    var end = n;
+    while (end > 1 && load8(path + end - 1) == 47) { end = end - 1; }
+    var i = end - 1;
+    while (i >= 0 && load8(path + i) != 47) { i = i - 1; }
+    store64(name_at_out, i + 1);
+    store64(name_len_out, end - (i + 1));
+    if (i < 0) { return -1; }
+    if (i == 0) { return 1; }
+    return i;
+}
+
+# Atomically replaces the file at `path` with data[0..len): a temp `.<name>.tmp-<uuid>` beside it, created 0600
+# (never an existing name), written, synced and renamed over `path`. Ok(0), or Err(SL_ERR_IO) with the temp removed.
+fn _sl_write_atomic(path, data, len, detail_out = 0): Result {
+    var n = strlen(path);
+    var na = 0;
+    var nl = 0;
+    var dl = _sl_path_split(path, n, &na, &nl);
+    var name = path + na;
+    if (nl == 0 || (nl == 1 && load8(name) == 46) || (nl == 2 && load8(name) == 46 && load8(name + 1) == 46)) {
+        return _sl_io_path(detail_out, path, " has no file name");
+    }
+    var sb = str_builder_new();
+    if (dl < 0) {
+        str_builder_add_cstr(sb, ".");
+    } else {
+        var k = 0;
+        while (k < dl) {
+            str_builder_add_byte(sb, load8(path + k));
+            k = k + 1;
+        }
+    }
+    if (dl != 1 || load8(path) != 47) { str_builder_add_cstr(sb, "/"); }
+    str_builder_add_cstr(sb, ".");
+    var j = 0;
+    while (j < nl) {
+        str_builder_add_byte(sb, load8(name + j));
+        j = j + 1;
+    }
+    str_builder_add_cstr(sb, ".tmp-");
+    var id[16];
+    if (_sl_uuid_v4(&id) == 0) { return _sl_io_errno(detail_out, -5); }
+    _sl_uuid_fmt(sb, &id, 0);
+    var tmps = str_builder_build(sb);
+    var tmp = str_data(tmps);
+
+    var fd = file_open(tmp, O_WRONLY | O_CREAT | O_EXCL, 384);
+    if (fd < 0) { return _sl_io_errno(detail_out, fd); }
+    var off = 0;
+    while (off < len) {
+        var w = file_write(fd, data + off, len - off);
+        if (w <= 0) {
+            file_close(fd);
+            xunlink(tmp);
+            if (w == 0) { w = -5; }
+            return _sl_io_errno(detail_out, w);
+        }
+        off = off + w;
+    }
+    var fr = xfsync(fd);
+    var cr = file_close(fd);
+    if (fr < 0 || cr < 0) {
+        xunlink(tmp);
+        if (fr < 0) { return _sl_io_errno(detail_out, fr); }
+        return _sl_io_errno(detail_out, cr);
+    }
+    var rr = file_rename(tmp, path);
+    if (rr < 0) {
+        xunlink(tmp);
+        return _sl_io_errno(detail_out, rr);
+    }
+    return Ok(0);
+}
+
+# Creates the directory `dir` and any missing parents, each new one at 0700 (Rust: DirBuilder with mode 0o700,
+# recursive). An existing directory is fine; an existing non-directory is an error. Ok(0) or Err(SL_ERR_IO).
+fn _sl_create_private_dir_all(dir, detail_out = 0): Result {
+    var n = strlen(dir);
+    if (n == 0) { return _sl_io_errno(detail_out, -2); }
+    var buf = fl_alloc(n + 1);
+    if (buf == 0) { return _sl_io_errno(detail_out, -12); }
+    memcpy(buf, dir, n);
+    store8(buf + n, 0);
+    var i = 1;
+    while (i <= n) {
+        if (i == n || load8(buf + i) == 47) {
+            var save = load8(buf + i);
+            store8(buf + i, 0);
+            var r = sys_mkdir(buf, 448);
+            if (r < 0 && r != -17) {
+                fl_free(buf);
+                return _sl_io_errno(detail_out, r);
+            }
+            store8(buf + i, save);
+        }
+        i = i + 1;
+    }
+    # The leaf must be a directory (EEXIST also answers for a file of that name).
+    #ifndef CYRIUS_TARGET_WIN
+    var st[256];
+    if (xstat(buf, &st) != 0 || (load32(&st + STAT_MODE) & 61440) != 16384) {
+        fl_free(buf);
+        return _sl_io_errno(detail_out, -17);
+    }
+    #endif
+    fl_free(buf);
+    return Ok(0);
+}
+
+# --- raster.cyr ---
+
+# raster.cyr — drawing annotations onto RGBA8 pixels (Rust: rust-old/src/annotate.rs, "Rasterization").
+#
+# Every operation is Rust's, in Rust's arithmetic, so a rendered image is class A (port plan §4):
+#   - rect geometry in f32 (SlRect, as hisab's), pixel bounds rounded outward (floor / ceil) so a redaction covers every
+#     pixel it touches, and float → int casts that saturate as Rust's `as` does (NaN → 0, ±∞ to the ends);
+#   - highlight blending through ranga's blend_row (BM_NORMAL), the same routine Rust selah calls in Rust ranga;
+#   - the ellipse sampled at ~4 points per unit of (rx + ry), capped at 2^20, its points clamped in f64 before the cast;
+#   - lines clipped to the image (Liang–Barsky) before Bresenham, so the step count is bounded by the image.
+# The pixels are an SlImage's (codec.cyr).
+
+# Rust's STROKE_WIDTH, HIGHLIGHT_OPACITY and MAX_ELLIPSE_STEPS.
+var _SL_STROKE_WIDTH = 2;
+var _SL_HIGHLIGHT_OPACITY = 76;
+var _SL_MAX_ELLIPSE_STEPS = 1048576;
+
+var _SL_I64_MAX = 9223372036854775807;
+var _SL_I64_MIN = -9223372036854775807 - 1;
+
+# Rust's `x as i64` for an f64: truncation toward zero, NaN → 0, saturating at i64's ends.
+#must_use
+#pure
+fn _sl_sat_i64(x: f64): i64 {
+    if (x != x) { return 0; }
+    if (x >= 9223372036854775807.0) { return _SL_I64_MAX; }
+    if (x <= -9223372036854775807.0) { return _SL_I64_MIN; }
+    var t: f64 = f64_trunc(x);
+    return f64_to(t);
+}
+
+# v clamped to [lo, hi] (i64).
+#must_use
+#pure
+fn _sl_clamp_i64(v, lo, hi): i64 {
+    if (v < lo) { return lo; }
+    if (v > hi) { return hi; }
+    return v;
+}
+
+# Rust's f64::clamp: NaN stays NaN.
+#must_use
+#pure
+fn _sl_clamp_f64(v: f64, lo: f64, hi: f64): f64 {
+    var x: f64 = v;
+    if (x < lo) { x = lo; }
+    if (x > hi) { x = hi; }
+    return x;
+}
+
+# a + b saturating at i64's ends (Rust's saturating_add), for b >= 0.
+#must_use
+#pure
+fn _sl_sat_add(a, b): i64 {
+    if (a > _SL_I64_MAX - b) { return _SL_I64_MAX; }
+    return a + b;
+}
+
+# A colour packed as the 4 bytes R, G, B, A in memory order.
+#must_use
+#pure
+fn _sl_px32(c: SlColor): i64 {
+    return c.r | (c.g << 8) | (c.b << 16) | (c.a << 24);
+}
+
+# Fills pixels [x0, x1) × [y0, y1) (already inside the image) with the packed colour.
+fn _sl_fill_span(img: *SlImage, x0, y0, x1, y1, px): i64 {
+    var stride = img.width * 4;
+    var first = img.pixels + y0 * stride + x0 * 4;
+    var bytes = (x1 - x0) * 4;
+    var i = 0;
+    while (i < bytes) {
+        store32(first + i, px);
+        i = i + 4;
+    }
+    var y = y0 + 1;
+    while (y < y1) {
+        memcpy(img.pixels + y * stride + x0 * 4, first, bytes);
+        y = y + 1;
+    }
+    return 0;
+}
+
+# Rust's pixel_bounds: [x0, x1) × [y0, y1) of every pixel the normalized rect touches, clipped to w × h, into out
+# (i64[4]). Returns 1, or 0 when that is empty.
+fn _sl_pixel_bounds(r: SlRect, w, h, out): i64 {
+    var n: SlRect = r.normalized();
+    var ax: f64 = f32_to(n.min_x);
+    var ay: f64 = f32_to(n.min_y);
+    var bx: f64 = f32_to(n.max_x);
+    var by: f64 = f32_to(n.max_y);
+    var fx0: f64 = f64_floor(ax);
+    var fy0: f64 = f64_floor(ay);
+    var fx1: f64 = f64_ceil(bx);
+    var fy1: f64 = f64_ceil(by);
+    var x0 = _sl_clamp_i64(_sl_sat_i64(fx0), 0, w);
+    var y0 = _sl_clamp_i64(_sl_sat_i64(fy0), 0, h);
+    var x1 = _sl_clamp_i64(_sl_sat_i64(fx1), 0, w);
+    var y1 = _sl_clamp_i64(_sl_sat_i64(fy1), 0, h);
+    store64(out, x0);
+    store64(out + 8, y0);
+    store64(out + 16, x1);
+    store64(out + 24, y1);
+    if (x0 < x1 && y0 < y1) { return 1; }
+    return 0;
+}
+
+# Fills a rect with a solid colour, no blending (Rust: fill_rect).
+fn _sl_fill_rect(img: *SlImage, r: SlRect, c: SlColor): i64 {
+    var b: i64[4];
+    if (_sl_pixel_bounds(r, img.width, img.height, &b) == 0) { return 0; }
+    return _sl_fill_span(img, b[0], b[1], b[2], b[3], _sl_px32(c));
+}
+
+# Blends the opaque colour over the rect at `opacity`, row by row through ranga (Rust: blend_rect).
+fn _sl_blend_rect(img: *SlImage, r: SlRect, c: SlColor, opacity): i64 {
+    var b: i64[4];
+    if (_sl_pixel_bounds(r, img.width, img.height, &b) == 0) { return 0; }
+    var cnt = b[2] - b[0];
+    var overlay = fl_alloc(cnt * 4);
+    if (overlay == 0) { return 0; }
+    var px = c.r | (c.g << 8) | (c.b << 16) | (255 << 24);
+    var i = 0;
+    while (i < cnt) {
+        store32(overlay + i * 4, px);
+        i = i + 1;
+    }
+    var stride = img.width * 4;
+    var y = b[1];
+    while (y < b[3]) {
+        blend_row(overlay, img.pixels + y * stride + b[0] * 4, cnt, BM_NORMAL, opacity);
+        y = y + 1;
+    }
+    fl_free(overlay);
+    return 0;
+}
+
+# A rect outline as four filled bands of the stroke width, in Rust's f32 arithmetic (Rust: stroke_rect).
+fn _sl_stroke_rect(img: *SlImage, r: SlRect, c: SlColor): i64 {
+    var n: SlRect = r.normalized();
+    var t: f32 = f32_from(2.0);
+    var x: f32 = n.min_x;
+    var y: f32 = n.min_y;
+    var w: f32 = n.max_x - n.min_x;
+    var h: f32 = n.max_y - n.min_y;
+    var yh: f32 = y + h;
+    var yb: f32 = yh - t;
+    var xw: f32 = x + w;
+    var xr: f32 = xw - t;
+    _sl_fill_rect(img, SlRect_new(x, y, w, t), c);
+    _sl_fill_rect(img, SlRect_new(x, yb, w, t), c);
+    _sl_fill_rect(img, SlRect_new(x, y, t, h), c);
+    _sl_fill_rect(img, SlRect_new(xr, y, t, h), c);
+    return 0;
+}
+
+# Fills a size × size square with its top-left at (x, y), clipped; saturating (Rust: stamp).
+fn _sl_stamp(img: *SlImage, x, y, size, px): i64 {
+    var s = size;
+    if (s < 1) { s = 1; }
+    var x0 = _sl_clamp_i64(x, 0, img.width);
+    var y0 = _sl_clamp_i64(y, 0, img.height);
+    var x1 = _sl_clamp_i64(_sl_sat_add(x, s), 0, img.width);
+    var y1 = _sl_clamp_i64(_sl_sat_add(y, s), 0, img.height);
+    if (x0 >= x1 || y0 >= y1) { return 0; }
+    return _sl_fill_span(img, x0, y0, x1, y1, px);
+}
+
+# An ellipse outline inscribed in the rect (Rust: stroke_ellipse).
+fn _sl_stroke_ellipse(img: *SlImage, r: SlRect, c: SlColor): i64 {
+    var n: SlRect = r.normalized();
+    if (n.is_finite() == false) { return 0; }
+    var t: f32 = f32_from(2.0);
+    var t2: f32 = f32_from(4.0);
+    var w: f32 = n.max_x - n.min_x;
+    var h: f32 = n.max_y - n.min_y;
+    var rxx: f32 = n.min_x - t;
+    var ryy: f32 = n.min_y - t;
+    var rw: f32 = w + t2;
+    var rh: f32 = h + t2;
+    var b: i64[4];
+    if (_sl_pixel_bounds(SlRect_new(rxx, ryy, rw, rh), img.width, img.height, &b) == 0) { return 0; }
+
+    var wd: f64 = f32_to(w);
+    var hd: f64 = f32_to(h);
+    var rx: f64 = wd / 2.0;
+    var ry: f64 = hd / 2.0;
+    var x0d: f64 = f32_to(n.min_x);
+    var y0d: f64 = f32_to(n.min_y);
+    var cx: f64 = x0d + rx;
+    var cy: f64 = y0d + ry;
+    var px = _sl_px32(c);
+    var lo: f64 = -3.0;
+    var iw: f64 = f64_from(img.width);
+    var ih: f64 = f64_from(img.height);
+    var hi_x: f64 = iw + 1.0;
+    var hi_y: f64 = ih + 1.0;
+    var sum: f64 = rx + ry;
+    var sc: f64 = sum * 4.0;
+    var ce: f64 = f64_ceil(sc);
+    var cl: f64 = _sl_clamp_f64(ce, 0.0, 1048576.0);
+    var steps = _sl_sat_i64(cl);
+    var fsteps: f64 = f64_from(steps);
+    var tau: f64 = 6.283185307179586;
+    var i = 0;
+    while (i < steps) {
+        var fi: f64 = f64_from(i);
+        var ta: f64 = tau * fi;
+        var angle: f64 = ta / fsteps;
+        var co: f64 = f64_cos(angle);
+        var si: f64 = f64_sin(angle);
+        var ox: f64 = rx * co;
+        var oy: f64 = ry * si;
+        var exf: f64 = cx + ox;
+        var eyf: f64 = cy + oy;
+        var exc: f64 = _sl_clamp_f64(exf, lo, hi_x);
+        var eyc: f64 = _sl_clamp_f64(eyf, lo, hi_y);
+        var ex = _sl_sat_i64(exc);
+        var ey = _sl_sat_i64(eyc);
+        _sl_stamp(img, ex - 1, ey - 1, 2, px);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Liang–Barsky: clips the segment (x0, y0)–(x1, y1) to [xmin, xmax] × [ymin, ymax] into out (f64[4]). Returns 1, or
+# 0 when the segment misses the box or an endpoint is not finite (Rust: clip_line).
+fn _sl_clip_line(x0: f64, y0: f64, x1: f64, y1: f64, xmin: f64, ymin: f64, xmax: f64, ymax: f64, out): i64 {
+    var z: f64 = 0.0;
+    var d0: f64 = x0 - x0;
+    var d1: f64 = y0 - y0;
+    var d2: f64 = x1 - x1;
+    var d3: f64 = y1 - y1;
+    if (d0 != z || d1 != z || d2 != z || d3 != z) { return 0; }
+    var dx: f64 = x1 - x0;
+    var dy: f64 = y1 - y0;
+    var t0: f64 = 0.0;
+    var t1: f64 = 1.0;
+    var ps: i64[4];
+    var qs: i64[4];
+    var p0: f64 = -dx;
+    var q0: f64 = x0 - xmin;
+    var q1: f64 = xmax - x0;
+    var p2: f64 = -dy;
+    var q2: f64 = y0 - ymin;
+    var q3: f64 = ymax - y0;
+    store64(&ps, p0);
+    store64(&qs, q0);
+    store64(&ps + 8, dx);
+    store64(&qs + 8, q1);
+    store64(&ps + 16, p2);
+    store64(&qs + 16, q2);
+    store64(&ps + 24, dy);
+    store64(&qs + 24, q3);
+    var k = 0;
+    while (k < 4) {
+        var p: f64 = load64(&ps + k * 8);
+        var q: f64 = load64(&qs + k * 8);
+        if (p == z) {
+            if (q < z) { return 0; }
+        } else {
+            var rr: f64 = q / p;
+            if (p < z) {
+                if (rr > t1) { return 0; }
+                if (rr > t0) { t0 = rr; }
+            } else {
+                if (rr < t0) { return 0; }
+                if (rr < t1) { t1 = rr; }
+            }
+        }
+        k = k + 1;
+    }
+    var a0: f64 = t0 * dx;
+    var a1: f64 = t0 * dy;
+    var a2: f64 = t1 * dx;
+    var a3: f64 = t1 * dy;
+    var ox0: f64 = x0 + a0;
+    var oy0: f64 = y0 + a1;
+    var ox1: f64 = x0 + a2;
+    var oy1: f64 = y0 + a3;
+    store64(out, ox0);
+    store64(out + 8, oy0);
+    store64(out + 16, ox1);
+    store64(out + 24, oy1);
+    return 1;
+}
+
+# A line of the stroke width, clipped to the image plus a margin, then Bresenham with a 3 × 3 brush (Rust:
+# draw_line).
+fn _sl_draw_line(img: *SlImage, fx: f64, fy: f64, tx: f64, ty: f64, c: SlColor): i64 {
+    var margin: f64 = 3.0;
+    var neg: f64 = -3.0;
+    var iw: f64 = f64_from(img.width);
+    var ih: f64 = f64_from(img.height);
+    var mx: f64 = iw + margin;
+    var my: f64 = ih + margin;
+    var seg: i64[4];
+    if (_sl_clip_line(fx, fy, tx, ty, neg, neg, mx, my, &seg) == 0) { return 0; }
+    var sx0: f64 = load64(&seg);
+    var sy0: f64 = load64(&seg + 8);
+    var sx1: f64 = load64(&seg + 16);
+    var sy1: f64 = load64(&seg + 24);
+    var px = _sl_px32(c);
+    var cx = _sl_sat_i64(sx0);
+    var cy = _sl_sat_i64(sy0);
+    var ex = _sl_sat_i64(sx1);
+    var ey = _sl_sat_i64(sy1);
+    var dx = ex - cx;
+    if (dx < 0) { dx = -dx; }
+    var dy = ey - cy;
+    if (dy > 0) { dy = -dy; }
+    var sx = -1;
+    if (cx < ex) { sx = 1; }
+    var sy = -1;
+    if (cy < ey) { sy = 1; }
+    var err = dx + dy;
+    while (1 == 1) {
+        _sl_stamp(img, cx - 1, cy - 1, 3, px);
+        if (cx == ex && cy == ey) { break; }
+        var e2 = 2 * err;
+        if (e2 >= dy) {
+            err = err + dy;
+            cx = cx + sx;
+        }
+        if (e2 <= dx) {
+            err = err + dx;
+            cy = cy + sy;
+        }
+    }
+    return 0;
+}
+
+# Text and FreeForm: an underline bar of 2 at the bottom of the normalized rect, in f32 (no font rasterizer).
+fn _sl_draw_underline(img: *SlImage, pos: SlRect, c: SlColor): i64 {
+    var n: SlRect = pos.normalized();
+    var two: f32 = f32_from(2.0);
+    var nh: f32 = n.max_y - n.min_y;
+    var nw: f32 = n.max_x - n.min_x;
+    var yh: f32 = n.min_y + nh;
+    var yu: f32 = yh - two;
+    return _sl_fill_rect(img, SlRect_new(n.min_x, yu, nw, two), c);
+}
+
+# Draws one annotation (Rust: draw_annotation).
+fn _sl_draw_annotation(img: *SlImage, a: *SlAnnotation): i64 {
+    var pos: SlRect = a.position;
+    var c: SlColor = a.color;
+    match a.kind {
+        SL_KIND_REDACTION => { _sl_fill_rect(img, pos, SL_COLOR_BLACK); }
+        SL_KIND_HIGHLIGHT => { _sl_blend_rect(img, pos, c, _SL_HIGHLIGHT_OPACITY); }
+        SL_KIND_RECTANGLE => { _sl_stroke_rect(img, pos, c); }
+        SL_KIND_CIRCLE => { _sl_stroke_ellipse(img, pos, c); }
+        SL_KIND_ARROW => {
+            # The arrow keeps its signed size: from (x, y) to (x + width, y + height), each sum in f32.
+            var w: f32 = pos.max_x - pos.min_x;
+            var h: f32 = pos.max_y - pos.min_y;
+            var ex: f32 = pos.min_x + w;
+            var ey: f32 = pos.min_y + h;
+            var fx: f64 = f32_to(pos.min_x);
+            var fy: f64 = f32_to(pos.min_y);
+            var tx: f64 = f32_to(ex);
+            var ty: f64 = f32_to(ey);
+            _sl_draw_line(img, fx, fy, tx, ty, c);
+        }
+        SL_KIND_TEXT => { _sl_draw_underline(img, pos, c); }
+        SL_KIND_FREEFORM => { _sl_draw_underline(img, pos, c); }
+        _ => { return 0; }
+    }
+    return 0;
+}
+
+# --- annotate.cyr ---
+
+# annotate.cyr — the annotation canvas, its layer file, the SVG overlay and rendering (Rust: rust-old/src/annotate.rs).
+#
+# - SlAnnotationCanvas holds a width, a height and its annotations (owned: removing or clearing frees them).
+# - The layer file is serde_json's pretty print of Rust's AnnotationLayer {version, width, height, created,
+#   annotations}, byte for byte (class A), so a layer either side writes loads on the other. It is written atomically
+#   and 0600 (ADR 0002 #18; Rust 0.30.0 used std::fs::write), and read through _sl_read_limited, refusing more than
+#   MAX_LAYER_FILE_BYTES and a layer newer than LAYER_VERSION.
+# - to_svg is Rust's overlay text, f32 values in Rust's Display form (class A).
+# - render_to_image decodes (codec.cyr), refuses a redaction with a NaN region, draws (raster.cyr) and encodes.
+
+# Rust's MAX_LAYER_FILE_BYTES and LAYER_VERSION.
+var SL_MAX_LAYER_FILE_BYTES = 67108864;
+var SL_LAYER_VERSION = 1;
+
+# A canvas: the underlying image's size and its annotations (a vec of *SlAnnotation, owned).
+struct SlAnnotationCanvas { width: i64; height: i64; annotations: i64; }
+
+# Rust's AnnotationLayer, the layer file's contents: `created` is unix seconds and nanoseconds; `annotations` a vec of
+# *SlAnnotation.
+struct SlAnnotationLayer {
+    version: i64;
+    width: i64;
+    height: i64;
+    created_secs: i64;
+    created_nanos: i64;
+    annotations: i64;
+}
+
+# An allocation as a *SlAnnotationLayer.
+#must_use
+fn _sl_as_layer(p): *SlAnnotationLayer {
+    return p;
+}
+
+# An allocation as a *SlAnnotationCanvas.
+#must_use
+fn _sl_as_canvas(p): *SlAnnotationCanvas {
+    return p;
+}
+
+# A new empty canvas for a w × h image on the freelist (free it with SlAnnotationCanvas_free); 0 when out of memory.
+#must_use
+fn SlAnnotationCanvas_new(width, height): *SlAnnotationCanvas {
+    var c: *SlAnnotationCanvas = _sl_as_canvas(fl_alloc(sizeof(SlAnnotationCanvas)));
+    if (c == 0) { return 0; }
+    c.width = width;
+    c.height = height;
+    c.annotations = vec_new();
+    return c;
+}
+
+# Frees the canvas and every annotation it holds. Safe on 0.
+fn SlAnnotationCanvas_free(c: *SlAnnotationCanvas): i64 {
+    if (c == 0) { return 0; }
+    SlAnnotationCanvas_clear(c);
+    fl_free(c);
+    return 0;
+}
+
+# Adds an annotation; the canvas owns it from here. Returns its id (the annotation's first 16 bytes).
+fn SlAnnotationCanvas_add_annotation(c: *SlAnnotationCanvas, a: *SlAnnotation): i64 {
+    vec_push(c.annotations, a);
+    return _sl_addr(a);
+}
+
+# Removes (and frees) every annotation whose id is the 16 bytes at `id`. Returns 1 when one was found.
+fn SlAnnotationCanvas_remove_annotation(c: *SlAnnotationCanvas, id): i64 {
+    var v = c.annotations;
+    var found = 0;
+    var i = 0;
+    while (i < vec_len(v)) {
+        var a = vec_get(v, i);
+        if (memeq(a, id, 16) == 1) {
+            vec_remove(v, i);
+            SlAnnotation_free(a);
+            found = 1;
+        } else {
+            i = i + 1;
+        }
+    }
+    return found;
+}
+
+# Removes (and frees) every annotation.
+fn SlAnnotationCanvas_clear(c: *SlAnnotationCanvas): i64 {
+    var v = c.annotations;
+    var i = 0;
+    while (i < vec_len(v)) {
+        SlAnnotation_free(vec_get(v, i));
+        i = i + 1;
+    }
+    vec_truncate(v, 0);
+    return 0;
+}
+
+# The annotations, in order (a vec of *SlAnnotation the canvas owns).
+#must_use
+fn SlAnnotationCanvas_get_annotations(c: *SlAnnotationCanvas): i64 {
+    return c.annotations;
+}
+
+# How many annotations the canvas holds.
+#must_use
+fn SlAnnotationCanvas_count(c: *SlAnnotationCanvas): i64 {
+    return vec_len(c.annotations);
+}
+
+# Adds a black redaction over `rect`. Returns its id, or 0 when out of memory.
+fn SlAnnotationCanvas_apply_redaction(c: *SlAnnotationCanvas, rect: SlRect): i64 {
+    var a: *SlAnnotation = SlAnnotation_new(SL_KIND_REDACTION, rect, SL_COLOR_BLACK);
+    if (a == 0) { return 0; }
+    return SlAnnotationCanvas_add_annotation(c, a);
+}
+
+# ---------------------------------------------------------------- the layer file
+
+# Appends compact JSON p[0..n) as serde_json's PrettyFormatter writes it: two-space indent, "key": value, one member
+# or element a line, and `{}` / `[]` for an empty object or array. The input has no whitespace outside strings.
+fn _sl_json_pretty(sb, p, n): i64 {
+    var depth = 0;
+    var i = 0;
+    while (i < n) {
+        var ch = load8(p + i);
+        if (ch == 34) {
+            var j = i + 1;
+            while (j < n) {
+                var cj = load8(p + j);
+                if (cj == 92) {
+                    j = j + 2;
+                } elif (cj == 34) {
+                    break;
+                } else {
+                    j = j + 1;
+                }
+            }
+            if (j >= n) { j = n - 1; }
+            _sl_sb_bytes(sb, p + i, j + 1 - i);
+            i = j + 1;
+        } elif (ch == 123 || ch == 91) {
+            var close = 125;
+            if (ch == 91) { close = 93; }
+            str_builder_putc(sb, ch);
+            if (i + 1 < n && load8(p + i + 1) == close) {
+                str_builder_putc(sb, close);
+                i = i + 2;
+            } else {
+                depth = depth + 1;
+                _sl_json_newline(sb, depth);
+                i = i + 1;
+            }
+        } elif (ch == 125 || ch == 93) {
+            depth = depth - 1;
+            _sl_json_newline(sb, depth);
+            str_builder_putc(sb, ch);
+            i = i + 1;
+        } elif (ch == 44) {
+            str_builder_putc(sb, 44);
+            _sl_json_newline(sb, depth);
+            i = i + 1;
+        } elif (ch == 58) {
+            str_builder_putc(sb, 58);
+            str_builder_putc(sb, 32);
+            i = i + 1;
+        } else {
+            str_builder_putc(sb, ch);
+            i = i + 1;
+        }
+    }
+    return 0;
+}
+
+# A newline and `depth` two-space indents.
+fn _sl_json_newline(sb, depth): i64 {
+    str_builder_putc(sb, 10);
+    var k = 0;
+    while (k < depth) {
+        str_builder_putc(sb, 32);
+        str_builder_putc(sb, 32);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Appends the layer file Rust's save_to_file writes for a w × h canvas holding `anns` (a vec of *SlAnnotation),
+# created at (secs, nanos): serde_json::to_string_pretty of AnnotationLayer.
+fn _sl_layer_json(sb, w, h, anns, secs, nanos): i64 {
+    var cb = str_builder_new();
+    str_builder_add_cstr(cb, "{\"version\":");
+    str_builder_add_int(cb, SL_LAYER_VERSION);
+    str_builder_add_cstr(cb, ",\"width\":");
+    str_builder_add_int(cb, w);
+    str_builder_add_cstr(cb, ",\"height\":");
+    str_builder_add_int(cb, h);
+    str_builder_add_cstr(cb, ",\"created\":\"");
+    _sl_rfc3339_fmt(cb, secs, nanos);
+    str_builder_add_cstr(cb, "\",\"annotations\":[");
+    var i = 0;
+    while (i < vec_len(anns)) {
+        if (i > 0) { str_builder_putc(cb, 44); }
+        SlAnnotation_to_json(_sl_as_annotation(vec_get(anns, i)), cb);
+        i = i + 1;
+    }
+    str_builder_add_cstr(cb, "]}");
+    var compact = str_builder_build(cb);
+    return _sl_json_pretty(sb, str_data(compact), str_len(compact));
+}
+
+# Refuses a canvas whose layer file could not be read back: an annotation whose x, y, width or height (as written,
+# in f32) is not finite. serde_json writes those as `null`, which the reader refuses, so Rust's save_to_file wrote a
+# file its own load_from_file rejects; the port refuses the save instead (ADR 0002 #19, a Rust defect fixed).
+# Ok(0) or Err(SL_ERR_ANNOTATION).
+fn _sl_layer_check(anns, detail_out = 0): Result {
+    var i = 0;
+    while (i < vec_len(anns)) {
+        var a: *SlAnnotation = _sl_as_annotation(vec_get(anns, i));
+        var r: SlRect = a.position;
+        var w: f32 = r.max_x - r.min_x;
+        var h: f32 = r.max_y - r.min_y;
+        var ok = _sl_f32_finite(r.min_x) && _sl_f32_finite(r.min_y) && _sl_f32_finite(w) && _sl_f32_finite(h);
+        if (ok == false) {
+            if (detail_out == 0) { return Err(SL_ERR_ANNOTATION); }
+            var sb = str_builder_new();
+            str_builder_add_cstr(sb, "annotation ");
+            _sl_uuid_fmt(sb, _sl_addr(a), 1);
+            str_builder_add_cstr(sb, " has a non-finite region; a layer file could not hold it");
+            str_builder_add_cstr(sb, " (JSON has no NaN or infinity)");
+            return _sl_fail(SL_ERR_ANNOTATION, detail_out, str_builder_build(sb));
+        }
+        i = i + 1;
+    }
+    return Ok(0);
+}
+
+# "failed to deserialize annotations: <what>" through detail_out; Err(SL_ERR_ANNOTATION).
+fn _sl_layer_fail(detail_out, what): Result {
+    if (detail_out == 0) { return Err(SL_ERR_ANNOTATION); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "failed to deserialize annotations: ");
+    str_builder_add_cstr(sb, what);
+    return _sl_fail(SL_ERR_ANNOTATION, detail_out, str_builder_build(sb));
+}
+
+# A u32 field of a layer, or -1 when it is missing or not an integer in 0..=u32::MAX.
+#must_use
+fn _sl_layer_u32(v, key, i): i64 {
+    var f = _sl_json_field(v, key, 5, i);
+    if (f == 0 || bayan_json_v_tag(f) != JTAG_INT) { return -1; }
+    var x = bayan_json_v_int(f);
+    if (x < 0 || x > 4294967295) { return -1; }
+    return x;
+}
+
+# Reads an AnnotationLayer from layer-file JSON p[0..n) as serde does (an object, or the array of its five fields),
+# without the version check. Ok(*SlAnnotationLayer on the freelist) or Err(SL_ERR_ANNOTATION).
+fn _sl_layer_from_json(p, n, detail_out = 0): Result {
+    var v = _sl_json_parse(p, n);
+    if (v == 0) { return _sl_layer_fail(detail_out, "not a JSON document"); }
+    if (bayan_json_v_is_obj(v) == false && bayan_json_v_is_arr(v) == false) {
+        return _sl_layer_fail(detail_out, "invalid type: expected struct AnnotationLayer");
+    }
+    var version = _sl_layer_u32(v, "version", 0);
+    var width = _sl_layer_u32(v, "width", 1);
+    var height = _sl_layer_u32(v, "height", 2);
+    if (version < 0 || width < 0 || height < 0) {
+        return _sl_layer_fail(detail_out, "`version`, `width` and `height` must be u32 integers");
+    }
+    var cs = _sl_json_as_str(_sl_json_field(v, "created", 5, 3));
+    var secs = 0;
+    var nanos = 0;
+    if (cs == 0 || _sl_rfc3339_parse(str_data(cs), str_len(cs), &secs, &nanos) == 0) {
+        return _sl_layer_fail(detail_out, "`created` is missing or not an RFC 3339 date-time");
+    }
+    var arr = _sl_json_field(v, "annotations", 5, 4);
+    if (arr == 0 || bayan_json_v_is_arr(arr) == false) {
+        return _sl_layer_fail(detail_out, "`annotations` is missing or not a sequence");
+    }
+    var anns = vec_new();
+    var k = 0;
+    var cnt = bayan_json_v_arr_len(arr);
+    while (k < cnt) {
+        var d = 0;
+        var t, a = _sl_annotation_from_value(bayan_json_v_arr_get(arr, k), &d);
+        if (is_err_result(t) == 1) {
+            var j = 0;
+            while (j < vec_len(anns)) {
+                SlAnnotation_free(vec_get(anns, j));
+                j = j + 1;
+            }
+            if (detail_out == 0) { return Err(SL_ERR_ANNOTATION); }
+            var sb = str_builder_new();
+            str_builder_add_cstr(sb, "failed to deserialize annotations: ");
+            if (d != 0) { str_builder_add(sb, d); }
+            return _sl_fail(SL_ERR_ANNOTATION, detail_out, str_builder_build(sb));
+        }
+        vec_push(anns, a);
+        k = k + 1;
+    }
+    var l: *SlAnnotationLayer = _sl_as_layer(fl_alloc(sizeof(SlAnnotationLayer)));
+    if (l == 0) { return _sl_layer_fail(detail_out, "out of memory"); }
+    l.version = version;
+    l.width = width;
+    l.height = height;
+    l.created_secs = secs;
+    l.created_nanos = nanos;
+    l.annotations = anns;
+    return Ok(l);
+}
+
+# A canvas from layer-file JSON p[0..n) (Rust: load_from_file after the read): the layer, then the version check.
+# Ok(*SlAnnotationCanvas) or Err(SL_ERR_ANNOTATION).
+fn _sl_canvas_from_layer_json(p, n, detail_out = 0): Result {
+    var t, v = _sl_layer_from_json(p, n, detail_out);
+    if (is_err_result(t) == 1) { return Err(v); }
+    var l: *SlAnnotationLayer = _sl_as_layer(v);
+    if (l.version > SL_LAYER_VERSION) {
+        var ver = l.version;
+        var j = 0;
+        while (j < vec_len(l.annotations)) {
+            SlAnnotation_free(vec_get(l.annotations, j));
+            j = j + 1;
+        }
+        fl_free(l);
+        if (detail_out == 0) { return Err(SL_ERR_ANNOTATION); }
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "unsupported annotation layer version ");
+        str_builder_add_int(sb, ver);
+        str_builder_add_cstr(sb, " (this build supports up to ");
+        str_builder_add_int(sb, SL_LAYER_VERSION);
+        str_builder_add_cstr(sb, ")");
+        return _sl_fail(SL_ERR_ANNOTATION, detail_out, str_builder_build(sb));
+    }
+    var c: *SlAnnotationCanvas = _sl_as_canvas(fl_alloc(sizeof(SlAnnotationCanvas)));
+    if (c == 0) { return _sl_layer_fail(detail_out, "out of memory"); }
+    c.width = l.width;
+    c.height = l.height;
+    c.annotations = l.annotations;
+    fl_free(l);
+    return Ok(c);
+}
+
+# Saves the canvas as a layer file at `path` (NUL-terminated), created now. Ok(0), Err(SL_ERR_IO), or
+# Err(SL_ERR_ANNOTATION) for an annotation with a non-finite region, which the file could not hold (ADR 0002 #19).
+fn SlAnnotationCanvas_save_to_file(c: *SlAnnotationCanvas, path, detail_out = 0): Result {
+    var kt, kv = _sl_layer_check(c.annotations, detail_out);
+    if (is_err_result(kt) == 1) { return Err(kv); }
+    var ns = clock_epoch_ns();
+    var sb = str_builder_new();
+    _sl_layer_json(sb, c.width, c.height, c.annotations, ns / 1000000000, ns % 1000000000);
+    var json = str_builder_build(sb);
+    var t, v = _sl_write_atomic(path, str_data(json), str_len(json), detail_out);
+    if (is_err_result(t) == 1) { return Err(v); }
+    _sl_log_kv(SK_DEBUG, "saved annotation layer", "path", path);
+    return Ok(0);
+}
+
+# Loads a canvas from a layer file at `path` (NUL-terminated): at most MAX_LAYER_FILE_BYTES, and no newer than
+# LAYER_VERSION. Ok(*SlAnnotationCanvas) or Err(SL_ERR_IO / SL_ERR_ANNOTATION).
+fn SlAnnotationCanvas_load_from_file(path, detail_out = 0): Result {
+    var n = 0;
+    var rt, buf = _sl_read_limited(path, SL_MAX_LAYER_FILE_BYTES, &n, detail_out);
+    if (is_err_result(rt) == 1) { return Err(buf); }
+    var t, v = _sl_canvas_from_layer_json(buf, n, detail_out);
+    fl_free(buf);
+    if (is_err_result(t) == 1) { return Err(v); }
+    _sl_log_kv(SK_DEBUG, "loaded annotation layer", "path", path);
+    return Ok(v);
+}
+
+# ---------------------------------------------------------------- SVG
+
+# Rust's num(): a non-finite f32 is written as 0. The f32 comes back as its exact f64 (no f32 return type).
+#must_use
+fn _sl_svg_num(v: f32): f64 {
+    if (_sl_f32_finite(v) == true) {
+        var d: f64 = f32_to(v);
+        return d;
+    }
+    return 0.0;
+}
+
+# Appends ` name="<f32 Display>"`.
+fn _sl_svg_attr(sb, name, v: f32): i64 {
+    str_builder_putc(sb, 32);
+    str_builder_add_cstr(sb, name);
+    str_builder_add_cstr(sb, "=\"");
+    _sl_fmt_f32_display(sb, v);
+    str_builder_putc(sb, 34);
+    return 0;
+}
+
+# Appends one annotation's SVG element (Rust: write_svg_element).
+fn _sl_svg_element(sb, a: *SlAnnotation): i64 {
+    var col: SlColor = a.color;
+    var n: SlRect = a.position.normalized();
+    var x: f32 = f32_from(_sl_svg_num(n.min_x));
+    var y: f32 = f32_from(_sl_svg_num(n.min_y));
+    var nw: f32 = n.max_x - n.min_x;
+    var nh: f32 = n.max_y - n.min_y;
+    var w: f32 = f32_from(_sl_svg_num(nw));
+    var h: f32 = f32_from(_sl_svg_num(nh));
+    var kind = a.kind;
+    if (kind == SL_KIND_CIRCLE) {
+        var two: f32 = f32_from(2.0);
+        var rx: f32 = w / two;
+        var ry: f32 = h / two;
+        var cx: f32 = x + rx;
+        var cy: f32 = y + ry;
+        str_builder_add_cstr(sb, "  <ellipse");
+        _sl_svg_attr(sb, "cx", cx);
+        _sl_svg_attr(sb, "cy", cy);
+        _sl_svg_attr(sb, "rx", rx);
+        _sl_svg_attr(sb, "ry", ry);
+        str_builder_add_cstr(sb, " stroke=\"");
+        col.css(sb);
+        str_builder_add_cstr(sb, "\" fill=\"none\" stroke-width=\"2\"/>");
+        return 0;
+    }
+    if (kind == SL_KIND_ARROW) {
+        var p: SlRect = a.position;
+        var pw: f32 = p.max_x - p.min_x;
+        var ph: f32 = p.max_y - p.min_y;
+        var px2: f32 = p.min_x + pw;
+        var py2: f32 = p.min_y + ph;
+        var x1: f32 = f32_from(_sl_svg_num(p.min_x));
+        var y1: f32 = f32_from(_sl_svg_num(p.min_y));
+        var x2: f32 = f32_from(_sl_svg_num(px2));
+        var y2: f32 = f32_from(_sl_svg_num(py2));
+        str_builder_add_cstr(sb, "  <defs><marker id=\"arrow-");
+        _sl_uuid_fmt(sb, _sl_addr(a), 0);
+        str_builder_add_cstr(sb, "\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\"");
+        str_builder_add_cstr(sb, " orient=\"auto\"><path d=\"M0,0 L10,5 L0,10 z\" fill=\"");
+        col.css(sb);
+        str_builder_add_cstr(sb, "\"/></marker></defs><line");
+        _sl_svg_attr(sb, "x1", x1);
+        _sl_svg_attr(sb, "y1", y1);
+        _sl_svg_attr(sb, "x2", x2);
+        _sl_svg_attr(sb, "y2", y2);
+        str_builder_add_cstr(sb, " stroke=\"");
+        col.css(sb);
+        str_builder_add_cstr(sb, "\" stroke-width=\"2\" marker-end=\"url(#arrow-");
+        _sl_uuid_fmt(sb, _sl_addr(a), 0);
+        str_builder_add_cstr(sb, ")\"/>");
+        return 0;
+    }
+    if (kind == SL_KIND_TEXT) {
+        var sixteen: f32 = f32_from(16.0);
+        var ty: f32 = y + sixteen;
+        str_builder_add_cstr(sb, "  <text");
+        _sl_svg_attr(sb, "x", x);
+        _sl_svg_attr(sb, "y", ty);
+        str_builder_add_cstr(sb, " fill=\"");
+        col.css(sb);
+        str_builder_add_cstr(sb, "\" font-size=\"16\">");
+        if (a.text != 0) { _sl_push_xml_escaped(sb, str_data(a.text), str_len(a.text)); }
+        str_builder_add_cstr(sb, "</text>");
+        return 0;
+    }
+    var area = kind == SL_KIND_RECTANGLE || kind == SL_KIND_HIGHLIGHT;
+    if (area == false && kind != SL_KIND_REDACTION && kind != SL_KIND_FREEFORM) { return 0; }
+    str_builder_add_cstr(sb, "  <rect");
+    _sl_svg_attr(sb, "x", x);
+    _sl_svg_attr(sb, "y", y);
+    _sl_svg_attr(sb, "width", w);
+    _sl_svg_attr(sb, "height", h);
+    if (kind == SL_KIND_REDACTION) {
+        str_builder_add_cstr(sb, " fill=\"black\"/>");
+    } elif (kind == SL_KIND_HIGHLIGHT) {
+        str_builder_add_cstr(sb, " fill=\"");
+        col.css(sb);
+        str_builder_add_cstr(sb, "\" opacity=\"0.3\"/>");
+    } else {
+        str_builder_add_cstr(sb, " stroke=\"");
+        col.css(sb);
+        str_builder_add_cstr(sb, "\" fill=\"none\" stroke-width=\"2\"");
+        if (kind == SL_KIND_FREEFORM) { str_builder_add_cstr(sb, " stroke-dasharray=\"4\""); }
+        str_builder_add_cstr(sb, "/>");
+    }
+    return 0;
+}
+
+# The canvas as an SVG overlay (Rust: to_svg): text XML-escaped, area shapes normalized, non-finite values as 0, each
+# arrow with its own arrowhead marker in its stroke colour.
+#must_use
+fn SlAnnotationCanvas_to_svg(c: *SlAnnotationCanvas): Str {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
+    str_builder_add_int(sb, c.width);
+    str_builder_add_cstr(sb, "\" height=\"");
+    str_builder_add_int(sb, c.height);
+    str_builder_add_cstr(sb, "\">\n");
+    var v = c.annotations;
+    var i = 0;
+    while (i < vec_len(v)) {
+        _sl_svg_element(sb, _sl_as_annotation(vec_get(v, i)));
+        str_builder_putc(sb, 10);
+        i = i + 1;
+    }
+    str_builder_add_cstr(sb, "</svg>");
+    return str_builder_build(sb);
+}
+
+# ---------------------------------------------------------------- rendering
+
+# 1 when a rect's x, y, width or height (each as Rust computes it, in f32) is NaN (Rust: rect_has_nan).
+#must_use
+fn _sl_rect_has_nan(r: SlRect): i64 {
+    var w: f32 = r.max_x - r.min_x;
+    var h: f32 = r.max_y - r.min_y;
+    var a: f64 = f32_to(r.min_x);
+    var b: f64 = f32_to(r.min_y);
+    var cw: f64 = f32_to(w);
+    var ch: f64 = f32_to(h);
+    if (a != a || b != b || cw != cw || ch != ch) { return 1; }
+    return 0;
+}
+
+# Refuses a redaction whose region has a NaN (Rust checks this before decoding). Ok(0) or Err(SL_ERR_ANNOTATION).
+fn _sl_render_check(anns, detail_out = 0): Result {
+    var i = 0;
+    while (i < vec_len(anns)) {
+        var a: *SlAnnotation = _sl_as_annotation(vec_get(anns, i));
+        if (a.kind == SL_KIND_REDACTION && _sl_rect_has_nan(a.position) == 1) {
+            if (detail_out == 0) { return Err(SL_ERR_ANNOTATION); }
+            var sb = str_builder_new();
+            str_builder_add_cstr(sb, "redaction ");
+            _sl_uuid_fmt(sb, _sl_addr(a), 1);
+            str_builder_add_cstr(sb, " has a non-numeric (NaN) region");
+            return _sl_fail(SL_ERR_ANNOTATION, detail_out, str_builder_build(sb));
+        }
+        i = i + 1;
+    }
+    return Ok(0);
+}
+
+# Draws every annotation onto the image, in order.
+fn _sl_draw_all(img: *SlImage, anns): i64 {
+    var i = 0;
+    while (i < vec_len(anns)) {
+        _sl_draw_annotation(img, _sl_as_annotation(vec_get(anns, i)));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Renders annotations (a vec of *SlAnnotation, drawn in order) onto the image bytes src[0..n) and encodes the result
+# as `fmt` (Rust: AnnotationCanvas::render_to_image). A redaction whose region has a NaN is refused before decoding.
+# Ok(bytes on the freelist; free them with selah_bytes_free), their length at `len_out`.
+fn SlAnnotationCanvas_render_to_image(src, n, anns, fmt, len_out, detail_out = 0): Result {
+    store64(len_out, 0);
+    var ct, cv = _sl_render_check(anns, detail_out);
+    if (is_err_result(ct) == 1) { return Err(cv); }
+    var dt, dv = _sl_decode_image(src, n, detail_out);
+    if (is_err_result(dt) == 1) { return Err(dv); }
+    var img: *SlImage = _sl_as_image(dv);
+    _sl_log_kv(SK_DEBUG, "render_to_image", "format", selah_image_format_extension(fmt));
+    _sl_draw_all(img, anns);
+    var et, ev = _sl_encode_image(img, fmt, len_out, detail_out);
+    SlImage_free(img);
+    if (is_err_result(et) == 1) { return Err(ev); }
+    return Ok(ev);
+}
+
+# --- selah.cyr ---
+
+# selah.cyr — the facade (Rust: rust-old/src/lib.rs): decode_image_data, annotate_image, redact_image.
+
+# Decodes standard, padded base64 (a capture response's image) to bytes (Rust: decode_image_data, base64's STANDARD
+# engine: canonical only). Ok(bytes on the freelist; free them with selah_bytes_free), their length at `len_out`;
+# Err(SL_ERR_API) with "failed to decode image data: <reason>".
+fn selah_decode_image_data(p, n, len_out, detail_out = 0): Result {
+    store64(len_out, 0);
+    var pair = bayan_base64_decode(p, n);
+    if (pair == 0) {
+        if (detail_out == 0) { return Err(SL_ERR_API); }
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "failed to decode image data: ");
+        str_builder_add_cstr(sb, bayan_base64_last_error());
+        return _sl_fail(SL_ERR_API, detail_out, str_builder_build(sb));
+    }
+    # UPSTREAM(L19): bayan decodes onto the bump heap only; the copy on the freelist is what the caller frees.
+    var len = load64(pair + 8);
+    var out = fl_alloc(len + 1);
+    if (out == 0) { return _sl_fail_cstr(SL_ERR_API, detail_out, "failed to decode image data: out of memory"); }
+    memcpy(out, load64(pair), len);
+    store8(out + len, 0);
+    store64(len_out, len);
+    return Ok(out);
+}
+
+# Applies annotations (a vec of *SlAnnotation) to the image bytes src[0..n) and encodes the result as `fmt` (Rust:
+# annotate_image). Ok(bytes; free them with selah_bytes_free), their length at `len_out`.
+fn selah_annotate_image(src, n, anns, fmt, len_out, detail_out = 0): Result {
+    return SlAnnotationCanvas_render_to_image(src, n, anns, fmt, len_out, detail_out);
+}
+
+# An allocation as a *SlRedactionTarget.
+#must_use
+fn _sl_as_target(p): *SlRedactionTarget {
+    return p;
+}
+
+# 1 when two redaction targets are equal (Rust's derived PartialEq: the kind, and a custom target's label).
+#must_use
+fn _sl_target_eq(a: SlRedactionTarget, b: SlRedactionTarget): i64 {
+    if (a.kind != b.kind) { return 0; }
+    if (a.kind != SL_TARGET_CUSTOM) { return 1; }
+    if (a.custom == 0 || b.custom == 0) { return a.custom == b.custom; }
+    var n = str_len(a.custom);
+    return n == str_len(b.custom) && memeq(str_data(a.custom), str_data(b.custom), n) == 1;
+}
+
+# Detects PII in the image bytes src[0..n) and redacts it (Rust: redact_image). `targets` is a vec of
+# *SlRedactionTarget to keep, or 0 for all. Only matches with a located (non-zero) region are redacted and returned
+# (through `suggestions_out`, a vec of *SlRedactionSuggestion).
+#
+# Limitation, as in Rust: the built-in OCR is a stub that scans the encoded file bytes (embedded metadata), not the
+# rendered pixels, so it never yields a location and text visible in the image is not found. What it finds lives in
+# metadata, which re-encoding does not carry; a warning says so. Pixel redaction needs caller-supplied regions:
+# SL_KIND_REDACTION annotations through selah_annotate_image.
+fn selah_redact_image(src, n, targets, fmt, len_out, suggestions_out, detail_out = 0): Result {
+    store64(len_out, 0);
+    store64(suggestions_out, 0);
+    var ocr: *SlOcrResult = selah_extract_text_regions(src, n);
+    var all = selah_suggest_redactions(str_data(ocr.text), str_len(ocr.text));
+    var kept = vec_new();
+    var detected = 0;
+    var i = 0;
+    while (i < vec_len(all)) {
+        var s: *SlRedactionSuggestion = _sl_as_suggestion(vec_get(all, i));
+        var want = 1;
+        if (targets != 0) {
+            want = 0;
+            var k = 0;
+            while (k < vec_len(targets)) {
+                var tp: *SlRedactionTarget = _sl_as_target(vec_get(targets, k));
+                if (_sl_target_eq(s.target, *tp) == 1) { want = 1; }
+                k = k + 1;
+            }
+        }
+        if (want == 1) {
+            detected = detected + 1;
+            var area: f64 = s.region.area();
+            if (area > 0.0) { vec_push(kept, s); }
+        }
+        i = i + 1;
+    }
+    if (vec_len(kept) < detected) {
+        _sl_log_kv(SK_WARN, "PII found without a location; rendered text is not analyzed", "ocr",
+          "stub: embedded metadata, dropped by re-encoding");
+    }
+    var anns = vec_new();
+    i = 0;
+    while (i < vec_len(kept)) {
+        var ks: *SlRedactionSuggestion = _sl_as_suggestion(vec_get(kept, i));
+        var a: *SlAnnotation = SlAnnotation_new(SL_KIND_REDACTION, ks.region, SL_COLOR_BLACK);
+        if (a != 0) { vec_push(anns, a); }
+        i = i + 1;
+    }
+    var t, v = SlAnnotationCanvas_render_to_image(src, n, anns, fmt, len_out, detail_out);
+    i = 0;
+    while (i < vec_len(anns)) {
+        SlAnnotation_free(vec_get(anns, i));
+        i = i + 1;
+    }
+    if (is_err_result(t) == 1) { return Err(v); }
+    store64(suggestions_out, kept);
+    return Ok(v);
 }

@@ -10,8 +10,8 @@
 - [x] **M1 Foundation** (2026-11-14): error, log, fmtf, json, geometry, core, uuid, rfc3339
 - [x] **M2 PII and smart crop** (2026-11-14): ai
 - [x] **M3 Codecs** (2026-11-14): codec, png_enc, bmp_enc, jpeg_enc; decode gated under ADR 0003; WebP, progressive and CMYK refused (ADR 0002)
-- [ ] **M4 Annotation**: raster, annotate, the facade
-- [ ] **M5 System and clients**: fsutil, history, clipboard, HTTP; daimon and hoosh clients retargeted (ADR 0002)
+- [x] **M4 Annotation** (2026-11-14): raster, annotate, the facade, and fsutil (brought forward from M5)
+- [ ] **M5 System and clients**: history, clipboard, HTTP; daimon and hoosh clients retargeted (ADR 0002)
 - [ ] **M6 MCP profile**: the five tools on bote
 - [ ] **M7 Release 1.0.0**: Rust-test ledger, full surface parity, benches against Rust, `dist/` bundles
 

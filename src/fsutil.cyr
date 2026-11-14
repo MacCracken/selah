@@ -1,0 +1,237 @@
+# fsutil.cyr — bounded reads, atomic private writes, private directories (Rust: rust-old/src/fsutil.rs).
+#
+# Port plan D10. Ported at M4 rather than M5: the annotation layer's save and load need it. Paths are NUL-terminated
+# strings. Failures are SL_ERR_IO, with Rust's io::Error text through `detail_out`.
+#   - _sl_read_limited refuses anything that is not a regular file *before* opening it (a FIFO would block, /dev/zero
+#     would never end), refuses a file over the limit from its size, and caps the read itself in case the file grows.
+#   - _sl_write_atomic writes a uniquely named sibling temp created 0600 (O_EXCL), syncs it and renames it over the
+#     target, so a reader never sees a half-written file and a crash leaves the old one. The temp is removed on any
+#     failure.
+#   - _sl_create_private_dir_all creates a directory and its missing parents at 0700.
+
+# Appends Rust's io::Error text for a negative errno: the message for the common ones, then "(os error N)".
+fn _sl_errno_text(sb, err): i64 {
+    var e = -err;
+    var m = 0;
+    if (e == 1) { m = "Operation not permitted"; }
+    if (e == 2) { m = "No such file or directory"; }
+    if (e == 13) { m = "Permission denied"; }
+    if (e == 17) { m = "File exists"; }
+    if (e == 20) { m = "Not a directory"; }
+    if (e == 21) { m = "Is a directory"; }
+    if (e == 27) { m = "File too large"; }
+    if (e == 28) { m = "No space left on device"; }
+    if (e == 30) { m = "Read-only file system"; }
+    if (e == 36) { m = "File name too long"; }
+    if (m != 0) {
+        str_builder_add_cstr(sb, m);
+        str_builder_add_cstr(sb, " ");
+    }
+    str_builder_add_cstr(sb, "(os error ");
+    str_builder_add_int(sb, e);
+    str_builder_add_cstr(sb, ")");
+    return 0;
+}
+
+# Err(SL_ERR_IO) with an errno's text.
+fn _sl_io_errno(detail_out, err): Result {
+    if (detail_out == 0) { return Err(SL_ERR_IO); }
+    var sb = str_builder_new();
+    _sl_errno_text(sb, err);
+    return _sl_fail(SL_ERR_IO, detail_out, str_builder_build(sb));
+}
+
+# Err(SL_ERR_IO) with "<path><what>".
+fn _sl_io_path(detail_out, path, what): Result {
+    if (detail_out == 0) { return Err(SL_ERR_IO); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, path);
+    str_builder_add_cstr(sb, what);
+    return _sl_fail(SL_ERR_IO, detail_out, str_builder_build(sb));
+}
+
+# Err(SL_ERR_IO): "<path> is too large (<len> bytes, limit <max> bytes)".
+fn _sl_io_too_large(detail_out, path, len, max): Result {
+    if (detail_out == 0) { return Err(SL_ERR_IO); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, path);
+    str_builder_add_cstr(sb, " is too large (");
+    str_builder_add_int(sb, len);
+    str_builder_add_cstr(sb, " bytes, limit ");
+    str_builder_add_int(sb, max);
+    str_builder_add_cstr(sb, " bytes)");
+    return _sl_fail(SL_ERR_IO, detail_out, str_builder_build(sb));
+}
+
+# Reads the regular file at `path` whole, refusing more than `max_bytes`. Returns Ok(bytes on the freelist,
+# NUL-terminated; free them with fl_free), the length stored at `len_out`.
+fn _sl_read_limited(path, max_bytes, len_out, detail_out = 0): Result {
+    store64(len_out, 0);
+    var cap = 4096;
+    #ifndef CYRIUS_TARGET_WIN
+    var st[256];
+    var sr = xstat(path, &st);
+    if (sr < 0) { return _sl_io_errno(detail_out, sr); }
+    if (sr != 0) { return _sl_io_errno(detail_out, -2); }
+    if ((load32(&st + STAT_MODE) & 61440) != 32768) { return _sl_io_path(detail_out, path, " is not a regular file"); }
+    var size = load64(&st + STAT_SIZE);
+    if (size > max_bytes) { return _sl_io_too_large(detail_out, path, size, max_bytes); }
+    cap = size + 1;
+    #endif
+    if (cap > max_bytes + 1) { cap = max_bytes + 1; }
+    if (cap < 1) { cap = 1; }
+    var fd = file_open(path, O_RDONLY, 0);
+    if (fd < 0) { return _sl_io_errno(detail_out, fd); }
+    var buf = fl_alloc(cap + 1);
+    if (buf == 0) {
+        file_close(fd);
+        return _sl_io_errno(detail_out, -12);
+    }
+    var len = 0;
+    while (1 == 1) {
+        if (len == cap) {
+            # The file grew past its stat size: grow, but never past one byte over the limit.
+            if (cap > max_bytes) { break; }
+            var ncap = cap * 2;
+            if (ncap > max_bytes + 1) { ncap = max_bytes + 1; }
+            var nb = fl_alloc(ncap + 1);
+            if (nb == 0) {
+                fl_free(buf);
+                file_close(fd);
+                return _sl_io_errno(detail_out, -12);
+            }
+            memcpy(nb, buf, len);
+            fl_free(buf);
+            buf = nb;
+            cap = ncap;
+        }
+        var r = file_read(fd, buf + len, cap - len);
+        if (r < 0) {
+            fl_free(buf);
+            file_close(fd);
+            return _sl_io_errno(detail_out, r);
+        }
+        if (r == 0) { break; }
+        len = len + r;
+    }
+    file_close(fd);
+    if (len > max_bytes) {
+        fl_free(buf);
+        return _sl_io_too_large(detail_out, path, len, max_bytes);
+    }
+    store8(buf + len, 0);
+    store64(len_out, len);
+    return Ok(buf);
+}
+
+# The byte length of the directory part of `path` (up to its last '/', which is excluded unless it is the root),
+# or -1 when `path` has no directory part. Trailing slashes are not part of the file name.
+fn _sl_path_split(path, n, name_at_out, name_len_out): i64 {
+    var end = n;
+    while (end > 1 && load8(path + end - 1) == 47) { end = end - 1; }
+    var i = end - 1;
+    while (i >= 0 && load8(path + i) != 47) { i = i - 1; }
+    store64(name_at_out, i + 1);
+    store64(name_len_out, end - (i + 1));
+    if (i < 0) { return -1; }
+    if (i == 0) { return 1; }
+    return i;
+}
+
+# Atomically replaces the file at `path` with data[0..len): a temp `.<name>.tmp-<uuid>` beside it, created 0600
+# (never an existing name), written, synced and renamed over `path`. Ok(0), or Err(SL_ERR_IO) with the temp removed.
+fn _sl_write_atomic(path, data, len, detail_out = 0): Result {
+    var n = strlen(path);
+    var na = 0;
+    var nl = 0;
+    var dl = _sl_path_split(path, n, &na, &nl);
+    var name = path + na;
+    if (nl == 0 || (nl == 1 && load8(name) == 46) || (nl == 2 && load8(name) == 46 && load8(name + 1) == 46)) {
+        return _sl_io_path(detail_out, path, " has no file name");
+    }
+    var sb = str_builder_new();
+    if (dl < 0) {
+        str_builder_add_cstr(sb, ".");
+    } else {
+        var k = 0;
+        while (k < dl) {
+            str_builder_add_byte(sb, load8(path + k));
+            k = k + 1;
+        }
+    }
+    if (dl != 1 || load8(path) != 47) { str_builder_add_cstr(sb, "/"); }
+    str_builder_add_cstr(sb, ".");
+    var j = 0;
+    while (j < nl) {
+        str_builder_add_byte(sb, load8(name + j));
+        j = j + 1;
+    }
+    str_builder_add_cstr(sb, ".tmp-");
+    var id[16];
+    if (_sl_uuid_v4(&id) == 0) { return _sl_io_errno(detail_out, -5); }
+    _sl_uuid_fmt(sb, &id, 0);
+    var tmps = str_builder_build(sb);
+    var tmp = str_data(tmps);
+
+    var fd = file_open(tmp, O_WRONLY | O_CREAT | O_EXCL, 384);
+    if (fd < 0) { return _sl_io_errno(detail_out, fd); }
+    var off = 0;
+    while (off < len) {
+        var w = file_write(fd, data + off, len - off);
+        if (w <= 0) {
+            file_close(fd);
+            xunlink(tmp);
+            if (w == 0) { w = -5; }
+            return _sl_io_errno(detail_out, w);
+        }
+        off = off + w;
+    }
+    var fr = xfsync(fd);
+    var cr = file_close(fd);
+    if (fr < 0 || cr < 0) {
+        xunlink(tmp);
+        if (fr < 0) { return _sl_io_errno(detail_out, fr); }
+        return _sl_io_errno(detail_out, cr);
+    }
+    var rr = file_rename(tmp, path);
+    if (rr < 0) {
+        xunlink(tmp);
+        return _sl_io_errno(detail_out, rr);
+    }
+    return Ok(0);
+}
+
+# Creates the directory `dir` and any missing parents, each new one at 0700 (Rust: DirBuilder with mode 0o700,
+# recursive). An existing directory is fine; an existing non-directory is an error. Ok(0) or Err(SL_ERR_IO).
+fn _sl_create_private_dir_all(dir, detail_out = 0): Result {
+    var n = strlen(dir);
+    if (n == 0) { return _sl_io_errno(detail_out, -2); }
+    var buf = fl_alloc(n + 1);
+    if (buf == 0) { return _sl_io_errno(detail_out, -12); }
+    memcpy(buf, dir, n);
+    store8(buf + n, 0);
+    var i = 1;
+    while (i <= n) {
+        if (i == n || load8(buf + i) == 47) {
+            var save = load8(buf + i);
+            store8(buf + i, 0);
+            var r = sys_mkdir(buf, 448);
+            if (r < 0 && r != -17) {
+                fl_free(buf);
+                return _sl_io_errno(detail_out, r);
+            }
+            store8(buf + i, save);
+        }
+        i = i + 1;
+    }
+    # The leaf must be a directory (EEXIST also answers for a file of that name).
+    #ifndef CYRIUS_TARGET_WIN
+    var st[256];
+    if (xstat(buf, &st) != 0 || (load32(&st + STAT_MODE) & 61440) != 16384) {
+        fl_free(buf);
+        return _sl_io_errno(detail_out, -17);
+    }
+    #endif
+    fl_free(buf);
+    return Ok(0);
+}

@@ -1,0 +1,148 @@
+# fsutil.tcyr — rust-old/src/fsutil.rs's tests, ported (port plan M4: fsutil came forward from M5 for the layer
+# file), plus the private directory helper.
+
+include "tests/selah_src.cyr"
+include "tests/support.cyr"
+
+# A unique path under /tmp, NUL-terminated.
+fn _t_tmp(tag): i64 {
+    var id: u8[16];
+    _sl_uuid_v4(&id);
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "/tmp/selah_fsutil_");
+    str_builder_add_cstr(sb, tag);
+    str_builder_add_cstr(sb, "_");
+    _sl_uuid_fmt(sb, &id, 0);
+    return str_data(str_builder_build(sb));
+}
+
+# path + "/" + name, NUL-terminated.
+fn _t_join(path, name): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, path);
+    str_builder_add_cstr(sb, "/");
+    str_builder_add_cstr(sb, name);
+    return str_data(str_builder_build(sb));
+}
+
+# The error's text, as a Str.
+fn _t_err_text(code, d): i64 {
+    return selah_error_display(code, d);
+}
+
+fn _t_read_limited_ok(): i64 {
+    test_group("test_read_limited_ok");
+    var p = _t_tmp("ok");
+    file_write_all(p, "hello", 5);
+    var n = 0;
+    var t, v = _sl_read_limited(p, 5, &n);
+    assert(is_ok(t) == 1 && n == 5 && memeq(v, "hello", 5) == 1, "read");
+    xunlink(p);
+    return 0;
+}
+
+fn _t_read_limited_too_large(): i64 {
+    test_group("test_read_limited_too_large");
+    var p = _t_tmp("big");
+    file_write_all(p, "hello world", 11);
+    var n = 0;
+    var d = 0;
+    var t, v = _sl_read_limited(p, 4, &n, &d);
+    assert(is_err_result(t) == 1 && _t_str_has(_t_err_text(v, d), "too large") == 1, "refused");
+    xunlink(p);
+    return 0;
+}
+
+fn _t_read_limited_rejects_directory(): i64 {
+    test_group("test_read_limited_rejects_directory");
+    var n = 0;
+    var d = 0;
+    var t, v = _sl_read_limited("/tmp", 1048576, &n, &d);
+    assert(is_err_result(t) == 1 && _t_str_has(_t_err_text(v, d), "not a regular file") == 1, "refused");
+    return 0;
+}
+
+fn _t_read_limited_rejects_device(): i64 {
+    test_group("test_read_limited_rejects_device");
+    var n = 0;
+    var d = 0;
+    var t, v = _sl_read_limited("/dev/zero", 1048576, &n, &d);
+    assert(is_err_result(t) == 1 && _t_str_has(_t_err_text(v, d), "not a regular file") == 1, "refused");
+    return 0;
+}
+
+fn _t_read_limited_missing(): i64 {
+    test_group("test_read_limited_missing");
+    var n = 0;
+    var t, v = _sl_read_limited(_t_tmp("missing"), 10, &n);
+    assert(is_err_result(t) == 1 && v == SL_ERR_IO, "refused");
+    return 0;
+}
+
+fn _t_write_atomic_replaces_and_cleans_up(): i64 {
+    test_group("test_write_atomic_replaces_and_cleans_up");
+    var dir = _t_tmp("atomic_dir");
+    sys_mkdir(dir, 448);
+    var p = _t_join(dir, "file.txt");
+    file_write_all(p, "old contents", 12);
+    var t, v = _sl_write_atomic(p, "new", 3);
+    var n = 0;
+    var back = file_read_whole_max(p, 64, &n);
+    assert(is_ok(t) == 1 && n == 3 && memeq(back, "new", 3) == 1, "replaced");
+    var entries = dir_list(str_from(dir));
+    assert(vec_len(entries) == 1, "no temp left behind");
+    xunlink(p);
+    sys_rmdir(dir);
+    return 0;
+}
+
+fn _t_write_atomic_private_permissions(): i64 {
+    test_group("test_write_atomic_private_permissions");
+    var p = _t_tmp("perm");
+    var t, v = _sl_write_atomic(p, "x", 1);
+    var st[256];
+    xstat(p, &st);
+    assert(is_ok(t) == 1 && (load32(&st + STAT_MODE) & 511) == 384, "0600");
+    xunlink(p);
+    return 0;
+}
+
+# Cyrius-only: the private directory helper (Rust's create_private_dir_all, used by M5's history).
+fn _t_create_private_dir_all(): i64 {
+    test_group("create_private_dir_all");
+    var base = _t_tmp("dirs");
+    var leaf = _t_join(_t_join(base, "a"), "b");
+    var t, v = _sl_create_private_dir_all(leaf);
+    var st[256];
+    xstat(leaf, &st);
+    assert(is_ok(t) == 1 && (load32(&st + STAT_MODE) & 61951) == 16832, "a 0700 directory");
+    var t2, v2 = _sl_create_private_dir_all(leaf);
+    assert(is_ok(t2) == 1, "existing is fine");
+    var f = _t_join(base, "file");
+    file_write_all(f, "x", 1);
+    var t3, v3 = _sl_create_private_dir_all(f);
+    assert(is_err_result(t3) == 1, "a file is not a directory");
+    xunlink(f);
+    sys_rmdir(leaf);
+    sys_rmdir(_t_join(base, "a"));
+    sys_rmdir(base);
+    return 0;
+}
+
+# Runs the suite; the exit code is the failure count, clamped.
+fn main(): i64 {
+    alloc_init();
+    _t_read_limited_ok();
+    _t_read_limited_too_large();
+    _t_read_limited_rejects_directory();
+    _t_read_limited_rejects_device();
+    _t_read_limited_missing();
+    _t_write_atomic_replaces_and_cleans_up();
+    _t_write_atomic_private_permissions();
+    _t_create_private_dir_all();
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

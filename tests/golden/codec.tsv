@@ -2,7 +2,7 @@
 # oracle: selah 0.30.0 (rust-old/, tag 0.30.0), image 0.25.10, png 0.18.1, zune-jpeg 0.5.15, image-webp 0.2.4
 # regenerate: cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml
 # columns: fn<TAB>class<TAB>inputs<TAB>outputs<TAB>note · convert_format: dimensions or E:<variant>; encode: b:1 lossless, or Rust's JPEG error i:<mean x 1000> i:<max>
-# rows: 464
+# rows: 480
 convert_format	A	p:fixtures/png-rgba8-1x1.png e:ImageFormat.Png	i:1 i:1	png-rgba8-1x1.png -> Png
 convert_format	A	p:fixtures/png-rgba8-1x1.png e:ImageFormat.Jpeg	i:1 i:1	png-rgba8-1x1.png -> Jpeg
 convert_format	A	p:fixtures/png-rgba8-1x1.png e:ImageFormat.Bmp	i:1 i:1	png-rgba8-1x1.png -> Bmp
@@ -115,6 +115,14 @@ convert_format	A	p:fixtures/png-too-big-20000x20000.png e:ImageFormat.Png	E:Anno
 convert_format	A	p:fixtures/png-too-big-20000x20000.png e:ImageFormat.Jpeg	E:AnnotationError	png-too-big-20000x20000.png -> Jpeg -- refused: annotation error: failed to load image: 20000x20000 needs 1600000000 bytes, limit 536870912
 convert_format	A	p:fixtures/png-too-big-20000x20000.png e:ImageFormat.Bmp	E:AnnotationError	png-too-big-20000x20000.png -> Bmp -- refused: annotation error: failed to load image: 20000x20000 needs 1600000000 bytes, limit 536870912
 convert_format	A	p:fixtures/png-too-big-20000x20000.png e:ImageFormat.WebP	E:AnnotationError	png-too-big-20000x20000.png -> WebP -- refused: annotation error: failed to load image: 20000x20000 needs 1600000000 bytes, limit 536870912
+convert_format	A	p:fixtures/png-rgba8-512x512-grad.png e:ImageFormat.Png	i:512 i:512	png-rgba8-512x512-grad.png -> Png
+convert_format	A	p:fixtures/png-rgba8-512x512-grad.png e:ImageFormat.Jpeg	i:512 i:512	png-rgba8-512x512-grad.png -> Jpeg
+convert_format	A	p:fixtures/png-rgba8-512x512-grad.png e:ImageFormat.Bmp	i:512 i:512	png-rgba8-512x512-grad.png -> Bmp
+convert_format	A	p:fixtures/png-rgba8-512x512-grad.png e:ImageFormat.WebP	i:512 i:512	png-rgba8-512x512-grad.png -> WebP adr=0002#1
+convert_format	A	p:fixtures/png-rgba8-7x3-text-pii.png e:ImageFormat.Png	i:7 i:3	png-rgba8-7x3-text-pii.png -> Png
+convert_format	A	p:fixtures/png-rgba8-7x3-text-pii.png e:ImageFormat.Jpeg	i:7 i:3	png-rgba8-7x3-text-pii.png -> Jpeg
+convert_format	A	p:fixtures/png-rgba8-7x3-text-pii.png e:ImageFormat.Bmp	i:7 i:3	png-rgba8-7x3-text-pii.png -> Bmp
+convert_format	A	p:fixtures/png-rgba8-7x3-text-pii.png e:ImageFormat.WebP	i:7 i:3	png-rgba8-7x3-text-pii.png -> WebP adr=0002#1
 convert_format	A	p:fixtures/bmp-image-rgb8-33x17.bmp e:ImageFormat.Png	i:33 i:17	bmp-image-rgb8-33x17.bmp -> Png
 convert_format	A	p:fixtures/bmp-image-rgb8-33x17.bmp e:ImageFormat.Jpeg	i:33 i:17	bmp-image-rgb8-33x17.bmp -> Jpeg
 convert_format	A	p:fixtures/bmp-image-rgb8-33x17.bmp e:ImageFormat.Bmp	i:33 i:17	bmp-image-rgb8-33x17.bmp -> Bmp
@@ -351,6 +359,14 @@ encode	R	p:decode/png-adam7-gray1-5x5.png.rgba i:5 i:5 e:ImageFormat.Png	b:1	png
 encode	R	p:decode/png-adam7-gray1-5x5.png.rgba i:5 i:5 e:ImageFormat.Jpeg	i:3880 i:20	png-adam7-gray1-5x5.png: Rust's q75 JPEG, decoded by image: mean 3.880 max 20
 encode	R	p:decode/png-adam7-gray1-5x5.png.rgba i:5 i:5 e:ImageFormat.Bmp	b:1	png-adam7-gray1-5x5.png: lossless
 encode	R	p:decode/png-adam7-gray1-5x5.png.rgba i:5 i:5 e:ImageFormat.WebP	b:1	png-adam7-gray1-5x5.png: lossless adr=0002#1
+encode	R	p:decode/png-rgba8-512x512-grad.png.rgba i:512 i:512 e:ImageFormat.Png	b:1	png-rgba8-512x512-grad.png: lossless
+encode	R	p:decode/png-rgba8-512x512-grad.png.rgba i:512 i:512 e:ImageFormat.Jpeg	i:926 i:40	png-rgba8-512x512-grad.png: Rust's q75 JPEG, decoded by image: mean 0.926 max 40
+encode	R	p:decode/png-rgba8-512x512-grad.png.rgba i:512 i:512 e:ImageFormat.Bmp	b:1	png-rgba8-512x512-grad.png: lossless
+encode	R	p:decode/png-rgba8-512x512-grad.png.rgba i:512 i:512 e:ImageFormat.WebP	b:1	png-rgba8-512x512-grad.png: lossless adr=0002#1
+encode	R	p:decode/png-rgba8-7x3-text-pii.png.rgba i:7 i:3 e:ImageFormat.Png	b:1	png-rgba8-7x3-text-pii.png: lossless
+encode	R	p:decode/png-rgba8-7x3-text-pii.png.rgba i:7 i:3 e:ImageFormat.Jpeg	i:16634 i:55	png-rgba8-7x3-text-pii.png: Rust's q75 JPEG, decoded by image: mean 16.634 max 55
+encode	R	p:decode/png-rgba8-7x3-text-pii.png.rgba i:7 i:3 e:ImageFormat.Bmp	b:1	png-rgba8-7x3-text-pii.png: lossless
+encode	R	p:decode/png-rgba8-7x3-text-pii.png.rgba i:7 i:3 e:ImageFormat.WebP	b:1	png-rgba8-7x3-text-pii.png: lossless adr=0002#1
 encode	R	p:decode/bmp-image-rgb8-33x17.bmp.rgba i:33 i:17 e:ImageFormat.Png	b:1	bmp-image-rgb8-33x17.bmp: lossless
 encode	R	p:decode/bmp-image-rgb8-33x17.bmp.rgba i:33 i:17 e:ImageFormat.Jpeg	i:14218 i:76	bmp-image-rgb8-33x17.bmp: Rust's q75 JPEG, decoded by image: mean 14.218 max 76
 encode	R	p:decode/bmp-image-rgb8-33x17.bmp.rgba i:33 i:17 e:ImageFormat.Bmp	b:1	bmp-image-rgb8-33x17.bmp: lossless

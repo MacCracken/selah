@@ -1,0 +1,104 @@
+# selah.cyr — the facade (Rust: rust-old/src/lib.rs): decode_image_data, annotate_image, redact_image.
+
+# Decodes standard, padded base64 (a capture response's image) to bytes (Rust: decode_image_data, base64's STANDARD
+# engine: canonical only). Ok(bytes on the freelist; free them with selah_bytes_free), their length at `len_out`;
+# Err(SL_ERR_API) with "failed to decode image data: <reason>".
+fn selah_decode_image_data(p, n, len_out, detail_out = 0): Result {
+    store64(len_out, 0);
+    var pair = bayan_base64_decode(p, n);
+    if (pair == 0) {
+        if (detail_out == 0) { return Err(SL_ERR_API); }
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "failed to decode image data: ");
+        str_builder_add_cstr(sb, bayan_base64_last_error());
+        return _sl_fail(SL_ERR_API, detail_out, str_builder_build(sb));
+    }
+    # UPSTREAM(L19): bayan decodes onto the bump heap only; the copy on the freelist is what the caller frees.
+    var len = load64(pair + 8);
+    var out = fl_alloc(len + 1);
+    if (out == 0) { return _sl_fail_cstr(SL_ERR_API, detail_out, "failed to decode image data: out of memory"); }
+    memcpy(out, load64(pair), len);
+    store8(out + len, 0);
+    store64(len_out, len);
+    return Ok(out);
+}
+
+# Applies annotations (a vec of *SlAnnotation) to the image bytes src[0..n) and encodes the result as `fmt` (Rust:
+# annotate_image). Ok(bytes; free them with selah_bytes_free), their length at `len_out`.
+fn selah_annotate_image(src, n, anns, fmt, len_out, detail_out = 0): Result {
+    return SlAnnotationCanvas_render_to_image(src, n, anns, fmt, len_out, detail_out);
+}
+
+# An allocation as a *SlRedactionTarget.
+#must_use
+fn _sl_as_target(p): *SlRedactionTarget {
+    return p;
+}
+
+# 1 when two redaction targets are equal (Rust's derived PartialEq: the kind, and a custom target's label).
+#must_use
+fn _sl_target_eq(a: SlRedactionTarget, b: SlRedactionTarget): i64 {
+    if (a.kind != b.kind) { return 0; }
+    if (a.kind != SL_TARGET_CUSTOM) { return 1; }
+    if (a.custom == 0 || b.custom == 0) { return a.custom == b.custom; }
+    var n = str_len(a.custom);
+    return n == str_len(b.custom) && memeq(str_data(a.custom), str_data(b.custom), n) == 1;
+}
+
+# Detects PII in the image bytes src[0..n) and redacts it (Rust: redact_image). `targets` is a vec of
+# *SlRedactionTarget to keep, or 0 for all. Only matches with a located (non-zero) region are redacted and returned
+# (through `suggestions_out`, a vec of *SlRedactionSuggestion).
+#
+# Limitation, as in Rust: the built-in OCR is a stub that scans the encoded file bytes (embedded metadata), not the
+# rendered pixels, so it never yields a location and text visible in the image is not found. What it finds lives in
+# metadata, which re-encoding does not carry; a warning says so. Pixel redaction needs caller-supplied regions:
+# SL_KIND_REDACTION annotations through selah_annotate_image.
+fn selah_redact_image(src, n, targets, fmt, len_out, suggestions_out, detail_out = 0): Result {
+    store64(len_out, 0);
+    store64(suggestions_out, 0);
+    var ocr: *SlOcrResult = selah_extract_text_regions(src, n);
+    var all = selah_suggest_redactions(str_data(ocr.text), str_len(ocr.text));
+    var kept = vec_new();
+    var detected = 0;
+    var i = 0;
+    while (i < vec_len(all)) {
+        var s: *SlRedactionSuggestion = _sl_as_suggestion(vec_get(all, i));
+        var want = 1;
+        if (targets != 0) {
+            want = 0;
+            var k = 0;
+            while (k < vec_len(targets)) {
+                var tp: *SlRedactionTarget = _sl_as_target(vec_get(targets, k));
+                if (_sl_target_eq(s.target, *tp) == 1) { want = 1; }
+                k = k + 1;
+            }
+        }
+        if (want == 1) {
+            detected = detected + 1;
+            var area: f64 = s.region.area();
+            if (area > 0.0) { vec_push(kept, s); }
+        }
+        i = i + 1;
+    }
+    if (vec_len(kept) < detected) {
+        _sl_log_kv(SK_WARN, "PII found without a location; rendered text is not analyzed", "ocr",
+          "stub: embedded metadata, dropped by re-encoding");
+    }
+    var anns = vec_new();
+    i = 0;
+    while (i < vec_len(kept)) {
+        var ks: *SlRedactionSuggestion = _sl_as_suggestion(vec_get(kept, i));
+        var a: *SlAnnotation = SlAnnotation_new(SL_KIND_REDACTION, ks.region, SL_COLOR_BLACK);
+        if (a != 0) { vec_push(anns, a); }
+        i = i + 1;
+    }
+    var t, v = SlAnnotationCanvas_render_to_image(src, n, anns, fmt, len_out, detail_out);
+    i = 0;
+    while (i < vec_len(anns)) {
+        SlAnnotation_free(vec_get(anns, i));
+        i = i + 1;
+    }
+    if (is_err_result(t) == 1) { return Err(v); }
+    store64(suggestions_out, kept);
+    return Ok(v);
+}

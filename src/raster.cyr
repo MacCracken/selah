@@ -1,0 +1,368 @@
+# raster.cyr — drawing annotations onto RGBA8 pixels (Rust: rust-old/src/annotate.rs, "Rasterization").
+#
+# Every operation is Rust's, in Rust's arithmetic, so a rendered image is class A (port plan §4):
+#   - rect geometry in f32 (SlRect, as hisab's), pixel bounds rounded outward (floor / ceil) so a redaction covers every
+#     pixel it touches, and float → int casts that saturate as Rust's `as` does (NaN → 0, ±∞ to the ends);
+#   - highlight blending through ranga's blend_row (BM_NORMAL), the same routine Rust selah calls in Rust ranga;
+#   - the ellipse sampled at ~4 points per unit of (rx + ry), capped at 2^20, its points clamped in f64 before the cast;
+#   - lines clipped to the image (Liang–Barsky) before Bresenham, so the step count is bounded by the image.
+# The pixels are an SlImage's (codec.cyr).
+
+# Rust's STROKE_WIDTH, HIGHLIGHT_OPACITY and MAX_ELLIPSE_STEPS.
+var _SL_STROKE_WIDTH = 2;
+var _SL_HIGHLIGHT_OPACITY = 76;
+var _SL_MAX_ELLIPSE_STEPS = 1048576;
+
+var _SL_I64_MAX = 9223372036854775807;
+var _SL_I64_MIN = -9223372036854775807 - 1;
+
+# Rust's `x as i64` for an f64: truncation toward zero, NaN → 0, saturating at i64's ends.
+#must_use
+#pure
+fn _sl_sat_i64(x: f64): i64 {
+    if (x != x) { return 0; }
+    if (x >= 9223372036854775807.0) { return _SL_I64_MAX; }
+    if (x <= -9223372036854775807.0) { return _SL_I64_MIN; }
+    var t: f64 = f64_trunc(x);
+    return f64_to(t);
+}
+
+# v clamped to [lo, hi] (i64).
+#must_use
+#pure
+fn _sl_clamp_i64(v, lo, hi): i64 {
+    if (v < lo) { return lo; }
+    if (v > hi) { return hi; }
+    return v;
+}
+
+# Rust's f64::clamp: NaN stays NaN.
+#must_use
+#pure
+fn _sl_clamp_f64(v: f64, lo: f64, hi: f64): f64 {
+    var x: f64 = v;
+    if (x < lo) { x = lo; }
+    if (x > hi) { x = hi; }
+    return x;
+}
+
+# a + b saturating at i64's ends (Rust's saturating_add), for b >= 0.
+#must_use
+#pure
+fn _sl_sat_add(a, b): i64 {
+    if (a > _SL_I64_MAX - b) { return _SL_I64_MAX; }
+    return a + b;
+}
+
+# A colour packed as the 4 bytes R, G, B, A in memory order.
+#must_use
+#pure
+fn _sl_px32(c: SlColor): i64 {
+    return c.r | (c.g << 8) | (c.b << 16) | (c.a << 24);
+}
+
+# Fills pixels [x0, x1) × [y0, y1) (already inside the image) with the packed colour.
+fn _sl_fill_span(img: *SlImage, x0, y0, x1, y1, px): i64 {
+    var stride = img.width * 4;
+    var first = img.pixels + y0 * stride + x0 * 4;
+    var bytes = (x1 - x0) * 4;
+    var i = 0;
+    while (i < bytes) {
+        store32(first + i, px);
+        i = i + 4;
+    }
+    var y = y0 + 1;
+    while (y < y1) {
+        memcpy(img.pixels + y * stride + x0 * 4, first, bytes);
+        y = y + 1;
+    }
+    return 0;
+}
+
+# Rust's pixel_bounds: [x0, x1) × [y0, y1) of every pixel the normalized rect touches, clipped to w × h, into out
+# (i64[4]). Returns 1, or 0 when that is empty.
+fn _sl_pixel_bounds(r: SlRect, w, h, out): i64 {
+    var n: SlRect = r.normalized();
+    var ax: f64 = f32_to(n.min_x);
+    var ay: f64 = f32_to(n.min_y);
+    var bx: f64 = f32_to(n.max_x);
+    var by: f64 = f32_to(n.max_y);
+    var fx0: f64 = f64_floor(ax);
+    var fy0: f64 = f64_floor(ay);
+    var fx1: f64 = f64_ceil(bx);
+    var fy1: f64 = f64_ceil(by);
+    var x0 = _sl_clamp_i64(_sl_sat_i64(fx0), 0, w);
+    var y0 = _sl_clamp_i64(_sl_sat_i64(fy0), 0, h);
+    var x1 = _sl_clamp_i64(_sl_sat_i64(fx1), 0, w);
+    var y1 = _sl_clamp_i64(_sl_sat_i64(fy1), 0, h);
+    store64(out, x0);
+    store64(out + 8, y0);
+    store64(out + 16, x1);
+    store64(out + 24, y1);
+    if (x0 < x1 && y0 < y1) { return 1; }
+    return 0;
+}
+
+# Fills a rect with a solid colour, no blending (Rust: fill_rect).
+fn _sl_fill_rect(img: *SlImage, r: SlRect, c: SlColor): i64 {
+    var b: i64[4];
+    if (_sl_pixel_bounds(r, img.width, img.height, &b) == 0) { return 0; }
+    return _sl_fill_span(img, b[0], b[1], b[2], b[3], _sl_px32(c));
+}
+
+# Blends the opaque colour over the rect at `opacity`, row by row through ranga (Rust: blend_rect).
+fn _sl_blend_rect(img: *SlImage, r: SlRect, c: SlColor, opacity): i64 {
+    var b: i64[4];
+    if (_sl_pixel_bounds(r, img.width, img.height, &b) == 0) { return 0; }
+    var cnt = b[2] - b[0];
+    var overlay = fl_alloc(cnt * 4);
+    if (overlay == 0) { return 0; }
+    var px = c.r | (c.g << 8) | (c.b << 16) | (255 << 24);
+    var i = 0;
+    while (i < cnt) {
+        store32(overlay + i * 4, px);
+        i = i + 1;
+    }
+    var stride = img.width * 4;
+    var y = b[1];
+    while (y < b[3]) {
+        blend_row(overlay, img.pixels + y * stride + b[0] * 4, cnt, BM_NORMAL, opacity);
+        y = y + 1;
+    }
+    fl_free(overlay);
+    return 0;
+}
+
+# A rect outline as four filled bands of the stroke width, in Rust's f32 arithmetic (Rust: stroke_rect).
+fn _sl_stroke_rect(img: *SlImage, r: SlRect, c: SlColor): i64 {
+    var n: SlRect = r.normalized();
+    var t: f32 = f32_from(2.0);
+    var x: f32 = n.min_x;
+    var y: f32 = n.min_y;
+    var w: f32 = n.max_x - n.min_x;
+    var h: f32 = n.max_y - n.min_y;
+    var yh: f32 = y + h;
+    var yb: f32 = yh - t;
+    var xw: f32 = x + w;
+    var xr: f32 = xw - t;
+    _sl_fill_rect(img, SlRect_new(x, y, w, t), c);
+    _sl_fill_rect(img, SlRect_new(x, yb, w, t), c);
+    _sl_fill_rect(img, SlRect_new(x, y, t, h), c);
+    _sl_fill_rect(img, SlRect_new(xr, y, t, h), c);
+    return 0;
+}
+
+# Fills a size × size square with its top-left at (x, y), clipped; saturating (Rust: stamp).
+fn _sl_stamp(img: *SlImage, x, y, size, px): i64 {
+    var s = size;
+    if (s < 1) { s = 1; }
+    var x0 = _sl_clamp_i64(x, 0, img.width);
+    var y0 = _sl_clamp_i64(y, 0, img.height);
+    var x1 = _sl_clamp_i64(_sl_sat_add(x, s), 0, img.width);
+    var y1 = _sl_clamp_i64(_sl_sat_add(y, s), 0, img.height);
+    if (x0 >= x1 || y0 >= y1) { return 0; }
+    return _sl_fill_span(img, x0, y0, x1, y1, px);
+}
+
+# An ellipse outline inscribed in the rect (Rust: stroke_ellipse).
+fn _sl_stroke_ellipse(img: *SlImage, r: SlRect, c: SlColor): i64 {
+    var n: SlRect = r.normalized();
+    if (n.is_finite() == false) { return 0; }
+    var t: f32 = f32_from(2.0);
+    var t2: f32 = f32_from(4.0);
+    var w: f32 = n.max_x - n.min_x;
+    var h: f32 = n.max_y - n.min_y;
+    var rxx: f32 = n.min_x - t;
+    var ryy: f32 = n.min_y - t;
+    var rw: f32 = w + t2;
+    var rh: f32 = h + t2;
+    var b: i64[4];
+    if (_sl_pixel_bounds(SlRect_new(rxx, ryy, rw, rh), img.width, img.height, &b) == 0) { return 0; }
+
+    var wd: f64 = f32_to(w);
+    var hd: f64 = f32_to(h);
+    var rx: f64 = wd / 2.0;
+    var ry: f64 = hd / 2.0;
+    var x0d: f64 = f32_to(n.min_x);
+    var y0d: f64 = f32_to(n.min_y);
+    var cx: f64 = x0d + rx;
+    var cy: f64 = y0d + ry;
+    var px = _sl_px32(c);
+    var lo: f64 = -3.0;
+    var iw: f64 = f64_from(img.width);
+    var ih: f64 = f64_from(img.height);
+    var hi_x: f64 = iw + 1.0;
+    var hi_y: f64 = ih + 1.0;
+    var sum: f64 = rx + ry;
+    var sc: f64 = sum * 4.0;
+    var ce: f64 = f64_ceil(sc);
+    var cl: f64 = _sl_clamp_f64(ce, 0.0, 1048576.0);
+    var steps = _sl_sat_i64(cl);
+    var fsteps: f64 = f64_from(steps);
+    var tau: f64 = 6.283185307179586;
+    var i = 0;
+    while (i < steps) {
+        var fi: f64 = f64_from(i);
+        var ta: f64 = tau * fi;
+        var angle: f64 = ta / fsteps;
+        var co: f64 = f64_cos(angle);
+        var si: f64 = f64_sin(angle);
+        var ox: f64 = rx * co;
+        var oy: f64 = ry * si;
+        var exf: f64 = cx + ox;
+        var eyf: f64 = cy + oy;
+        var exc: f64 = _sl_clamp_f64(exf, lo, hi_x);
+        var eyc: f64 = _sl_clamp_f64(eyf, lo, hi_y);
+        var ex = _sl_sat_i64(exc);
+        var ey = _sl_sat_i64(eyc);
+        _sl_stamp(img, ex - 1, ey - 1, 2, px);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Liang–Barsky: clips the segment (x0, y0)–(x1, y1) to [xmin, xmax] × [ymin, ymax] into out (f64[4]). Returns 1, or
+# 0 when the segment misses the box or an endpoint is not finite (Rust: clip_line).
+fn _sl_clip_line(x0: f64, y0: f64, x1: f64, y1: f64, xmin: f64, ymin: f64, xmax: f64, ymax: f64, out): i64 {
+    var z: f64 = 0.0;
+    var d0: f64 = x0 - x0;
+    var d1: f64 = y0 - y0;
+    var d2: f64 = x1 - x1;
+    var d3: f64 = y1 - y1;
+    if (d0 != z || d1 != z || d2 != z || d3 != z) { return 0; }
+    var dx: f64 = x1 - x0;
+    var dy: f64 = y1 - y0;
+    var t0: f64 = 0.0;
+    var t1: f64 = 1.0;
+    var ps: i64[4];
+    var qs: i64[4];
+    var p0: f64 = -dx;
+    var q0: f64 = x0 - xmin;
+    var q1: f64 = xmax - x0;
+    var p2: f64 = -dy;
+    var q2: f64 = y0 - ymin;
+    var q3: f64 = ymax - y0;
+    store64(&ps, p0);
+    store64(&qs, q0);
+    store64(&ps + 8, dx);
+    store64(&qs + 8, q1);
+    store64(&ps + 16, p2);
+    store64(&qs + 16, q2);
+    store64(&ps + 24, dy);
+    store64(&qs + 24, q3);
+    var k = 0;
+    while (k < 4) {
+        var p: f64 = load64(&ps + k * 8);
+        var q: f64 = load64(&qs + k * 8);
+        if (p == z) {
+            if (q < z) { return 0; }
+        } else {
+            var rr: f64 = q / p;
+            if (p < z) {
+                if (rr > t1) { return 0; }
+                if (rr > t0) { t0 = rr; }
+            } else {
+                if (rr < t0) { return 0; }
+                if (rr < t1) { t1 = rr; }
+            }
+        }
+        k = k + 1;
+    }
+    var a0: f64 = t0 * dx;
+    var a1: f64 = t0 * dy;
+    var a2: f64 = t1 * dx;
+    var a3: f64 = t1 * dy;
+    var ox0: f64 = x0 + a0;
+    var oy0: f64 = y0 + a1;
+    var ox1: f64 = x0 + a2;
+    var oy1: f64 = y0 + a3;
+    store64(out, ox0);
+    store64(out + 8, oy0);
+    store64(out + 16, ox1);
+    store64(out + 24, oy1);
+    return 1;
+}
+
+# A line of the stroke width, clipped to the image plus a margin, then Bresenham with a 3 × 3 brush (Rust:
+# draw_line).
+fn _sl_draw_line(img: *SlImage, fx: f64, fy: f64, tx: f64, ty: f64, c: SlColor): i64 {
+    var margin: f64 = 3.0;
+    var neg: f64 = -3.0;
+    var iw: f64 = f64_from(img.width);
+    var ih: f64 = f64_from(img.height);
+    var mx: f64 = iw + margin;
+    var my: f64 = ih + margin;
+    var seg: i64[4];
+    if (_sl_clip_line(fx, fy, tx, ty, neg, neg, mx, my, &seg) == 0) { return 0; }
+    var sx0: f64 = load64(&seg);
+    var sy0: f64 = load64(&seg + 8);
+    var sx1: f64 = load64(&seg + 16);
+    var sy1: f64 = load64(&seg + 24);
+    var px = _sl_px32(c);
+    var cx = _sl_sat_i64(sx0);
+    var cy = _sl_sat_i64(sy0);
+    var ex = _sl_sat_i64(sx1);
+    var ey = _sl_sat_i64(sy1);
+    var dx = ex - cx;
+    if (dx < 0) { dx = -dx; }
+    var dy = ey - cy;
+    if (dy > 0) { dy = -dy; }
+    var sx = -1;
+    if (cx < ex) { sx = 1; }
+    var sy = -1;
+    if (cy < ey) { sy = 1; }
+    var err = dx + dy;
+    while (1 == 1) {
+        _sl_stamp(img, cx - 1, cy - 1, 3, px);
+        if (cx == ex && cy == ey) { break; }
+        var e2 = 2 * err;
+        if (e2 >= dy) {
+            err = err + dy;
+            cx = cx + sx;
+        }
+        if (e2 <= dx) {
+            err = err + dx;
+            cy = cy + sy;
+        }
+    }
+    return 0;
+}
+
+# Text and FreeForm: an underline bar of 2 at the bottom of the normalized rect, in f32 (no font rasterizer).
+fn _sl_draw_underline(img: *SlImage, pos: SlRect, c: SlColor): i64 {
+    var n: SlRect = pos.normalized();
+    var two: f32 = f32_from(2.0);
+    var nh: f32 = n.max_y - n.min_y;
+    var nw: f32 = n.max_x - n.min_x;
+    var yh: f32 = n.min_y + nh;
+    var yu: f32 = yh - two;
+    return _sl_fill_rect(img, SlRect_new(n.min_x, yu, nw, two), c);
+}
+
+# Draws one annotation (Rust: draw_annotation).
+fn _sl_draw_annotation(img: *SlImage, a: *SlAnnotation): i64 {
+    var pos: SlRect = a.position;
+    var c: SlColor = a.color;
+    match a.kind {
+        SL_KIND_REDACTION => { _sl_fill_rect(img, pos, SL_COLOR_BLACK); }
+        SL_KIND_HIGHLIGHT => { _sl_blend_rect(img, pos, c, _SL_HIGHLIGHT_OPACITY); }
+        SL_KIND_RECTANGLE => { _sl_stroke_rect(img, pos, c); }
+        SL_KIND_CIRCLE => { _sl_stroke_ellipse(img, pos, c); }
+        SL_KIND_ARROW => {
+            # The arrow keeps its signed size: from (x, y) to (x + width, y + height), each sum in f32.
+            var w: f32 = pos.max_x - pos.min_x;
+            var h: f32 = pos.max_y - pos.min_y;
+            var ex: f32 = pos.min_x + w;
+            var ey: f32 = pos.min_y + h;
+            var fx: f64 = f32_to(pos.min_x);
+            var fy: f64 = f32_to(pos.min_y);
+            var tx: f64 = f32_to(ex);
+            var ty: f64 = f32_to(ey);
+            _sl_draw_line(img, fx, fy, tx, ty, c);
+        }
+        SL_KIND_TEXT => { _sl_draw_underline(img, pos, c); }
+        SL_KIND_FREEFORM => { _sl_draw_underline(img, pos, c); }
+        _ => { return 0; }
+    }
+    return 0;
+}
