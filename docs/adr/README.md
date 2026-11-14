@@ -21,5 +21,6 @@ Decisions about selah — what we chose, the context, and the consequences we ac
 
 | ADR | Title | Status |
 |---|---|---|
-| [0001](0001-cyrius-port-with-rust-oracle.md) | Port to Cyrius, with Rust 0.30.0 frozen as the parity oracle | Accepted |
+| [0001](0001-cyrius-port-with-rust-oracle.md) | Port to Cyrius, with Rust 0.30.0 frozen as the parity oracle | Accepted (parity amended by 0003) |
 | [0002](0002-port-api-divergences.md) | Accept the planned API changes in the Cyrius 1.0 API | Accepted |
+| [0003](0003-accuracy-is-the-bar.md) | Accuracy is the bar; the Rust oracle is a reference, not the definition of correct | Accepted (amends 0001) |

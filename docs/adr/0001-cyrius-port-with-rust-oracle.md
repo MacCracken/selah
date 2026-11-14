@@ -1,6 +1,7 @@
 # 0001 — Port to Cyrius, with Rust 0.30.0 frozen as the parity oracle
 
-**Status**: Accepted
+**Status**: Accepted — its parity classes and divergence rule are amended by
+[0003](0003-accuracy-is-the-bar.md): accuracy is the bar, and Rust is the reference and the floor
 **Date**: 2026-11-14
 
 ## Context

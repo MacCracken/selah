@@ -2,7 +2,8 @@
 
 > **Plan of record** for porting selah to Cyrius, drafted 2026-11-14 against the installed Cyrius 6.7.18 toolchain.
 > The Rust tree is cut as the **final Rust release, 0.30.0** (0.29.4 plus the 2026-11 audit work), and frozen in
-> `rust-old/` as the **parity oracle**. The Cyrius port ships as **1.0.0**.
+> `rust-old/` as the **reference oracle**. The port is judged by accuracy; Rust is the floor it must meet, not
+> behaviour to imitate ([ADR 0003](../adr/0003-accuracy-is-the-bar.md)). The Cyrius port ships as **1.0.0**.
 >
 > The shape follows tanmatra's plan (`../tanmatra/docs/development/tanmatra-port-plan.md`), as kimiya, pravash and
 > ushma did. selah differs from those math libraries in where the risk sits. Its numerics are a few f32 rectangle
@@ -401,9 +402,10 @@ this repo (CLAUDE.md).
    - It replays every module in `tests/golden/modules.txt`, a list the generator writes.
    - Each row gets one outcome: ok, **FAILED**, measured or pending.
    - The exit code is the number of failing modules.
-7. **Baselines**, recorded in `docs/development/port-parity.md` (done 2026-11-14: §1 there is the result, §2 the five findings F1–F5 that M3 settles):
+7. **Baselines**, recorded in `docs/development/port-parity.md` (done 2026-11-14: §1 there is the result, §2 the findings F1–F5, measured against source pixels and filed with chitra):
    - JPEG decode, chitra against `image`, on every JPEG fixture: a histogram of the maximum per-channel difference,
-     which sets **K_jpeg** (class B) before the first gated comparison;
+     which sets **K_jpeg** (class B) before the first gated comparison, and both decoders' error against the
+     fixture's source pixels (class B's accuracy gate);
    - PNG and BMP decode, expected exact;
    - f32 rect arithmetic, spot-checked;
    - all of it on x86_64 ELF, x86_64 PE (wine) and aarch64 (qemu), as tanmatra did. macOS is recorded as unmeasured
@@ -434,7 +436,7 @@ Every milestone ends with the same gates:
 |---|---|---|---|
 | **M1 Foundation** | error, log, fmtf, json, geometry, core, uuid, rfc3339 | `SlError` and the error detail (D7). `SlRect` / `SlVec2` in the `{min, max}` f32 layout (D4). Enums with `_display` / `_parse`: `AnnotationKind` parses case-insensitively; `ImageFormat` keeps `extension`, `mime_type` and `from_path`, and **`WebP` stays an enum value** that the codecs refuse (D1), so the surface and parsing keep parity. `SlColor` with `to_css`. `xml_escape` and `derive_output_path`. The shortest f32/f64 printer in two forms (L1). UUID v4 from `random_bytes`. RFC 3339 with chrono's `AutoSi` fraction digits, over `clock_epoch_ns` (L5) | every enum variant, both directions; paths for `from_path`; a rect grid with ±0, NaN, ±∞, subnormals, f32 MAX and negative sizes, with `contains_point` / `intersects` pairs; `xml_escape` over bytes 0–255 and UTF-8 samples; f32 and f64 printing over every binade, compared with Rust `Display` and serde_json |
 | **M2 PII and smart crop** | ai | The `suggest_redactions` tokenizer. The email, card (Luhn, grouped and split cards), IPv4 and phone (separators required) classifiers. Results in text order, each token at most once. The `extract_text_regions` stub and `suggest_smart_crop` | the inputs of the Rust tests, plus a seeded generator of PII-shaped strings: valid and invalid Luhn, every grouping, every phone separator, edge octets, Unicode punctuation and whitespace; byte blobs for the stub OCR; crop dimensions from 0 to 2³² − 1 |
-| **M3 Codecs** | codec, png_enc, bmp_enc, jpeg_enc | Signature sniffing for PNG, JPEG and BMP; GIF and WebP refused (D1). Limits through chitra's budget variant. PNG encoding from kii. BMP encoding. A **baseline JPEG encoder** (forward DCT, the Annex K tables), with quality and chroma subsampling matched to the defaults of Rust `image`'s `JpegEncoder`, measured when M3 starts. `convert_format` | every decode fixture: PNG and BMP are class A, JPEG class B. Malformed, truncated and bomb inputs give **the same accept or refuse verdict as Rust** (A). Encoders are class R: Cyrius encode then Cyrius decode is exact for PNG and BMP, and in the **reverse oracle** Rust decodes every Cyrius-encoded file to the same pixels (PNG, BMP) or within the PSNR bound (JPEG) |
+| **M3 Codecs** | codec, png_enc, bmp_enc, jpeg_enc | Signature sniffing for PNG, JPEG and BMP; GIF and WebP refused (D1). Limits through chitra's budget variant. PNG encoding from kii. BMP encoding. A **baseline JPEG encoder** (forward DCT, the Annex K tables), with quality and chroma subsampling matched to the defaults of Rust `image`'s `JpegEncoder`, measured when M3 starts. `convert_format` | every decode fixture: PNG and BMP are class A, JPEG class B (accuracy against the source pixels). Malformed, truncated and bomb inputs give **the same accept or refuse verdict as Rust** (A). Encoders are class R: Cyrius encode then Cyrius decode is exact for PNG and BMP, and in the **reverse oracle** Rust decodes every Cyrius-encoded file to the same pixels (PNG, BMP) or within the PSNR bound (JPEG) |
 | **M4 Annotation** | raster, annotate, selah | The rasterizer as Rust has it: `fill_rect`, `blend_rect` (ranga `blend_row`, `BM_NORMAL`), `stroke_rect`, bounded ellipse sampling, line clipping and drawing, `stamp`, outward rounding of redactions, rejection of NaN redactions. The canvas: add, remove, clear, count, `apply_redaction`, layer save and load (`LAYER_VERSION`, `MAX_LAYER_FILE_BYTES`, private atomic writes). `to_svg`, `render_to_image`. The facade: `selah_annotate_image`, `selah_redact_image`, `selah_decode_image_data` | every `AnnotationKind` × rect class (normal, negative size, fractional, partly or wholly off-canvas, NaN, ±∞, huge) × colours with alpha 0, 128 and 255, on seeded images from 1×1 to 64×64 plus one 512×512. Rendered through a PNG round trip on both sides, so the RGBA is class A. The leak regressions from the Rust audit. SVG text (A). Layer JSON both ways: Rust-written layers load in Cyrius, and Cyrius-written layers load in Rust |
 | **M5 System and clients** | fsutil, http, history, spawn, capture, daimon | Private permissions, bounded reads, atomic writes (`file_replace_atomic`). History as JSONL: `xflock` non-blocking with a 5 s retry deadline, atomic rewrites, `list` in bounded memory (stable order, L4), get and delete, a torn last line skipped. Session detection, and the clipboard over the spawn helper (D12, L3). The HTTP layer over sandhi: status checks, capped bodies, `Authorization: Bearer`, percent-encoded path segments. **The clients retargeted (D2)**, including the OCR downscale loop | history files written by Rust are read by Cyrius, and the reverse; `RegionSpec::from_rect` over the rect grid (A); the capture request body for the unchanged contract (A, captured by the mock server); `parse_region` and the confidence clamp (A); the retargeted daimon and hoosh requests as class W fixtures, with mock answers for success, non-2xx, oversized bodies, malformed JSON and timeouts |
 | **M6 MCP profile** | mcp | The five tools on bote 3.8.15 (itihas template): identical names, schemas, descriptions and read-only annotations (`selah_ocr`, `selah_history`). Path and input safety: an input must be an image, an output must have an image extension, no symlinks, traversal refused. `selah_ocr` `engine: "hoosh"` goes through the retargeted client. `transport_stdio_run` | `tools/list`, `initialize`, an unknown method, argument validation for each tool, and every tool's answer on temp-dir fixtures (A after masking temp paths); the refusals the Rust audit pinned (symlinks, traversal, non-image inputs and outputs) |
@@ -450,20 +452,40 @@ Every milestone ends with the same gates:
 
 ## 4. Parity policy
 
+**Accuracy is the bar; Rust is the reference and the floor** ([ADR 0003](../adr/0003-accuracy-is-the-bar.md)).
+- **Ground truth decides where it exists:** the source pixels a fixture was encoded from, the format
+  specification, the mathematics. The port must be at least as accurate as Rust, measured the same way.
+- **Where Rust's behaviour is the contract, the port matches it exactly.** This covers JSON, layer and history
+  files, SVG, enum names and verdicts.
+- **Defects are fixed where they live:**
+  - a Rust defect is fixed in the port, not imitated;
+  - a dependency defect is filed upstream with the measurement.
+
+  Neither is a decision for the maintainer.
+
 | Class | Tolerance | Applies to |
 |---|---|---|
-| **A: exact** | bit-identical f32/f64; equal integers, strings and bytes | rect operations; enums; `xml_escape`; output paths; PII matches; smart crop; SVG; JSON text (layers, history, MCP, `OcrResult`); RGBA after rendering; PNG and BMP decode; the accept or refuse verdict on every input |
-| **B: JPEG decode** | per-channel \|Δ\| ≤ K_jpeg, set at M0 step 7 before the first gated comparison | JPEG decode, chitra against `image`, which use different IDCTs, and anything rendered over a JPEG source |
+| **A: exact** | bit-identical f32/f64; equal integers, strings and bytes. Expected is Rust's value, or the corrected value where ADR 0002 records a Rust defect | rect operations; enums; `xml_escape`; output paths; PII matches; smart crop; SVG; JSON text (layers, history, MCP, `OcrResult`); RGBA after rendering; PNG and BMP decode (lossless: the spec defines one answer, and the oracle's is checked against it, e.g. F3's rounding and F4's opacity); the accept or refuse verdict on every input |
+| **B: JPEG decode** | **accuracy:** against each fixture's source pixels, the port's mean and max absolute RGB error ≤ the reference decoder's + 0.05 (mean) and + 2 (max). **Conformance:** where both upsample chroma the same way, per-channel \|Δ\| ≤ K_jpeg = 2. Both set before the first gated comparison (port-parity.md §5) | JPEG decode (chitra; the reference is `image` 0.25.10 / zune-jpeg), and anything rendered over a JPEG source |
 | **R: round trip** | lossless: decode(encode(px)) = px exactly, under both decoders. Lossy: PSNR ≥ a bound against the source, and within a margin of Rust's own encoding at the same settings, both set at M3 start | the PNG, BMP and JPEG encoders. **Encoded bytes are never compared:** deflate and the JPEG encoder's choices differ from Rust's crates, and both outputs are valid |
 | **W: wire, Cyrius only** | equal to fixtures checked in under `tests/golden/wire/`; there is no Rust row | the retargeted daimon and hoosh requests and their parsing (D2) |
 
 Rules:
 - **Never widen a class to make a row pass.** A failure beyond its class is a defect in one of three places:
-  - in the port;
-  - in a Cyrius dependency (chitra, ranga, bote or the stdlib): file it upstream;
-  - in the Rust oracle: fix Rust, release 0.x.y + 1, and regenerate.
-- **The one exception is a divergence accepted in ADR 0002.** The harness lists such rows by name and still reports
-  them.
+  - **in the port:** fix it;
+  - **in a Cyrius dependency** (chitra, ranga, bote or the stdlib):
+    - file it upstream, with the measurement;
+    - put its rows on the harness's known-defect list under the issue's file name. They report `upstream`, and a
+      listed row that starts passing fails the run;
+    - where selah can be accurate without duplicating the dependency, add a ledger row (§6);
+  - **in the Rust oracle** (Rust disagrees with ground truth or the spec):
+    - fix it in the port;
+    - add an ADR 0002 row marked *Rust defect*;
+    - have `scripts/oracle` emit the corrected expectation.
+
+    A 0.30.x patch for Rust consumers is optional.
+- **An API change accepted in ADR 0002** is the other exception. The harness lists such rows by name and still
+  reports them.
 - **The audit's regression tests travel with the code,** as Cyrius assertions as well as golden rows:
   - negative-size and fractional redactions;
   - NaN rejection;
@@ -471,7 +493,7 @@ Rules:
   - the MCP refusals for symlinks, traversal and non-image inputs;
   - the history torn-line skip.
 
-  Parity proves "same as Rust"; these prove "safe".
+  Parity proves "as accurate as Rust, and compatible where Rust is the contract"; these prove "safe".
 - **Branch points are tested on both sides:**
   - line clipping at the canvas edge;
   - the ellipse sampling bound;
@@ -565,6 +587,11 @@ and leaves when the upstream piece ships. The format is pravash's.
 | L8 | the OCR downscale loop, and only OpenAI-compatible OCR models | hoosh's 1 MiB cap, and its image parts on other providers | **filed** `../hoosh/docs/development/issues/2026-11-14-selah-vision-image-parts-reach-only-openai-shaped-providers.md` | hoosh lands it |
 | L9 | `CaptureClient` tested only against the mock server | daimon has no `/v1/screen/*` routes | **filed** `../daimon/docs/development/issues/2026-11-14-selah-screen-capture-routes.md` | daimon ships the routes |
 | L10 | every HTTP call sets `read_ms` and `write_ms` alongside `total_ms` | `total_ms` alone doesn't bound a blocked `recv` (M0 probe 4e) | sandhi `2026-11-11-total-ms-does-not-bound-a-blocked-first-read` (ushma's; selah's data point appended) | sandhi clamps `SO_RCVTIMEO` to the deadline |
+| L11 | `src/codec.cyr` (M3): a 32-bpp `BI_RGB` BMP is decoded opaque (alpha forced to 255) | chitra reads the unused fourth byte as alpha whenever any of it is non-zero (F4) | **filed** `../chitra/docs/development/issues/2026-11-14-bmp-bi-rgb-32bpp-unused-byte-read-as-alpha.md` | chitra reads `BI_RGB` 32 bpp as opaque |
+| L12 | none possible: chitra exposes no chroma planes. Subsampled-JPEG rows are on the harness's known-defect list | box chroma upsampling, measurably less accurate than interpolated (F1) | **filed** `../chitra/docs/development/issues/2026-11-14-box-chroma-upsampling-loses-accuracy.md` | chitra upsamples by interpolation |
+| L13 | none: 16-bpp BMP rows are on the known-defect list (correcting them in selah would re-parse chitra's bitfield masks) | sub-8-bit BMP channels widened by bit replication, not to the nearest value (F3) | **filed** `../chitra/docs/development/issues/2026-11-14-bmp-sub-8-bit-replication-is-not-the-nearest-value.md` | chitra rounds |
+| L14 | CMYK / YCCK JPEG refused (ADR 0002 #16) | chitra refuses 4-component JPEG (F5) | **filed** `../chitra/docs/development/issues/2026-11-14-cmyk-ycck-jpeg-refused.md` | chitra returns the CMYK samples |
+| L15 | progressive JPEG refused (ADR 0002 #2) | chitra refuses SOF2 | **filed** `../chitra/docs/development/issues/2026-11-14-progressive-jpeg-has-a-consumer.md` | chitra decodes SOF2 |
 
 Toolchain defects found during the port are filed in `../cyrius/docs/development/issues/` with a repro, not worked
 around silently. That includes the probe results in M0 step 4 when they find one.
@@ -591,10 +618,10 @@ around silently. That includes the probe results in M0 step 4 when they find one
 
 | Milestone | Status | Golden rows | Ported tests | Benches | Notes |
 |---|---|---|---|---|---|
-| M0 Initialize | ✅ done 2026-11-14 | `decode` 63 (the baseline: 47 ok, 14 measured, 2 accepted; identical on x86_64 ELF, aarch64 and x86_64 PE) | — | Rust baseline at `c0da3e1` (all 13 in `rust-old/bench-history.csv`) | Step 0: the oracle green on rustc 1.100.0 (289 tests), released and tagged as **0.30.0** (`1a494b4`). Steps 1–3: `cyrius port`, the scaffold repaired (CLAUDE.md, roadmap, state, workflows, version, bench, stub docs), the Rust material moved to `rust-old/`, ADRs 0001 and 0002, the manifest with chitra, ranga and an optional bote, `lib/` vendored. Step 4: probes a–f (§2). Steps 5–7: `scripts/oracle/` (deterministic, `--check`; 63 fixtures), `tests/parity.tcyr`, and the decode baseline with five findings, F1–F5, for M3 to settle ([port-parity.md](port-parity.md) §2). The M0 gate is green: build, test, `test --bounds`, bench, lint, fmt, docs, audit; the only warning is the tolerated static-data advisory |
+| M0 Initialize | ✅ done 2026-11-14 | `decode` 63 (the baseline: 47 ok, 14 measured, 2 accepted; identical on x86_64 ELF, aarch64 and x86_64 PE) | — | Rust baseline at `c0da3e1` (all 13 in `rust-old/bench-history.csv`) | Step 0: the oracle green on rustc 1.100.0 (289 tests), released and tagged as **0.30.0** (`1a494b4`). Steps 1–3: `cyrius port`, the scaffold repaired (CLAUDE.md, roadmap, state, workflows, version, bench, stub docs), the Rust material moved to `rust-old/`, ADRs 0001 and 0002, the manifest with chitra, ranga and an optional bote, `lib/` vendored. Step 4: probes a–f (§2). Steps 5–7: `scripts/oracle/` (deterministic, `--check`; 63 fixtures), `tests/parity.tcyr`, and the decode baseline with five findings, F1–F5, measured against source pixels and filed with chitra ([port-parity.md](port-parity.md) §2, ADR 0003). The M0 gate is green: build, test, `test --bounds`, bench, lint, fmt, docs, audit; the only warning is the tolerated static-data advisory |
 | M1 Foundation | ✅ done 2026-11-14 | error 30 + fmtf 24,060 + geometry 8,129 + core 1,331 + uuid 144 + rfc3339 1,169 = **34,863, all class A, all equal on x86_64 ELF, aarch64 and x86_64 PE** | error.tcyr (6 Rust tests + 1), geometry.tcyr (19 + 1 doctest), core.tcyr (39 + 5 doctests + 2): 186 assertions; selah.tcyr smoke-tests `dist/selah.cyr` | 6 (`rect_new` 5.7×, `rect_contains_point` 17×, `rect_intersects` 32×, `xml_escape_plain` 5.2×, `_special` 6.8×, `_long` 13× Rust: [benchmarks-rust-v-cyrius.md](../benchmarks-rust-v-cyrius.md)) | `error`, `log`, `fmtf`, `json`, `uuid`, `rfc3339`, `geometry`, `core`; `[lib]` and `dist/selah.cyr`; surface parity 34/34 (`scripts/surface_parity.py`). Learned: zmij's JSON positional range is −6..=12 for f32 (−5..=15 for f64); serde also accepts `{"Variant": null}` for a unit variant and a struct as an array; Rust's `f32::min`/`max` on ±0 give the second operand. ADR 0002 rows #14 (serde error text) and #15 (f64 accessors). Filed: cyrius chrono RFC 3339 (L5) |
 | M2 PII and smart crop | ✅ done 2026-11-14 | ai **8,451, all class A, all equal on x86_64 ELF, aarch64 and x86_64 PE** (suggest_redactions 3,051 over Rust's test inputs and a seeded PII generator; extract_text_regions 191 including every image fixture; suggest_smart_crop 216 up to u32::MAX; char::is_alphanumeric 4,005; the three JSON shapes 988) | ai.tcyr: 39 Rust tests + 1 doctest + 1 Cyrius-only (70 assertions) | 4 (`suggest_redactions_clean` 6.3×, `_pii` 5.6×, `_long` 6.3×, `extract_text_regions_64k` 7.2× Rust) | `src/ai.cyr`, and `src/ai_data.cyr` **generated** by the oracle (`t_ai.rs`): Rust's own `char::is_alphanumeric`, which is **Unicode 18.0.0** in rustc 1.100 while the stdlib's `lib/unicode` is 17.0.0, so the table, not a category test, is what matches. List-returning functions take the allocator first (`_a` forms, D10). Learned: serde's array form may leave off a trailing `#[serde(default)]` field. Surface parity 3/3 (37/37 in all) |
-| M3 Codecs | ⏳ | | | | Starts by settling port-parity.md §2 F1–F5 (JPEG upsampling, IDCT bound K_jpeg = 2, 16-bit BMP expansion, 32-bit `BI_RGB` alpha, CMYK) and flipping `_PAR_DECODE_GATED` |
+| M3 Codecs | ⏳ | | | | Gates `decode` (flip `_PAR_DECODE_GATED`) under §4: class B's accuracy and conformance gates; the known-defect list for the rows waiting on chitra (F1 subsampled JPEG, F3 16-bpp BMP); the F4 opacity guard in `src/codec.cyr` (L11); CMYK and progressive refused as ADR 0002 #16 and #2 |
 | M4 Annotation | ⏳ | | | `render_to_image_64x64`, `render_to_image_512_bmp`, `to_svg_100` | |
 | M5 System and clients | ⏳ | | | | live capture waits on daimon (L9) |
 | M6 MCP profile | ⏳ | | | | |

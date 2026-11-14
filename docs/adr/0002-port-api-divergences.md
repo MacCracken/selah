@@ -13,6 +13,10 @@ consumers stay on 0.30.x, and the changes are made in the Cyrius API only.
 This ADR accepts each change, and fixes how the parity harness still compares it, so that no function leaves parity
 entirely. Rows are appended as later milestones realise or add divergences, and are never renumbered.
 
+Under ADR 0003 this ADR also records the other kind of divergence: a **Rust defect** — Rust disagreeing with ground
+truth or the spec — fixed in the port rather than imitated. Such rows say so, and name where the oracle emits the
+corrected expectation. A temporary refusal caused by a dependency gap names the upstream issue it waits on.
+
 ## Decision
 
 The Cyrius 1.0.0 API differs from Rust 0.30.0 in exactly these places:
@@ -20,7 +24,7 @@ The Cyrius 1.0.0 API differs from Rust 0.30.0 in exactly these places:
 | # | Rust 0.30.0 | Cyrius 1.0.0 | Golden comparison |
 |---|---|---|---|
 | 1 (D1) | `ImageFormat::WebP` decodes and encodes (lossy and lossless decode, lossless encode) | the enum value stays, and `extension`, `mime_type`, `from_path` and parsing keep parity. Any decode or encode of WebP returns `SL_ERR_UNSUPPORTED_FORMAT` | WebP rows of the format functions class A; WebP decode and encode rows map the oracle's success to the port's `UnsupportedFormat`, noted and counted |
-| 2 (D1) | progressive JPEG (SOF2) input decodes | refused with `SL_ERR_UNSUPPORTED_FORMAT`: chitra 1.3.1 refuses SOF2 (its one deferral) | progressive fixtures: oracle success ↔ the port's `UnsupportedFormat`, noted and counted |
+| 2 (D1) | progressive JPEG (SOF2) input decodes | refused with `SL_ERR_UNSUPPORTED_FORMAT`: chitra 1.3.1 refuses SOF2 (its one deferral). **Temporary:** filed as chitra `2026-11-14-progressive-jpeg-has-a-consumer`; the refusal leaves when chitra decodes SOF2 (ledger L15) | progressive fixtures: oracle success ↔ the port's `UnsupportedFormat`, noted and counted |
 | 3 (D1) | GIF is refused (the `image` crate is built without it) | GIF stays refused, although chitra decodes it: selah sniffs the signature and never hands GIF to chitra | class A on the verdict (both refuse) |
 | 4 (D2) | `DaimonClient::register_agent` posts to `/v1/agents/register` and reads `agent_id` | posts `{"name", "type": "Service"}` to `POST /v1/agents`, the Cyrius daimon's route, and returns its integer `id` | class W: the request and the parsing are checked against fixtures from daimon 2.5.6's handler; no Rust row |
 | 5 (D2) | `DaimonClient::heartbeat` posts to `/v1/agents/{id}/heartbeat` | removed: nothing in selah calls it, daimon keeps no liveness record for an API agent, and a `"heartbeat"` message would only fill the agent's own queue | surface parity lists it as removed by this row |
@@ -34,6 +38,7 @@ The Cyrius 1.0.0 API differs from Rust 0.30.0 in exactly these places:
 | 13 (D13) | the reserved no-op feature `ai` | not carried; there are no Cyrius consumers to keep building | none |
 | 14 *(M1, 2026-11-14)* | a refused JSON document is a `serde_json::Error` whose message names the field and the line and column | the readers (`SlRect_from_json`, `SlColor_from_json`, `SlAnnotation_from_json`, the enums' `from_json`) refuse exactly what serde refuses, as `SL_ERR_SERDE`, with the port's own message | `E:serde` rows compare the verdict only; every accept, and every value read, is class A |
 | 15 *(M1, 2026-11-14)* | `Rect::x`, `y`, `width`, `height` and `area` return `f32` | they return an `f64` holding the f32's exact value: Cyrius has no f32 return type. `f32_from` of it gives the f32 back unchanged, and the arithmetic stays f32 in Rust's order | class A on the f32 bits (`f32_from` of the result) |
+| 16 *(2026-11-14)* | CMYK and YCCK JPEGs (Adobe APP14) decode, converted to RGB | refused with `SL_ERR_UNSUPPORTED_FORMAT`: chitra 1.3.1 refuses 4-component JPEG (its ADR 0009). **Temporary:** filed as chitra `2026-11-14-cmyk-ycck-jpeg-refused`, which asks for the CMYK samples without a guess; selah then converts, documented as approximate unless the file carries an ICC profile (ledger L14) | the CMYK fixture: oracle success ↔ the port's `UnsupportedFormat`, noted and counted |
 
 ## Consequences
 

@@ -94,6 +94,65 @@ fn _par_why5(a, n1, b, n2, c): i64 {
     return p;
 }
 
+# Accuracy against ground truth: the mean (in thousandths) and the largest absolute error of the RGB channels of
+# px[0..n) against the source pixels src[0..n). Returns (mean x 1000, max).
+fn _par_err_vs(px, src, n): (i64, i64) {
+    var sum = 0;
+    var mx = 0;
+    var cnt = 0;
+    var i = 0;
+    while (i < n) {
+        if ((i & 3) != 3) {
+            var d = load8(px + i) - load8(src + i);
+            if (d < 0) { d = -d; }
+            sum = sum + d;
+            if (d > mx) { mx = d; }
+            cnt = cnt + 1;
+        }
+        i = i + 1;
+    }
+    if (cnt == 0) { return (0, 0); }
+    return (sum * 1000 / cnt, mx);
+}
+
+# Prints a lossy row's accuracy against its source pixels (tests/golden/fixtures/<file>.source.rgba), for the port
+# (px, or 0 when it refused) and for the oracle (blob); nothing when the fixture has no source.
+fn _par_accuracy(fp, fn_len, px, blob, n): i64 {
+    var path = alloc(fn_len + 16);
+    memcpy(path, fp, fn_len);
+    memcpy(path + fn_len, ".source.rgba", 12);
+    var slen = 0;
+    var src = _pc_read(path, fn_len + 12, &slen);
+    if (src == 0 || slen != n) { return 0; }
+    _pc_s("  accuracy ");
+    _pc_b(fp + 9, fn_len - 9);
+    _pc_s(" vs source:");
+    if (px != 0) {
+        var pm, px_max = _par_err_vs(px, src, n);
+        _pc_s(" chitra mean ");
+        _pc_i(pm / 1000);
+        _pc_s(".");
+        if (pm % 1000 < 100) { _pc_s("0"); }
+        if (pm % 1000 < 10) { _pc_s("0"); }
+        _pc_i(pm % 1000);
+        _pc_s(" max ");
+        _pc_i(px_max);
+    } else {
+        _pc_s(" chitra refuses");
+    }
+    var rm, r_max = _par_err_vs(blob, src, n);
+    _pc_s(" | rust mean ");
+    _pc_i(rm / 1000);
+    _pc_s(".");
+    if (rm % 1000 < 100) { _pc_s("0"); }
+    if (rm % 1000 < 10) { _pc_s("0"); }
+    _pc_i(rm % 1000);
+    _pc_s(" max ");
+    _pc_i(r_max);
+    _pc_s("\n");
+    return 0;
+}
+
 # One decode row.
 fn _par_decode_row(): i64 {
     var tp = 0;
@@ -126,6 +185,19 @@ fn _par_decode_row(): i64 {
         return _pc_record(miss, _par_why5("oracle refuses, port decodes ", w0, "x", h0, ""));
     }
     if (img == 0) {
+        var wp0 = 0;
+        var wn0 = 0;
+        var hp0 = 0;
+        var hn0 = 0;
+        var bp0 = 0;
+        var bn0 = 0;
+        if (_pc_tok(3, 2, &bp0, &bn0) == 1) {
+            _pc_tok(3, 0, &wp0, &wn0);
+            _pc_tok(3, 1, &hp0, &hn0);
+            var bl0 = 0;
+            var b0 = _pc_read(bp0 + 2, bn0 - 2, &bl0);
+            if (b0 != 0) { _par_accuracy(tp + 2, tn - 2, 0, b0, bl0); }
+        }
         if (adr1 == 1 || adr2 == 1) { return _pc_record(PC_ACCEPTED, why); }
         return _pc_record(miss, why);
     }
@@ -158,6 +230,7 @@ fn _par_decode_row(): i64 {
         return _pc_record(PC_FAILED, "oracle RGBA blob unreadable or the wrong size");
     }
     var px = chitra_image_pixels(img);
+    _par_accuracy(tp + 2, tn - 2, px, blob, blen);
     var outcome = PC_OK;
     var cls = load8(_pc_f[2]);
     if (memeq(px, blob, blen) != 1) {

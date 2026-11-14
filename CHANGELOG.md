@@ -7,7 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 **selah is becoming a Cyrius library.** 1.0.0 ports the Rust crate 0.30.0, which is frozen in `rust-old/` as the
-parity oracle ([port plan](docs/development/selah-port-plan.md), [ADR 0001](docs/adr/0001-cyrius-port-with-rust-oracle.md)).
+reference oracle ([port plan](docs/development/selah-port-plan.md), [ADR 0001](docs/adr/0001-cyrius-port-with-rust-oracle.md)).
+Accuracy is the bar, and Rust is the floor, not behaviour to imitate ([ADR 0003](docs/adr/0003-accuracy-is-the-bar.md)).
 The Rust crate stays at 0.30.x on crates.io.
 
 ### Port — M0 (initialize)
@@ -96,6 +97,33 @@ The Rust crate stays at 0.30.x on crates.io.
 - **Ported Rust tests**: `tests/ai.tcyr` (39 tests and the doctest, plus one Cyrius-only test of the `_a` forms).
 - **Benches**: the four M2 benches, at 5.6× to 7.2× Rust.
 - **Surface parity**: 37/37.
+
+### Port — accuracy policy (before M3)
+
+- **[ADR 0003](docs/adr/0003-accuracy-is-the-bar.md): accuracy is the bar.**
+  - Ground truth decides where it exists: source pixels, the format spec, the math. The port must be at least as
+    accurate as Rust.
+  - Rust's behaviour is matched exactly only where it is the contract: JSON, layers, history, SVG, enum names,
+    verdicts.
+  - A Rust defect is fixed in the port. A dependency defect is filed upstream with the measurement, and its rows go
+    on a named known-defect list.
+- **Ground-truth fixtures:** the oracle writes `fixtures/<file>.source.rgba` for the 13 JPEG fixtures. The harness
+  prints chitra's and Rust's mean and max error against them.
+- **What the measurement found:**
+  - without chroma subsampling the decoders are equally accurate (F2: not a defect);
+  - with subsampling chitra's box upsampling is 0.13–1.34 worse on the mean and up to 24 worse at the worst pixel
+    (F1).
+- **Class B redefined** (port plan §4, port-parity.md §5):
+  - accuracy: mean and max error against the source, no worse than the reference decoder's + 0.05 / + 2;
+  - conformance: K_jpeg = 2 where the decoders upsample alike.
+- **Filed with chitra** (`docs/development/issues/2026-11-14-*`):
+  - interpolated chroma upsampling (F1);
+  - rounded sub-8-bit BMP channels (F3);
+  - an opaque 32-bpp `BI_RGB` (F4);
+  - the CMYK samples (F5);
+  - progressive JPEG, of which selah is now the consumer.
+- **ADR 0002 #16:** CMYK refused, temporarily. Ledger rows L11–L15 track the chitra filings, including the F4
+  opacity guard selah adds at M3.
 
 ## [0.30.0] - 2026-11-14
 

@@ -12,8 +12,8 @@
 - **License**: GPL-3.0-only
 - **Language**: Cyrius. The toolchain is pinned in `cyrius.cyml` `[package].cyrius`
 - **Version**: `VERSION` at the project root is the source of truth. Don't inline the number here
-- **Rust oracle**: selah 0.30.0 (tag `0.30.0`), frozen at `rust-old/`. It stays the parity reference until WebP is
-  ported or dropped and the Rust-test ledger is closed (port plan §7)
+- **Rust oracle**: selah 0.30.0 (tag `0.30.0`), frozen at `rust-old/`. It stays the reference (the floor for
+  accuracy, the contract for formats) until WebP is ported or dropped and the Rust-test ledger is closed (port plan §7)
 - **Plan of record**: [`docs/development/selah-port-plan.md`](docs/development/selah-port-plan.md)
 - **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md) · [First-Party Documentation](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-documentation.md)
 
@@ -128,8 +128,15 @@ tables (sandhi's TLS stack with any compression tables), printed for any unit th
 
 ## Key Principles
 
-- **Cross-check against `rust-old/`.** The port's correctness bar is "matches what Rust did", within the parity class
-  the port plan (§4) assigns. Diverge only with a row in ADR 0002.
+- **Accuracy is the bar; `rust-old/` is the reference, not the definition of correct** (ADR 0003, port plan §4).
+  - Where ground truth exists (source pixels, the format spec, the math), measure the port against it. It must be
+    at least as accurate as Rust.
+  - Where Rust's behaviour is the contract (JSON, layer and history files, SVG, enum names, verdicts), match it
+    exactly.
+  - A Rust defect is fixed in the port, not imitated: add an ADR 0002 row, and have the oracle emit the corrected
+    expectation.
+  - A dependency defect is filed upstream with the measurement. It is never framed as a decision for the
+    maintainer.
 - **Never skip benchmarks.** Numbers don't lie; the Rust numbers are the baseline.
 - **Tests + benchmarks are the way.** The Rust suite (289 tests) is ported or accounted for in the ledger.
 - **Own the stack.** If an AGNOS library covers a need, depend on it (table above).

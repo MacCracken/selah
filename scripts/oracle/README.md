@@ -51,6 +51,11 @@ them too) and listed with their provenance in `fixtures/INDEX.tsv`. The producer
 - `image` 0.25.10's own BMP, JPEG and WebP encoders, which are what selah 0.30.0 itself writes;
 - `jpeg-encoder` 0.6.1 for chroma subsampling, progressive, restart intervals and CMYK.
 
+**Ground truth.** Each JPEG fixture encoded from known pixels also gets `fixtures/<file>.source.rgba`, which holds
+those pixels as RGBA8, row-major, at the fixture's size (gray sources are widened to RGBA). Lossy decode is judged by
+accuracy against these pixels, with Rust's decoder as the floor (ADR 0003, port plan §4 class B). The harness prints
+both decoders' mean and maximum error per fixture.
+
 ## Format 1
 
 ### Header

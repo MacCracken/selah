@@ -5,8 +5,8 @@
 
 ## Version
 
-**0.30.0** in `VERSION`: the final Rust release (tag `0.30.0`, commit `1a494b4`), frozen in `rust-old/` as the parity
-oracle. The Cyrius port is in progress and ships as **1.0.0** at M7. Plan of record:
+**0.30.0** in `VERSION`: the final Rust release (tag `0.30.0`, commit `1a494b4`), frozen in `rust-old/` as the
+reference oracle. Accuracy is the bar, and Rust is the floor ([ADR 0003](../adr/0003-accuracy-is-the-bar.md)). The Cyrius port is in progress and ships as **1.0.0** at M7. Plan of record:
 [`selah-port-plan.md`](selah-port-plan.md).
 
 ## Toolchain
@@ -38,8 +38,8 @@ oracle. The Cyrius port is in progress and ships as **1.0.0** at M7. Plan of rec
   `core.tcyr`, `ai.tcyr`: 103 Rust tests and 8 doctests, 256 assertions), and `selah.tcyr` (the bundle, as a
   consumer sees it).
 - Golden corpus: 43,377 rows. M1's 34,863 and M2's 8,451 are all class A and all pass, identical on x86_64 ELF,
-  aarch64 (qemu) and x86_64 PE (wine). `decode` (63, not gated until M3): 47 ok, 14 measured, 2 accepted; findings F1–F5 in
-  [`port-parity.md`](port-parity.md).
+  aarch64 (qemu) and x86_64 PE (wine). `decode` (63, not gated until M3): 47 ok, 13 measured, 3 accepted. Findings F1–F5 are measured
+  against the source pixels of the 13 JPEG fixtures and filed with chitra ([`port-parity.md`](port-parity.md) §2).
 - Benches: 10 of 13 ported, recorded against Rust in [`../benchmarks-rust-v-cyrius.md`](../benchmarks-rust-v-cyrius.md).
 
 ## Dependencies
@@ -65,8 +65,18 @@ taswir, aethersafta, kiran (planned): none is in Cyrius yet. Rust consumers stay
   (`hoosh/docs/development/issues/2026-11-14-selah-vision-image-parts-reach-only-openai-shaped-providers.md`)
 - sandhi: `total_ms` and a blocked read (`sandhi/docs/development/issues/2026-11-11-total-ms-does-not-bound-a-blocked-first-read.md`)
 - cyrius: RFC 3339 with fractions and offsets in `lib/chrono.cyr` (`cyrius/docs/development/issues/2026-11-14-chrono-rfc3339-has-no-fraction-or-offset.md`)
+- chitra (all `chitra/docs/development/issues/2026-11-14-*`):
+  - interpolated chroma upsampling (`box-chroma-upsampling-loses-accuracy`, F1);
+  - rounded sub-8-bit BMP channels (`bmp-sub-8-bit-replication-is-not-the-nearest-value`, F3);
+  - opaque 32-bpp `BI_RGB` (`bmp-bi-rgb-32bpp-unused-byte-read-as-alpha`, F4);
+  - CMYK samples (`cmyk-ycck-jpeg-refused`, F5);
+  - progressive JPEG (`progressive-jpeg-has-a-consumer`)
 
 ## Next
 
-M3 Codecs. It starts by settling port-parity.md §2 F1–F5 (JPEG upsampling, K_jpeg, 16-bit BMP, 32-bit `BI_RGB`
-alpha, CMYK) — decisions for the maintainer.
+M3 Codecs, with nothing waiting on a decision. M3:
+- gates `decode` under ADR 0003: class B's accuracy and conformance bounds (port-parity.md §5);
+- puts the F1 and F3 rows on the known-defect list until chitra lands its fixes;
+- adds the F4 opacity guard (L11);
+- refuses CMYK and progressive JPEG (ADR 0002 #16, #2);
+- writes the PNG, BMP and JPEG encoders.

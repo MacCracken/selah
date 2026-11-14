@@ -31,79 +31,101 @@ and x86_64 PE (wine)**, byte for byte across the three outputs, because chitra i
 **Class-B byte histogram** over every decoded JPEG byte: \|d\| = 0: 92,036; 1: 15,223; 2: 9,965; 3–8: 5,707;
 over 8: 737; max 36.
 
-## 2. Findings to settle before M3 gates `decode`
+**Since the baseline:** the CMYK row is `accepted` under ADR 0002 #16, a temporary refusal filed with chitra. The
+run is now `ok 47, measured 13, accepted 3`. The 13 JPEG fixtures also carry their source pixels, so §2 measures
+accuracy, not just the difference from Rust.
 
-Each finding is a real difference between chitra and Rust's decoders, not a fault in the harness. M3 can't gate
-`decode` until each one is either fixed upstream, handled in selah, or accepted in ADR 0002. The options are listed,
-with a recommendation; the choice is the maintainer's.
+## 2. Findings, measured against the source, and filed
 
-### F1 — JPEG chroma upsampling: smooth (Rust) versus box (chitra)
+Each finding is a real difference between chitra 1.3.1 and Rust's decoders, not a fault in the harness. Under
+[ADR 0003](../adr/0003-accuracy-is-the-bar.md) the question is not "which matches Rust" but **"which is right"**:
+measured against the pixels each JPEG was encoded from, and against the BMP format's own definition. A chitra defect
+is filed with chitra, and nobody has to choose an option.
 
-- **Where:** every subsampled JPEG.
-- **Size of the difference:**
-  - 4:2:0: max 36, with 7,390 of 16,384 bytes differing at 64×64;
-  - 4:2:2: max 16;
-  - 4:4:0: max 13;
-  - an odd-size 4:2:0: max 28.
-- **Cause:**
-  - zune-jpeg 0.5.15 (Rust's decoder) upsamples chroma with libjpeg's default "fancy" triangle filter;
-  - chitra does box upsampling and is verified against `djpeg -nosmooth` (its README);
-  - the 4:4:4 and gray rows (max 1–2) show the IDCTs agree, so the remainder is upsampling.
-- **Why it matters:** most real-world JPEGs are 4:2:0. A redaction or annotation drawn on a JPEG source would differ
-  from Rust's by up to 36 per channel near colour edges.
-- **Options:**
-  - **(a) Ask chitra for fancy upsampling** (libjpeg's `h2v1` / `h2v2` filters), either as default or opt-in. Then
-    K_jpeg ≈ 2 for every JPEG. **Recommended.**
-  - **(b) Accept box upsampling in ADR 0002** with a per-subsampling bound (K ≈ 36). Class B then says little near
-    edges.
-  - **(c) Upsample in selah.** Not possible: chitra exposes only the final RGBA8, not the chroma planes.
+### Accuracy against the source pixels (2026-11-14)
 
-### F2 — IDCT rounding
+The oracle writes each JPEG fixture's source pixels as `fixtures/<file>.source.rgba` (RGBA8). `tests/parity.tcyr`
+decodes each fixture and prints both decoders' error against the source: mean and maximum absolute error over the
+RGB channels, on a 0–255 scale.
 
-- **Where:** JPEG without subsampling.
-- **Size:** max \|d\| 2. The `image`-encoded fixtures and jpeg-encoder's 4:4:4 give 2; grayscale gives 1.
-- **Cause:** chitra's README documents `_chitra_jpeg_descale` rounding half away from zero, within IEEE 1180's
-  tolerance; zune-jpeg's IDCT rounds differently.
-- **Proposal:** **K_jpeg = 2** for JPEG without subsampling. This is the bound class B gates on at M3 (and for every
-  JPEG if F1 is fixed upstream).
+| Fixture | Subsampling | chitra 1.3.1: mean / max | Rust (`image` 0.25.10, zune-jpeg): mean / max |
+|---|---|---|---|
+| `jpeg-image-q75-rgb-33x17-grad` | none | 2.674 / 32 | 2.676 / 32 |
+| `jpeg-image-q95-rgb-64x64-grad` | none | 0.684 / 9 | 0.687 / 9 |
+| `jpeg-image-q50-gray-33x17-grad` | gray | 0.545 / 1 | 0.545 / 1 |
+| `jpeg-image-q75-rgb-33x17-noise` | none | 13.944 / 76 | 13.937 / 76 |
+| `jpeg-enc-444-64x64` | 4:4:4 | 1.123 / 24 | 1.121 / 24 |
+| `jpeg-enc-gray-64x64` | gray | **0.281** / 1 | 0.296 / 1 |
+| `jpeg-enc-420-64x64` | 4:2:0 | **2.345 / 78** | 1.808 / 54 |
+| `jpeg-enc-restart-64x64` | 4:2:0, DRI 2 | **2.345 / 78** | 1.808 / 54 |
+| `jpeg-enc-420-33x17` | 4:2:0, partial MCUs | **5.402 / 58** | 4.062 / 47 |
+| `jpeg-enc-422-64x64` | 4:2:2 | **1.873** / 51 | 1.578 / 51 |
+| `jpeg-enc-440-64x64` | 4:4:0 | **1.991 / 47** | 1.865 / 46 |
+| `jpeg-enc-420-1x1` | 4:2:0 | 0 / 0 | 0 / 0 |
+| `jpeg-enc-progressive-64x64` | 4:2:0, SOF2 | refused | 1.808 / 54 |
 
-### F3 — BMP 16-bit channel expansion
+Without subsampling the two decoders are equally accurate: the largest gap in the mean is 0.007 (the noise
+fixture), and chitra is the closer of the two on grayscale. With subsampling chitra is 0.13–1.34 worse on the mean
+and up to 24 worse at the worst pixel. All of that gap is the upsampler.
 
-- **Where:** 5-5-5 and 5-6-5 BMPs.
-- **Size:** max \|d\| 1.
-- **Cause:** the oracle expands a 5-bit channel as `round(v · 255 / 31)` (and 6-bit as `round(v · 255 / 63)`), which
-  reproduces all 561 pixels of the 5-5-5 fixture. Bit replication `(v << 3) | (v >> 2)` reproduces only 386, so it
-  is evidently chitra's.
-- **Options:**
-  - (a) ask chitra for the exact rounding;
-  - (b) **accept in ADR 0002** with a ±1 bound on 16-bit BMP rows. **Recommended:** 16-bit BMP screenshots are rare,
-    and ±1 is invisible.
-  - (c) decode 16-bit BMPs in selah. That duplicates chitra.
+### F1: JPEG chroma upsampling, box (chitra) against interpolated (Rust): chitra defect, filed
 
-### F4 — BMP 32-bit `BI_RGB`: is the fourth byte alpha?
+- **Measured:** the table above. On the 4:2:0 fixtures chitra's mean error is about 30 % higher, and its worst
+  pixel is 78 levels off against Rust's 54. Against Rust directly the difference is at most 36 per channel (§1).
+- **Cause:** chitra replicates each chroma sample over its block, as `djpeg -nosmooth` does. JFIF places chroma at
+  the block's centre, and libjpeg's default interpolating filter (which zune-jpeg also uses) reconstructs that.
+- **Filed:** `chitra/docs/development/issues/2026-11-14-box-chroma-upsampling-loses-accuracy.md` asks for
+  interpolation as the default, verified against `djpeg` without `-nosmooth` and against these source pixels.
+- **Meanwhile:** selah can't upsample for itself, because chitra returns only RGBA8 (ledger L12). The subsampled
+  rows go on the known-defect list at M3.
 
-- **Where:** `BI_RGB` 32-bit BMPs whose fourth byte is not 255.
-- **Size:** max \|d\| 254, all in alpha.
-- **Cause:**
-  - the oracle follows the BMP spec: in `BI_RGB` the fourth byte is reserved, so every pixel is opaque;
-  - chitra uses the byte as alpha;
-  - a V4 header with an explicit alpha mask is bit-identical on both sides.
-- **Why it matters:** such a BMP decodes **partly transparent** in the port, and every redaction, highlight or
-  re-encode then carries that alpha.
-- **Options:**
-  - **(a) Guard in selah**: when the BMP header says `BI_RGB` and 32 bpp, force alpha to 255 after decoding. That is
-    a few lines in `src/codec.cyr`, with no upstream dependency. **Recommended**, together with (b).
-  - (b) report it to chitra as a spec divergence.
-  - (c) accept it. Not recommended.
+### F2: IDCT rounding: not a defect
 
-### F5 — CMYK JPEG
+- **Measured:** without subsampling, the two decoders differ from each other by at most 2 per channel, and they are
+  equally accurate against the source (table above).
+- **Cause:** chitra's `_chitra_jpeg_descale` rounds half away from zero; zune-jpeg's IDCT rounds differently. Both
+  are inside IEEE 1180.
+- **Bound:** **K_jpeg = 2** is class B's conformance bound between two correct decoders, not a "match Rust"
+  allowance. Class B's accuracy gate is the one that catches F1.
 
-- **Where:** CMYK and YCCK JPEGs (Adobe APP14).
-- **What happens:** Rust decodes and converts them to RGB; chitra refuses them, permanently by its README.
-- **Options:**
-  - **(a) accept in ADR 0002** as a refusal, beside progressive JPEG (#2). Screenshots are never CMYK.
-    **Recommended.**
-  - (b) convert CMYK in selah. Not possible on chitra's RGBA8-only output.
+### F3: BMP channels narrower than 8 bits: chitra defect, filed
+
+- **Measured:**
+  - the 5-5-5 and 5-6-5 fixtures differ by 1 on 204 and 235 bytes;
+  - the oracle's `round(v · 255 / (2ⁿ − 1))` reproduces every pixel;
+  - chitra's bit replication `(v << 3) | (v >> 2)` does not.
+- **Which is right:** the nearest 8-bit value to `v · 255 / (2ⁿ − 1)`.
+  - Rounding is never more than 0.484 away from it at 5 bits, nor 0.476 at 6 bits.
+  - Replication is up to 0.677 and 0.714 away, and differs from rounding on 4 of 32 and 10 of 64 levels.
+  - The PNG specification (§ 13.13) calls the rounded form the most accurate.
+- **Filed:** `chitra/docs/development/issues/2026-11-14-bmp-sub-8-bit-replication-is-not-the-nearest-value.md`.
+- **Meanwhile:** these are class A rows against the correctly rounded value, on the known-defect list (L13).
+
+### F4: 32-bpp `BI_RGB` BMP, the fourth byte read as alpha: chitra defect, filed
+
+- **Measured:** max \|d\| 254, all in alpha. 559 of 561 pixels decode non-opaque.
+- **Which is right:** opaque. In Microsoft's `BITMAPINFOHEADER` definition, the high byte of each `BI_RGB` DWORD
+  "is not used". Alpha is declared through a mask, and chitra reads declared alpha correctly: the V4 fixture is
+  bit-identical. chitra instead guesses from the data, which its own ADR 0009 forbids for CMYK.
+- **Filed:** `chitra/docs/development/issues/2026-11-14-bmp-bi-rgb-32bpp-unused-byte-read-as-alpha.md`.
+- **Meanwhile:** selah decodes these files opaque itself, in `src/codec.cyr` at M3 (ledger L11), so the row is
+  class A and `ok`. The guard leaves when chitra lands the fix.
+
+### F5: CMYK and YCCK JPEG: chitra gap, filed
+
+- **What happens:** Rust decodes them and converts to RGB. chitra refuses them (its ADR 0009 declines to guess a
+  colour conversion).
+- **Filed:** `chitra/docs/development/issues/2026-11-14-cmyk-ycck-jpeg-refused.md`. It asks for:
+  - the CMYK samples, which the file determines with no guess;
+  - the Adobe inversion flag;
+  - ICC as the accurate path to RGB.
+- **Meanwhile:** selah refuses these files, as ADR 0002 #16 records (ledger L14).
+
+### Progressive JPEG: chitra deferral, now with a consumer, filed
+
+- chitra's roadmap defers SOF2 "until a consumer demonstrably needs it", and selah is that consumer.
+- **Filed:** `chitra/docs/development/issues/2026-11-14-progressive-jpeg-has-a-consumer.md`.
+- **Meanwhile:** refused, as ADR 0002 #2 records (ledger L15).
 
 ## 3. M1 (2026-11-14): everything class A, nothing measured
 
@@ -130,8 +152,11 @@ taught:
 
 ## 5. Bounds
 
+Each bound is set before the first gated comparison (M3), and none is ever widened.
+
 | Bound | Value | Set | Gates from |
 |---|---|---|---|
-| K_jpeg (no chroma subsampling) | 2 | 2026-11-14, from §1 | M3 |
-| K_jpeg (subsampled) | open: 2 if F1 (a), about 36 if F1 (b) | — | M3 |
-| 16-bit BMP | 1, if F3 (b) | — | M3 |
+| Class B accuracy, mean | port mean abs error vs source ≤ reference's + **0.05** | 2026-11-14, from §2: the largest IDCT-only excess is 0.007, and the upsampling defect it must catch is 0.13–1.34 | M3 |
+| Class B accuracy, max | port max abs error vs source ≤ reference's + **2** | 2026-11-14 (K_jpeg) | M3 |
+| K_jpeg (conformance, same upsampling) | **2** per channel | 2026-11-14, from §1 | M3 |
+| 16-bit BMP | class A against the correctly rounded value (F3) | 2026-11-14 | M3, on the known-defect list until chitra rounds |

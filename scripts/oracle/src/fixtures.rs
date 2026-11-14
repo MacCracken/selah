@@ -26,6 +26,22 @@ pub struct Fixture {
     pub how: String,
     /// An ADR 0002 row the port is expected to diverge under (`0002#1`), if any.
     pub adr: Option<&'static str>,
+    /// For a lossy fixture, the pixels it was encoded from, as RGBA8: the ground truth a decoder's accuracy is
+    /// measured against (not another decoder's output).
+    pub source: Option<Vec<u8>>,
+}
+
+/// RGB8 or L8 samples as RGBA8 (opaque), the form a decoder's output is compared in.
+fn to_rgba(px: &[u8], ch: usize) -> Vec<u8> {
+    let mut v = Vec::with_capacity(px.len() / ch * 4);
+    for c in px.chunks(ch) {
+        if ch == 1 {
+            v.extend_from_slice(&[c[0], c[0], c[0], 255]);
+        } else {
+            v.extend_from_slice(&[c[0], c[1], c[2], 255]);
+        }
+    }
+    v
 }
 
 // ---------------------------------------------------------------- patterns
@@ -331,7 +347,7 @@ pub fn build() -> Vec<Fixture> {
     use png::{BitDepth as D, ColorType as C};
     let mut v: Vec<Fixture> = Vec::new();
     let mut add = |file: &str, kind: &'static str, bytes: Vec<u8>, how: &str, adr: Option<&'static str>| {
-        v.push(Fixture { file: file.to_string(), kind, bytes, how: how.to_string(), adr });
+        v.push(Fixture { file: file.to_string(), kind, bytes, how: how.to_string(), adr, source: None });
     };
     let (w, h) = (33u32, 17u32);
     let n = (w * h) as usize;
@@ -424,7 +440,7 @@ pub fn build() -> Vec<Fixture> {
     add("jpeg-enc-restart-64x64.jpg", "jpeg", jpeg(64, 64, &g64, J::Rgb, 85, S::F_2_2, false, 2), "jpeg-encoder 0.6.1 q85, 4:2:0, restart interval 2 MCUs", None);
     add("jpeg-enc-gray-64x64.jpg", "jpeg", jpeg(64, 64, &grad(64, 64, 1), J::Luma, 85, S::F_1_1, false, 0), "jpeg-encoder 0.6.1 q85, grayscale", None);
     add("jpeg-enc-progressive-64x64.jpg", "jpeg", jpeg(64, 64, &g64, J::Rgb, 85, S::F_2_2, true, 0), "jpeg-encoder 0.6.1 q85, 4:2:0, progressive (SOF2)", Some("0002#2"));
-    add("jpeg-enc-cmyk-33x17.jpg", "jpeg", jpeg(33, 17, &grad(w, h, 4), J::Cmyk, 85, S::F_1_1, false, 0), "jpeg-encoder 0.6.1 q85, CMYK (Adobe APP14)", None);
+    add("jpeg-enc-cmyk-33x17.jpg", "jpeg", jpeg(33, 17, &grad(w, h, 4), J::Cmyk, 85, S::F_1_1, false, 0), "jpeg-encoder 0.6.1 q85, CMYK (Adobe APP14)", Some("0002#16"));
     let good_jpeg = jpeg(64, 64, &g64, J::Rgb, 85, S::F_2_2, false, 0);
     add("jpeg-truncated.jpg", "jpeg", good_jpeg[..good_jpeg.len() / 2].to_vec(), "jpeg-enc-420-64x64 cut in half (mid-scan)", None);
 
@@ -436,6 +452,27 @@ pub fn build() -> Vec<Fixture> {
     add("other-empty.bin", "other", Vec::new(), "zero bytes", None);
     add("other-noise-64.bin", "other", noise(64, 99), "64 noise bytes", None);
     add("other-text.txt", "other", b"not an image\n".to_vec(), "plain text", None);
+    // The source pixels of the lossy fixtures (the same inputs as above, rebuilt).
+    let sources: Vec<(&str, Vec<u8>)> = vec![
+        ("jpeg-image-q75-rgb-33x17-grad.jpg", to_rgba(&grad(w, h, 3), 3)),
+        ("jpeg-image-q95-rgb-64x64-grad.jpg", to_rgba(&grad(64, 64, 3), 3)),
+        ("jpeg-image-q50-gray-33x17-grad.jpg", to_rgba(&grad(w, h, 1), 1)),
+        ("jpeg-image-q75-rgb-33x17-noise.jpg", to_rgba(&noise(n * 3, 90), 3)),
+        ("jpeg-enc-420-64x64.jpg", to_rgba(&g64, 3)),
+        ("jpeg-enc-422-64x64.jpg", to_rgba(&g64, 3)),
+        ("jpeg-enc-444-64x64.jpg", to_rgba(&g64, 3)),
+        ("jpeg-enc-440-64x64.jpg", to_rgba(&g64, 3)),
+        ("jpeg-enc-420-33x17.jpg", to_rgba(&grad(w, h, 3), 3)),
+        ("jpeg-enc-420-1x1.jpg", to_rgba(&[10, 200, 90], 3)),
+        ("jpeg-enc-restart-64x64.jpg", to_rgba(&g64, 3)),
+        ("jpeg-enc-gray-64x64.jpg", to_rgba(&grad(64, 64, 1), 1)),
+        ("jpeg-enc-progressive-64x64.jpg", to_rgba(&g64, 3)),
+    ];
+    for (file, src) in sources {
+        if let Some(f) = v.iter_mut().find(|f| f.file == file) {
+            f.source = Some(src);
+        }
+    }
     v
 }
 
@@ -443,6 +480,9 @@ pub fn emit(out: &mut Out, fixtures: &[Fixture]) {
     let mut index = String::from("# fixture<TAB>kind<TAB>bytes<TAB>how\n");
     for f in fixtures {
         out.insert(format!("fixtures/{}", f.file), f.bytes.clone());
+        if let Some(src) = &f.source {
+            out.insert(format!("fixtures/{}.source.rgba", f.file), src.clone());
+        }
         index.push_str(&format!("{}\t{}\t{}\t{}\n", f.file, f.kind, f.bytes.len(), f.how));
     }
     out.insert("fixtures/INDEX.tsv".to_string(), index.into_bytes());
