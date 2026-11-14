@@ -1155,11 +1155,15 @@ dependencies = [
 name = "selah-oracle"
 version = "0.0.0"
 dependencies = [
+ "chrono",
  "flate2",
  "image",
  "jpeg-encoder",
  "png",
  "selah",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

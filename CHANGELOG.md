@@ -53,6 +53,30 @@ The Rust crate stays at 0.30.x on crates.io.
     CMYK refused, and K_jpeg = 2.
   - Identical on x86_64 ELF, aarch64 (qemu) and x86_64 PE (wine).
 
+### Port — M1 (foundation)
+
+- **Modules** (`src/`), bundled as `dist/selah.cyr` through `[lib]`:
+  - `error`: `SlError` codes; fallible functions take a trailing `detail_out = 0` for the message (port plan D7);
+  - `log`: sakshi, bote's contract;
+  - `fmtf`: the shortest round-trip digits of f32 and f64 in Rust's Display and serde_json's forms (impetus's
+    Burger & Dybvig printer, generalised as pravash's);
+  - `json`: serde_json's string escaping, and readers on bayan that accept and refuse what serde does (both of
+    serde's enum forms, and the array form of a struct);
+  - `uuid`: v4 ids, written hyphenated or simple, read in all four of `Uuid::parse_str`'s forms;
+  - `rfc3339`: chrono's AutoSi writer and its relaxed parser, item by item;
+  - `geometry`: `SlRect` in hisab's `{min, max}` f32 layout, so every operation rounds as Rust's does;
+  - `core`: the enums, `xml_escape`, `derive_output_path`, `SlColor`, `SlRedactionTarget`, `SlCaptureSource`,
+    `SlAnnotation`, each with its Display and serde JSON.
+- **Golden corpus**: six new oracle modules (`error`, `fmtf`, `geometry`, `core`, `uuid`, `rfc3339`), 34,863 rows,
+  every one class A and every one equal, on x86_64 ELF, aarch64 and x86_64 PE.
+- **Ported Rust tests**: `tests/error.tcyr`, `tests/geometry.tcyr`, `tests/core.tcyr` (64 tests and 7 doctests, plus
+  three Cyrius-only); `tests/selah.tcyr` includes `dist/selah.cyr` the way a consumer does.
+- **Benches**: the six M1 benches against Rust in `docs/benchmarks-rust-v-cyrius.md` (5.2× to 32×).
+- **Surface parity**: `scripts/surface_parity.py`, 34/34 for the ported modules; in CI with `distlib --check`.
+- **ADR 0002** rows #14 (serde_json's error text is not reproduced; the verdict is) and #15 (rect accessors return the
+  f32's exact f64, since Cyrius has no f32 return type).
+- **Filed upstream**: cyrius `2026-11-14-chrono-rfc3339-has-no-fraction-or-offset` (ledger L5).
+
 ## [0.30.0] - 2026-11-14
 
 **Final Rust release.** selah is moving to Cyrius as **1.0.0**. This tree is frozen in `rust-old/` as the parity

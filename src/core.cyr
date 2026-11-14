@@ -1,0 +1,785 @@
+# core.cyr — selah's core types (Rust: rust-old/src/core.rs).
+#
+# Enums keep Rust's declaration order as explicit, append-only values (Rust: #[non_exhaustive]). An enum's methods are
+# `selah_<snake enum>_<method>`; a struct is `Sl<Name>` with an impl block (port plan D9). Display impls are `fmt`,
+# appending to a str_builder; serde's JSON shapes are kept byte for byte (tests/golden/core.tsv).
+
+# ── AnnotationKind ────────────────────────────────────────────────────────────────────
+
+enum SlAnnotationKind {
+    SL_KIND_ARROW = 0;
+    SL_KIND_RECTANGLE = 1;
+    SL_KIND_CIRCLE = 2;
+    SL_KIND_TEXT = 3;
+    SL_KIND_HIGHLIGHT = 4;
+    SL_KIND_REDACTION = 5;
+    SL_KIND_FREEFORM = 6;
+}
+
+# Rust's Display: "arrow", "rectangle", … "freeform" (a cstring; "" for an unknown value).
+#must_use
+fn selah_annotation_kind_name(k): i64 {
+    match k {
+        SL_KIND_ARROW => { return "arrow"; }
+        SL_KIND_RECTANGLE => { return "rectangle"; }
+        SL_KIND_CIRCLE => { return "circle"; }
+        SL_KIND_TEXT => { return "text"; }
+        SL_KIND_HIGHLIGHT => { return "highlight"; }
+        SL_KIND_REDACTION => { return "redaction"; }
+        SL_KIND_FREEFORM => { return "freeform"; }
+        _ => { return ""; }
+    }
+    return "";
+}
+
+# serde's variant name: "Arrow", "Rectangle", … "FreeForm" (a cstring; 0 for an unknown value).
+#must_use
+fn _sl_kind_serde_name(k): i64 {
+    match k {
+        SL_KIND_ARROW => { return "Arrow"; }
+        SL_KIND_RECTANGLE => { return "Rectangle"; }
+        SL_KIND_CIRCLE => { return "Circle"; }
+        SL_KIND_TEXT => { return "Text"; }
+        SL_KIND_HIGHLIGHT => { return "Highlight"; }
+        SL_KIND_REDACTION => { return "Redaction"; }
+        SL_KIND_FREEFORM => { return "FreeForm"; }
+        _ => { return 0; }
+    }
+    return 0;
+}
+
+# Appends Rust's Display of the kind.
+fn selah_annotation_kind_fmt(sb, k): i64 {
+    str_builder_add_cstr(sb, selah_annotation_kind_name(k));
+    return 0;
+}
+
+# Appends serde's JSON for the kind ("\"Arrow\"").
+fn selah_annotation_kind_to_json(sb, k): i64 {
+    var name = _sl_kind_serde_name(k);
+    if (name == 0) { return -1; }
+    return _sl_json_str(sb, name, strlen(name));
+}
+
+# 1 when a[0..n) equals the NUL-terminated b.
+#must_use
+fn _sl_eq(a, n, b): i64 {
+    if (strlen(b) != n) { return 0; }
+    return memeq(a, b, n);
+}
+
+# a[0..n) with ASCII letters lowercased (Rust's to_ascii_lowercase), into a fresh buffer.
+#must_use
+fn _sl_ascii_lower(a, n): i64 {
+    var out = alloc(n + 1);
+    if (out == 0) { return 0; }
+    var i = 0;
+    while (i < n) {
+        var c = load8(a + i);
+        if (c >= 65 && c <= 90) { c = c + 32; }
+        store8(out + i, c);
+        i = i + 1;
+    }
+    store8(out + n, 0);
+    return out;
+}
+
+# Appends Rust's Debug of a str (`"…"`): `\t \r \n \\ \" \0` escaped, other ASCII controls and DEL as `\u{x}`.
+fn _sl_debug_str(sb, p, n): i64 {
+    str_builder_putc(sb, 34);
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        if (c == 9) { str_builder_add_cstr(sb, "\\t"); }
+        elif (c == 13) { str_builder_add_cstr(sb, "\\r"); }
+        elif (c == 10) { str_builder_add_cstr(sb, "\\n"); }
+        elif (c == 92) { str_builder_add_cstr(sb, "\\\\"); }
+        elif (c == 34) { str_builder_add_cstr(sb, "\\\""); }
+        elif (c == 0) { str_builder_add_cstr(sb, "\\0"); }
+        elif (c < 32 || c == 127) {
+            str_builder_add_cstr(sb, "\\u{");
+            if (c >= 16) { str_builder_putc(sb, load8(_SL_HEX + (c >> 4))); }
+            str_builder_putc(sb, load8(_SL_HEX + (c & 15)));
+            str_builder_putc(sb, 125);
+        } else {
+            str_builder_putc(sb, c);
+        }
+        i = i + 1;
+    }
+    str_builder_putc(sb, 34);
+    return 0;
+}
+
+# Rust's FromStr for AnnotationKind: case-insensitive, with the aliases rect, ellipse, redact, free_form and
+# free-form. Ok(kind), or Err(SL_ERR_ANNOTATION) with Rust's message.
+fn selah_annotation_kind_parse(p, n, detail_out = 0): Result {
+    var s = _sl_ascii_lower(p, n);
+    if (s == 0) { return _sl_fail_cstr(SL_ERR_ANNOTATION, detail_out, "out of memory"); }
+    if (_sl_eq(s, n, "arrow") == 1) { return Ok(SL_KIND_ARROW); }
+    if (_sl_eq(s, n, "rectangle") == 1 || _sl_eq(s, n, "rect") == 1) { return Ok(SL_KIND_RECTANGLE); }
+    if (_sl_eq(s, n, "circle") == 1 || _sl_eq(s, n, "ellipse") == 1) { return Ok(SL_KIND_CIRCLE); }
+    if (_sl_eq(s, n, "text") == 1) { return Ok(SL_KIND_TEXT); }
+    if (_sl_eq(s, n, "highlight") == 1) { return Ok(SL_KIND_HIGHLIGHT); }
+    if (_sl_eq(s, n, "redaction") == 1 || _sl_eq(s, n, "redact") == 1) { return Ok(SL_KIND_REDACTION); }
+    if (_sl_eq(s, n, "freeform") == 1 || _sl_eq(s, n, "free_form") == 1 || _sl_eq(s, n, "free-form") == 1) {
+        return Ok(SL_KIND_FREEFORM);
+    }
+    if (detail_out != 0) {
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "unknown annotation kind ");
+        _sl_debug_str(sb, s, n);
+        str_builder_add_cstr(sb, " (use arrow, rectangle, circle, text, highlight, redaction, or freeform)");
+        store64(detail_out, str_builder_build(sb));
+    }
+    return Err(SL_ERR_ANNOTATION);
+}
+
+# serde's Deserialize for AnnotationKind from a parsed JSON value: the variant name, as a string or as
+# {"<name>": null}. Ok(kind) or Err(SL_ERR_SERDE).
+fn _sl_kind_from_value(v, detail_out): Result {
+    var content = 0;
+    var s = _sl_json_variant(v, &content);
+    if (s == 0 || _sl_json_unit_content(content) == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "annotation kind: expected a variant name");
+    }
+    var k = 0;
+    while (k <= SL_KIND_FREEFORM) {
+        if (_sl_eq(str_data(s), str_len(s), _sl_kind_serde_name(k)) == 1) { return Ok(k); }
+        k = k + 1;
+    }
+    return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "annotation kind: unknown variant");
+}
+
+# serde's Deserialize for AnnotationKind from JSON text. Ok(kind) or Err(SL_ERR_SERDE).
+fn selah_annotation_kind_from_json(p, n, detail_out = 0): Result {
+    var v = _sl_json_parse(p, n);
+    if (v == 0) { return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "annotation kind: not a JSON document"); }
+    return _sl_kind_from_value(v, detail_out);
+}
+
+# ── ImageFormat ───────────────────────────────────────────────────────────────────────
+
+enum SlImageFormat {
+    SL_FMT_PNG = 0;
+    SL_FMT_JPEG = 1;
+    SL_FMT_BMP = 2;
+    SL_FMT_WEBP = 3;
+}
+
+# Rust's ImageFormat::default(): Png.
+#must_use
+fn selah_image_format_default(): i64 {
+    return SL_FMT_PNG;
+}
+
+# The file extension: "png", "jpg", "bmp", "webp" (also Rust's Display).
+#must_use
+fn selah_image_format_extension(f): i64 {
+    match f {
+        SL_FMT_PNG => { return "png"; }
+        SL_FMT_JPEG => { return "jpg"; }
+        SL_FMT_BMP => { return "bmp"; }
+        SL_FMT_WEBP => { return "webp"; }
+        _ => { return ""; }
+    }
+    return "";
+}
+
+# The MIME type.
+#must_use
+fn selah_image_format_mime_type(f): i64 {
+    match f {
+        SL_FMT_PNG => { return "image/png"; }
+        SL_FMT_JPEG => { return "image/jpeg"; }
+        SL_FMT_BMP => { return "image/bmp"; }
+        SL_FMT_WEBP => { return "image/webp"; }
+        _ => { return ""; }
+    }
+    return "";
+}
+
+# serde's variant name: "Png", "Jpeg", "Bmp", "WebP".
+#must_use
+fn _sl_format_serde_name(f): i64 {
+    match f {
+        SL_FMT_PNG => { return "Png"; }
+        SL_FMT_JPEG => { return "Jpeg"; }
+        SL_FMT_BMP => { return "Bmp"; }
+        SL_FMT_WEBP => { return "WebP"; }
+        _ => { return 0; }
+    }
+    return 0;
+}
+
+# Appends Rust's Display of the format (its extension).
+fn selah_image_format_fmt(sb, f): i64 {
+    str_builder_add_cstr(sb, selah_image_format_extension(f));
+    return 0;
+}
+
+# Appends serde's JSON for the format ("\"Png\"").
+fn selah_image_format_to_json(sb, f): i64 {
+    var name = _sl_format_serde_name(f);
+    if (name == 0) { return -1; }
+    return _sl_json_str(sb, name, strlen(name));
+}
+
+# Rust's FromStr for ImageFormat: case-insensitive png, jpg, jpeg, bmp, webp. Ok(format), or
+# Err(SL_ERR_UNSUPPORTED_FORMAT) with Rust's message.
+fn selah_image_format_parse(p, n, detail_out = 0): Result {
+    var s = _sl_ascii_lower(p, n);
+    if (s == 0) { return _sl_fail_cstr(SL_ERR_UNSUPPORTED_FORMAT, detail_out, "out of memory"); }
+    if (_sl_eq(s, n, "png") == 1) { return Ok(SL_FMT_PNG); }
+    if (_sl_eq(s, n, "jpg") == 1 || _sl_eq(s, n, "jpeg") == 1) { return Ok(SL_FMT_JPEG); }
+    if (_sl_eq(s, n, "bmp") == 1) { return Ok(SL_FMT_BMP); }
+    if (_sl_eq(s, n, "webp") == 1) { return Ok(SL_FMT_WEBP); }
+    if (detail_out != 0) {
+        var sb = str_builder_new();
+        _sl_sb_bytes(sb, s, n);
+        str_builder_add_cstr(sb, " (use png, jpg, bmp, or webp)");
+        store64(detail_out, str_builder_build(sb));
+    }
+    return Err(SL_ERR_UNSUPPORTED_FORMAT);
+}
+
+# serde's Deserialize for ImageFormat from JSON text: the variant name, as a string or as {"<name>": null}.
+# Ok(format) or Err(SL_ERR_SERDE).
+fn selah_image_format_from_json(p, n, detail_out = 0): Result {
+    var content = 0;
+    var s = _sl_json_variant(_sl_json_parse(p, n), &content);
+    if (s == 0 || _sl_json_unit_content(content) == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "image format: expected a variant name");
+    }
+    var f = 0;
+    while (f <= SL_FMT_WEBP) {
+        if (_sl_eq(str_data(s), str_len(s), _sl_format_serde_name(f)) == 1) { return Ok(f); }
+        f = f + 1;
+    }
+    return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "image format: unknown variant");
+}
+
+# ── paths (Rust's std::path on Unix: file_name, file_stem, extension) ─────────────────
+
+# The file name of path p[0..n), as Rust's Path::file_name: the last component, when it is a normal one. Returns
+# (start, length), or (-1, 0) when there is none ("", "/", ".", "..", "a/..").
+fn _sl_path_file_name(p, n): (i64, i64) {
+    var end = n;
+    loop {
+        while (end > 0 && load8(p + end - 1) == 47) { end = end - 1; }
+        # A trailing "." component is dropped by Rust's components() (except a lone "." at the start: CurDir).
+        if (end >= 2 && load8(p + end - 1) == 46 && load8(p + end - 2) == 47) {
+            end = end - 2;
+            continue;
+        }
+        break;
+    }
+    if (end == 0) { return (-1, 0); }
+    var start = end;
+    while (start > 0 && load8(p + start - 1) != 47) { start = start - 1; }
+    var len = end - start;
+    if (len == 1 && load8(p + start) == 46) { return (-1, 0); }
+    if (len == 2 && load8(p + start) == 46 && load8(p + start + 1) == 46) { return (-1, 0); }
+    return (start, len);
+}
+
+# Rust's rsplit_file_at_dot on a file name: (stem start, stem length, extension start, extension length); the
+# extension start is -1 when there is none.
+fn _sl_split_dot(p, s, len): (i64, i64, i64) {
+    var dot = -1;
+    var i = len - 1;
+    while (i >= 0) {
+        if (load8(p + s + i) == 46) {
+            dot = i;
+            break;
+        }
+        i = i - 1;
+    }
+    # No dot, or the only dot is the first byte (".hidden"): all stem, no extension.
+    if (dot <= 0) { return (len, -1, 0); }
+    return (dot, s + dot + 1, len - dot - 1);
+}
+
+# Rust's ImageFormat::from_path: the extension parsed as a format. Some(format) or None().
+fn selah_image_format_from_path(p, n): Option {
+    var s, len = _sl_path_file_name(p, n);
+    if (s < 0) { return None(); }
+    var stem_len, es, elen = _sl_split_dot(p, s, len);
+    if (es < 0) { return None(); }
+    var t, f = selah_image_format_parse(p + es, elen);
+    if (is_err_result(t) == 1) { return None(); }
+    return Some(f);
+}
+
+# Rust's derive_output_path: "<stem>_<suffix>.<ext>", or "<stem>_<suffix>" when the extension is empty.
+#must_use
+fn selah_derive_output_path(input, n, suffix, slen): Str {
+    var sb = str_builder_new();
+    var s, len = _sl_path_file_name(input, n);
+    if (s >= 0) {
+        var stem_len, es, elen = _sl_split_dot(input, s, len);
+        _sl_sb_bytes(sb, input + s, stem_len);
+        str_builder_putc(sb, 95);
+        _sl_sb_bytes(sb, suffix, slen);
+        if (es >= 0 && elen > 0) {
+            str_builder_putc(sb, 46);
+            _sl_sb_bytes(sb, input + es, elen);
+        }
+    } else {
+        str_builder_putc(sb, 95);
+        _sl_sb_bytes(sb, suffix, slen);
+    }
+    return str_builder_build(sb);
+}
+
+# ── xml_escape ────────────────────────────────────────────────────────────────────────
+
+# Rust's XML_SPECIAL table: 1 for C0 controls but tab, LF and CR; & < > " '; and 0xEF, the lead byte of U+FFFE /
+# U+FFFF. Built on first use (every builder writes the same bytes, so a race is harmless).
+var _sl_xml_tab: u8[256];
+var _sl_xml_tab_ready = 0;
+
+fn _sl_xml_tab_init(): i64 {
+    var c = 0;
+    while (c < 256) {
+        var v = 0;
+        if (c < 32 && c != 9 && c != 10 && c != 13) { v = 1; }
+        if (c == 38 || c == 60 || c == 62 || c == 34 || c == 39 || c == 0xEF) { v = 1; }
+        store8(&_sl_xml_tab + c, v);
+        c = c + 1;
+    }
+    _sl_xml_tab_ready = 1;
+    return 0;
+}
+
+# 1 when Rust's XML_SPECIAL table flags byte c.
+#must_use
+fn _sl_xml_special(c): i64 {
+    if (_sl_xml_tab_ready == 0) { _sl_xml_tab_init(); }
+    return load8(&_sl_xml_tab + c);
+}
+
+# Appends p[0..n) escaped for XML text and attributes, as Rust's push_xml_escaped: & < > " ' as entities; C0
+# controls but tab, LF and CR, and the non-characters U+FFFE and U+FFFF, dropped (not allowed in XML 1.0).
+fn _sl_push_xml_escaped(sb, p, n): i64 {
+    if (_sl_xml_tab_ready == 0) { _sl_xml_tab_init(); }
+    var tab = &_sl_xml_tab;
+    var i = 0;
+    while (i < n) {
+        # A run of bytes that need nothing goes in one copy.
+        var run = i;
+        while (run < n && load8(tab + load8(p + run)) == 0) { run = run + 1; }
+        if (run > i) {
+            _sl_sb_bytes(sb, p + i, run - i);
+            i = run;
+            continue;
+        }
+        var c = load8(p + i);
+        if (c == 38) { str_builder_add_cstr(sb, "&amp;"); }
+        elif (c == 60) { str_builder_add_cstr(sb, "&lt;"); }
+        elif (c == 62) { str_builder_add_cstr(sb, "&gt;"); }
+        elif (c == 34) { str_builder_add_cstr(sb, "&quot;"); }
+        elif (c == 39) { str_builder_add_cstr(sb, "&#x27;"); }
+        elif (c == 0xEF) {
+            # A three-byte character: U+FFFE / U+FFFF (EF BF BE / EF BF BF) are dropped, any other is kept.
+            if (i + 2 < n && load8(p + i + 1) == 0xBF && (load8(p + i + 2) == 0xBE || load8(p + i + 2) == 0xBF)) {
+                i = i + 3;
+                continue;
+            }
+            var k = 0;
+            while (k < 3 && i + k < n) {
+                str_builder_putc(sb, load8(p + i + k));
+                k = k + 1;
+            }
+            i = i + k;
+            continue;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Rust's xml_escape as a new Str.
+#must_use
+fn selah_xml_escape(p, n): Str {
+    var sb = str_builder_new();
+    _sl_push_xml_escaped(sb, p, n);
+    return str_builder_build(sb);
+}
+
+# ── Color ─────────────────────────────────────────────────────────────────────────────
+
+struct SlColor { r: u8; g: u8; b: u8; a: u8; }
+
+var SL_COLOR_RED: SlColor = SlColor { 255, 0, 0, 255 };
+var SL_COLOR_GREEN: SlColor = SlColor { 0, 255, 0, 255 };
+var SL_COLOR_BLUE: SlColor = SlColor { 0, 0, 255, 255 };
+var SL_COLOR_BLACK: SlColor = SlColor { 0, 0, 0, 255 };
+var SL_COLOR_WHITE: SlColor = SlColor { 255, 255, 255, 255 };
+var SL_COLOR_YELLOW: SlColor = SlColor { 255, 255, 0, 128 };
+
+impl SlColor {
+    # A colour (each channel taken mod 256).
+    #must_use
+    fn new(r, g, b, a): SlColor {
+        var c: SlColor;
+        c.r = r & 255;
+        c.g = g & 255;
+        c.b = b & 255;
+        c.a = a & 255;
+        return c;
+    }
+
+    # Appends Rust's Display: "#rrggbbaa", lowercase.
+    fn fmt(self, sb): i64 {
+        str_builder_putc(sb, 35);
+        var ch: i64[4];
+        ch[0] = self.r;
+        ch[1] = self.g;
+        ch[2] = self.b;
+        ch[3] = self.a;
+        var i = 0;
+        while (i < 4) {
+            str_builder_putc(sb, load8(_SL_HEX + (ch[i] >> 4)));
+            str_builder_putc(sb, load8(_SL_HEX + (ch[i] & 15)));
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    # Appends the CSS form: "rgba(r,g,b,A)" with A = a / 255 to two places (Rust's `{:.2}`). a·100/255 is never a
+    # tie to two places, so the integer rounding round(a·100/255) is the f64 formatting's.
+    fn css(self, sb): i64 {
+        str_builder_add_cstr(sb, "rgba(");
+        str_builder_add_int(sb, self.r);
+        str_builder_putc(sb, 44);
+        str_builder_add_int(sb, self.g);
+        str_builder_putc(sb, 44);
+        str_builder_add_int(sb, self.b);
+        str_builder_putc(sb, 44);
+        var q = (self.a * 200 + 255) / 510;
+        str_builder_add_int(sb, q / 100);
+        str_builder_putc(sb, 46);
+        str_builder_putc(sb, 48 + (q / 10) % 10);
+        str_builder_putc(sb, 48 + q % 10);
+        str_builder_putc(sb, 41);
+        return 0;
+    }
+
+    # Rust's to_css as a new Str.
+    #must_use
+    fn to_css(self): Str {
+        var sb = str_builder_new();
+        self.css(sb);
+        return str_builder_build(sb);
+    }
+
+    # Appends serde's JSON: {"r":…,"g":…,"b":…,"a":…}.
+    fn to_json(self, sb): i64 {
+        str_builder_add_cstr(sb, "{\"r\":");
+        str_builder_add_int(sb, self.r);
+        str_builder_add_cstr(sb, ",\"g\":");
+        str_builder_add_int(sb, self.g);
+        str_builder_add_cstr(sb, ",\"b\":");
+        str_builder_add_int(sb, self.b);
+        str_builder_add_cstr(sb, ",\"a\":");
+        str_builder_add_int(sb, self.a);
+        str_builder_putc(sb, 125);
+        return 0;
+    }
+}
+
+# Rust's Color::default(): RED.
+#must_use
+fn SlColor_default(): SlColor {
+    return SL_COLOR_RED;
+}
+
+# Read a colour from a parsed JSON value into *out: {r, g, b, a} or serde's array form [r, g, b, a], each an
+# integer 0..=255. Ok(0) or Err(SL_ERR_SERDE).
+fn _sl_color_from_value(v, out: *SlColor, detail_out): Result {
+    if (v == 0 || (bayan_json_v_is_obj(v) == false && bayan_json_v_is_arr(v) == false)) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "color: expected a JSON object or array");
+    }
+    var r = _sl_json_as_u8(_sl_json_field(v, "r", 4, 0));
+    var g = _sl_json_as_u8(_sl_json_field(v, "g", 4, 1));
+    var b = _sl_json_as_u8(_sl_json_field(v, "b", 4, 2));
+    var a = _sl_json_as_u8(_sl_json_field(v, "a", 4, 3));
+    if (r < 0 || g < 0 || b < 0 || a < 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "color: each of r, g, b, a must be an integer 0..=255");
+    }
+    *out = SlColor_new(r, g, b, a);
+    return Ok(0);
+}
+
+# Read a colour from JSON text into *out. Ok(0) or Err(SL_ERR_SERDE).
+fn SlColor_from_json(p, n, out: *SlColor, detail_out = 0): Result {
+    var v = _sl_json_parse(p, n);
+    if (v == 0) { return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "color: not a JSON document"); }
+    return _sl_color_from_value(v, out, detail_out);
+}
+
+# ── RedactionTarget ───────────────────────────────────────────────────────────────────
+
+enum SlRedactionKind {
+    SL_TARGET_EMAIL = 0;
+    SL_TARGET_PHONE = 1;
+    SL_TARGET_CREDIT_CARD = 2;
+    SL_TARGET_IP_ADDRESS = 3;
+    SL_TARGET_CUSTOM = 4;
+}
+
+# A redaction target: its kind, and for SL_TARGET_CUSTOM its label (a Str; 0 otherwise).
+struct SlRedactionTarget { kind: i64; custom: i64; }
+
+impl SlRedactionTarget {
+    # A target of `kind`, with `custom` the label of a SL_TARGET_CUSTOM (else 0).
+    #must_use
+    fn new(kind, custom): SlRedactionTarget {
+        var t: SlRedactionTarget;
+        t.kind = kind;
+        t.custom = custom;
+        return t;
+    }
+
+    # The stable machine key: "email", "phone", "credit_card", "ip_address", "custom".
+    #must_use
+    fn key(self): i64 {
+        match self.kind {
+            SL_TARGET_EMAIL => { return "email"; }
+            SL_TARGET_PHONE => { return "phone"; }
+            SL_TARGET_CREDIT_CARD => { return "credit_card"; }
+            SL_TARGET_IP_ADDRESS => { return "ip_address"; }
+            _ => { return "custom"; }
+        }
+        return "custom";
+    }
+
+    # Appends Rust's Display: "email", "phone", "credit card", "IP address", "custom: <label>".
+    fn fmt(self, sb): i64 {
+        match self.kind {
+            SL_TARGET_EMAIL => { str_builder_add_cstr(sb, "email"); }
+            SL_TARGET_PHONE => { str_builder_add_cstr(sb, "phone"); }
+            SL_TARGET_CREDIT_CARD => { str_builder_add_cstr(sb, "credit card"); }
+            SL_TARGET_IP_ADDRESS => { str_builder_add_cstr(sb, "IP address"); }
+            _ => {
+                str_builder_add_cstr(sb, "custom: ");
+                if (self.custom != 0) { str_builder_add(sb, self.custom); }
+            }
+        }
+        return 0;
+    }
+
+    # Appends serde's JSON: "\"Email\"" … or {"Custom":"<label>"}.
+    fn to_json(self, sb): i64 {
+        match self.kind {
+            SL_TARGET_EMAIL => { str_builder_add_cstr(sb, "\"Email\""); }
+            SL_TARGET_PHONE => { str_builder_add_cstr(sb, "\"Phone\""); }
+            SL_TARGET_CREDIT_CARD => { str_builder_add_cstr(sb, "\"CreditCard\""); }
+            SL_TARGET_IP_ADDRESS => { str_builder_add_cstr(sb, "\"IpAddress\""); }
+            _ => {
+                str_builder_add_cstr(sb, "{\"Custom\":");
+                if (self.custom != 0) {
+                    _sl_json_str_s(sb, self.custom);
+                } else {
+                    str_builder_add_cstr(sb, "\"\"");
+                }
+                str_builder_putc(sb, 125);
+            }
+        }
+        return 0;
+    }
+}
+
+# Read a target from a parsed JSON value into *out: a unit variant as its name or {"<name>": null}, or
+# {"Custom": "<label>"}. Ok(0) or Err(SL_ERR_SERDE).
+fn _sl_target_from_value(v, out: *SlRedactionTarget, detail_out): Result {
+    var content = 0;
+    var s = _sl_json_variant(v, &content);
+    if (s == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "redaction target: expected a variant");
+    }
+    var p = str_data(s);
+    var n = str_len(s);
+    if (_sl_eq(p, n, "Custom") == 1) {
+        var label = _sl_json_as_str(content);
+        if (label == 0) {
+            return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "redaction target: Custom needs a string");
+        }
+        *out = SlRedactionTarget_new(SL_TARGET_CUSTOM, label);
+        return Ok(0);
+    }
+    if (_sl_json_unit_content(content) == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "redaction target: a unit variant takes no content");
+    }
+    var kind = -1;
+    if (_sl_eq(p, n, "Email") == 1) { kind = SL_TARGET_EMAIL; }
+    elif (_sl_eq(p, n, "Phone") == 1) { kind = SL_TARGET_PHONE; }
+    elif (_sl_eq(p, n, "CreditCard") == 1) { kind = SL_TARGET_CREDIT_CARD; }
+    elif (_sl_eq(p, n, "IpAddress") == 1) { kind = SL_TARGET_IP_ADDRESS; }
+    if (kind < 0) { return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "redaction target: unknown variant"); }
+    *out = SlRedactionTarget_new(kind, 0);
+    return Ok(0);
+}
+
+# Read a target from JSON text into *out. Ok(0) or Err(SL_ERR_SERDE).
+fn SlRedactionTarget_from_json(p, n, out: *SlRedactionTarget, detail_out = 0): Result {
+    var v = _sl_json_parse(p, n);
+    if (v == 0) { return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "redaction target: not a JSON document"); }
+    return _sl_target_from_value(v, out, detail_out);
+}
+
+# ── CaptureSource ─────────────────────────────────────────────────────────────────────
+
+enum SlCaptureSourceKind {
+    SL_SOURCE_FULL_SCREEN = 0;
+    SL_SOURCE_REGION = 1;
+    SL_SOURCE_WINDOW = 2;
+}
+
+# Where a screenshot came from: the whole screen, a region, or a window (its id, a Str).
+struct SlCaptureSource { kind: i64; region: SlRect; window: i64; }
+
+impl SlCaptureSource {
+    # Appends Rust's Display: "full screen", "region (WxH at X,Y)" (f32 Display), "window <id>".
+    fn fmt(self, sb): i64 {
+        match self.kind {
+            SL_SOURCE_FULL_SCREEN => { str_builder_add_cstr(sb, "full screen"); }
+            SL_SOURCE_REGION => {
+                var w: f32 = self.region.max_x - self.region.min_x;
+                var h: f32 = self.region.max_y - self.region.min_y;
+                str_builder_add_cstr(sb, "region (");
+                _sl_fmt_f32_display(sb, w);
+                str_builder_putc(sb, 120);
+                _sl_fmt_f32_display(sb, h);
+                str_builder_add_cstr(sb, " at ");
+                _sl_fmt_f32_display(sb, self.region.min_x);
+                str_builder_putc(sb, 44);
+                _sl_fmt_f32_display(sb, self.region.min_y);
+                str_builder_putc(sb, 41);
+            }
+            _ => {
+                str_builder_add_cstr(sb, "window ");
+                if (self.window != 0) { str_builder_add(sb, self.window); }
+            }
+        }
+        return 0;
+    }
+}
+
+# ── Annotation ────────────────────────────────────────────────────────────────────────
+
+# An annotation: a 16-byte id (RFC 4122 byte order, in id_a then id_b), its kind, its position, its colour, and its
+# text (a Str, or 0 for Rust's None).
+struct SlAnnotation { id_a: i64; id_b: i64; kind: i64; position: SlRect; color: SlColor; text: i64; }
+
+# An allocation as a *SlAnnotation (the id's 16 bytes start at the struct's address: id_a is at offset 0).
+#must_use
+fn _sl_as_annotation(p): *SlAnnotation {
+    return p;
+}
+
+# A new annotation with a random v4 id on the freelist (free it with SlAnnotation_free); 0 when out of memory or
+# entropy.
+#must_use
+fn SlAnnotation_new(kind, position: SlRect, color: SlColor): *SlAnnotation {
+    var a: *SlAnnotation = _sl_as_annotation(fl_alloc(sizeof(SlAnnotation)));
+    if (a == 0) { return 0; }
+    if (_sl_uuid_v4(_sl_addr(a)) == 0) {
+        fl_free(a);
+        return 0;
+    }
+    a.kind = kind;
+    a.position = position;
+    a.color = color;
+    a.text = 0;
+    return a;
+}
+
+# As SlAnnotation_new, with text (a Str).
+#must_use
+fn SlAnnotation_with_text(kind, position: SlRect, color: SlColor, text): *SlAnnotation {
+    var a: *SlAnnotation = SlAnnotation_new(kind, position, color);
+    if (a == 0) { return 0; }
+    a.text = text;
+    return a;
+}
+
+# Free an annotation made by SlAnnotation_new / _with_text / _from_json (its text is the caller's).
+fn SlAnnotation_free(a: *SlAnnotation): i64 {
+    if (a != 0) { fl_free(a); }
+    return 0;
+}
+
+# Appends serde's JSON for the annotation: {"id":…,"kind":…,"position":…,"color":…,"text":…}.
+fn SlAnnotation_to_json(a: *SlAnnotation, sb): i64 {
+    str_builder_add_cstr(sb, "{\"id\":\"");
+    _sl_uuid_fmt(sb, _sl_addr(a), 1);
+    str_builder_add_cstr(sb, "\",\"kind\":");
+    selah_annotation_kind_to_json(sb, a.kind);
+    str_builder_add_cstr(sb, ",\"position\":");
+    a.position.to_json(sb);
+    str_builder_add_cstr(sb, ",\"color\":");
+    a.color.to_json(sb);
+    str_builder_add_cstr(sb, ",\"text\":");
+    if (a.text == 0) {
+        str_builder_add_cstr(sb, "null");
+    } else {
+        _sl_json_str_s(sb, a.text);
+    }
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+# Read an annotation from a parsed JSON value, as Rust's derived Deserialize: an object whose id, kind, position and
+# colour are required and whose text may be missing or null (None) or a string; or serde's array form of all five.
+# Ok(annotation on the freelist) or Err(SL_ERR_SERDE).
+fn _sl_annotation_from_value(v, detail_out): Result {
+    if (v == 0 || (bayan_json_v_is_obj(v) == false && bayan_json_v_is_arr(v) == false)) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "annotation: expected a JSON object or array");
+    }
+    var a: *SlAnnotation = _sl_as_annotation(fl_alloc(sizeof(SlAnnotation)));
+    if (a == 0) { return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "annotation: out of memory"); }
+    var ids = _sl_json_as_str(_sl_json_field(v, "id", 5, 0));
+    if (ids == 0 || _sl_uuid_parse(str_data(ids), str_len(ids), _sl_addr(a)) == 0) {
+        fl_free(a);
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "annotation: `id` is missing or not a UUID");
+    }
+    var kt, kv = _sl_kind_from_value(_sl_json_field(v, "kind", 5, 1), detail_out);
+    if (is_err_result(kt) == 1) {
+        fl_free(a);
+        return Err(kv);
+    }
+    a.kind = kv;
+    var rect: SlRect = SlRect_default();
+    var rt, rv = _sl_rect_from_value(_sl_json_field(v, "position", 5, 2), &rect, detail_out);
+    if (is_err_result(rt) == 1) {
+        fl_free(a);
+        return Err(rv);
+    }
+    a.position = rect;
+    var col: SlColor = SlColor_default();
+    var ct, cv = _sl_color_from_value(_sl_json_field(v, "color", 5, 3), &col, detail_out);
+    if (is_err_result(ct) == 1) {
+        fl_free(a);
+        return Err(cv);
+    }
+    a.color = col;
+    a.text = 0;
+    var tv = _sl_json_field(v, "text", 5, 4);
+    if (tv != 0 && bayan_json_v_is_null(tv) == false) {
+        var ts = _sl_json_as_str(tv);
+        if (ts == 0) {
+            fl_free(a);
+            return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "annotation: `text` must be a string or null");
+        }
+        a.text = ts;
+    }
+    return Ok(a);
+}
+
+# Read an annotation from JSON text. Ok(annotation on the freelist) or Err(SL_ERR_SERDE).
+fn SlAnnotation_from_json(p, n, detail_out = 0): Result {
+    var v = _sl_json_parse(p, n);
+    if (v == 0) { return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "annotation: not a JSON document"); }
+    return _sl_annotation_from_value(v, detail_out);
+}

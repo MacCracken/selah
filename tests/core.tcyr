@@ -1,0 +1,510 @@
+# core.tcyr — rust-old/src/core.rs's tests and doctests, ported (port plan M1), and Cyrius-only tests for uuid.cyr
+# and rfc3339.cyr. Golden parity: tests/golden/core.tsv, uuid.tsv, rfc3339.tsv.
+
+include "tests/selah_src.cyr"
+include "tests/support.cyr"
+
+# 1 when two colours are equal.
+fn _t_color_eq(a: SlColor, b: SlColor): i64 {
+    return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+}
+
+# A colour's Display.
+fn _t_color_text(c: SlColor): i64 {
+    var sb = str_builder_new();
+    c.fmt(sb);
+    return str_builder_build(sb);
+}
+
+# A kind's Display.
+fn _t_kind_text(k): i64 {
+    var sb = str_builder_new();
+    selah_annotation_kind_fmt(sb, k);
+    return str_builder_build(sb);
+}
+
+# A target's Display.
+fn _t_target_text(kind, custom): i64 {
+    var t = SlRedactionTarget_new(kind, custom);
+    var sb = str_builder_new();
+    t.fmt(sb);
+    return str_builder_build(sb);
+}
+
+# A capture source's Display.
+fn _t_source_text(kind, region: SlRect, window): i64 {
+    var s: SlCaptureSource;
+    s.kind = kind;
+    s.region = region;
+    s.window = window;
+    var sb = str_builder_new();
+    s.fmt(sb);
+    return str_builder_build(sb);
+}
+
+# The format parsed from a cstring, or -1.
+fn _t_parse_format(s): i64 {
+    var t, f = selah_image_format_parse(s, strlen(s));
+    if (is_err_result(t) == 1) { return -1; }
+    return f;
+}
+
+# The kind parsed from a cstring, or -1.
+fn _t_parse_kind(s): i64 {
+    var t, k = selah_annotation_kind_parse(s, strlen(s));
+    if (is_err_result(t) == 1) { return -1; }
+    return k;
+}
+
+# The format from a path, or -1 for None.
+fn _t_from_path(s): i64 {
+    var t, f = selah_image_format_from_path(s, strlen(s));
+    if (is_none(t) == 1) { return -1; }
+    return f;
+}
+
+# xml_escape of a cstring.
+fn _t_xml(s): i64 {
+    return selah_xml_escape(s, strlen(s));
+}
+
+# derive_output_path of two cstrings.
+fn _t_dop(i, s): i64 {
+    return selah_derive_output_path(i, strlen(i), s, strlen(s));
+}
+
+fn _t_color_default_is_red(): i64 {
+    test_group("test_color_default_is_red");
+    assert(_t_color_eq(SlColor_default(), SL_COLOR_RED), "red");
+    return 0;
+}
+
+fn _t_color_display(): i64 {
+    test_group("test_color_display");
+    assert(_t_str_is(_t_color_text(SlColor_new(255, 128, 0, 255)), "#ff8000ff"), "display");
+    return 0;
+}
+
+fn _t_color_to_css(): i64 {
+    test_group("test_color_to_css");
+    assert(_t_str_is(SlColor_new(255, 0, 0, 255).to_css(), "rgba(255,0,0,1.00)"), "css");
+    return 0;
+}
+
+fn _t_image_format_extension(): i64 {
+    test_group("test_image_format_extension");
+    assert(_t_cstr_is(selah_image_format_extension(SL_FMT_PNG), "png"), "png");
+    assert(_t_cstr_is(selah_image_format_extension(SL_FMT_JPEG), "jpg"), "jpg");
+    assert(_t_cstr_is(selah_image_format_extension(SL_FMT_BMP), "bmp"), "bmp");
+    assert(_t_cstr_is(selah_image_format_extension(SL_FMT_WEBP), "webp"), "webp");
+    return 0;
+}
+
+fn _t_image_format_mime(): i64 {
+    test_group("test_image_format_mime");
+    assert(_t_cstr_is(selah_image_format_mime_type(SL_FMT_PNG), "image/png"), "png");
+    assert(_t_cstr_is(selah_image_format_mime_type(SL_FMT_JPEG), "image/jpeg"), "jpeg");
+    return 0;
+}
+
+fn _t_image_format_default_is_png(): i64 {
+    test_group("test_image_format_default_is_png");
+    assert(selah_image_format_default() == SL_FMT_PNG, "png");
+    return 0;
+}
+
+fn _t_image_format_display(): i64 {
+    test_group("test_image_format_display");
+    var sb = str_builder_new();
+    selah_image_format_fmt(sb, SL_FMT_PNG);
+    assert(_t_str_is(str_builder_build(sb), "png"), "png");
+    var sb2 = str_builder_new();
+    selah_image_format_fmt(sb2, SL_FMT_WEBP);
+    assert(_t_str_is(str_builder_build(sb2), "webp"), "webp");
+    return 0;
+}
+
+# core.rs repeats five of geometry.rs's rect tests; they run here too, as the ledger counts them.
+fn _t_core_rect_contains_point(): i64 {
+    test_group("core::test_rect_contains_point");
+    var r = _t_rect(10.0, 10.0, 100.0, 50.0);
+    assert(r.contains_point(_t_vec2(50.0, 30.0)), "inside");
+    assert(r.contains_point(_t_vec2(10.0, 10.0)), "on edge");
+    assert(r.contains_point(_t_vec2(110.0, 60.0)), "on far edge");
+    assert(r.contains_point(_t_vec2(5.0, 30.0)) == false, "outside left");
+    assert(r.contains_point(_t_vec2(50.0, 65.0)) == false, "outside bottom");
+    return 0;
+}
+
+fn _t_core_rect_area(): i64 {
+    test_group("core::test_rect_area");
+    assert(_t_rect(0.0, 0.0, 100.0, 50.0).area() == 5000.0, "area");
+    return 0;
+}
+
+fn _t_core_rect_center(): i64 {
+    test_group("core::test_rect_center");
+    var c = _t_rect(0.0, 0.0, 100.0, 50.0).center();
+    var cx: f64 = f32_to(c.x);
+    var cy: f64 = f32_to(c.y);
+    assert(cx == 50.0 && cy == 25.0, "center");
+    return 0;
+}
+
+fn _t_core_rect_intersects(): i64 {
+    test_group("core::test_rect_intersects");
+    var a = _t_rect(0.0, 0.0, 100.0, 100.0);
+    var b = _t_rect(50.0, 50.0, 100.0, 100.0);
+    var c = _t_rect(200.0, 200.0, 50.0, 50.0);
+    assert(a.intersects(&b), "overlap");
+    assert(a.intersects(&c) == false, "apart");
+    return 0;
+}
+
+fn _t_core_rect_default_is_zero(): i64 {
+    test_group("core::test_rect_default_is_zero");
+    var r = SlRect_default();
+    assert(r.x() == 0.0 && r.area() == 0.0, "zero");
+    return 0;
+}
+
+fn _t_capture_source_display(): i64 {
+    test_group("test_capture_source_display");
+    var z = SlRect_default();
+    assert(_t_str_is(_t_source_text(SL_SOURCE_FULL_SCREEN, z, 0), "full screen"), "full screen");
+    var r = _t_rect(10.0, 20.0, 800.0, 600.0);
+    assert(_t_str_is(_t_source_text(SL_SOURCE_REGION, r, 0), "region (800x600 at 10,20)"), "region");
+    assert(_t_str_is(_t_source_text(SL_SOURCE_WINDOW, z, str_from("abc")), "window abc"), "window");
+    return 0;
+}
+
+fn _t_annotation_kind_display(): i64 {
+    test_group("test_annotation_kind_display");
+    assert(_t_str_is(_t_kind_text(SL_KIND_ARROW), "arrow"), "arrow");
+    assert(_t_str_is(_t_kind_text(SL_KIND_REDACTION), "redaction"), "redaction");
+    assert(_t_str_is(_t_kind_text(SL_KIND_FREEFORM), "freeform"), "freeform");
+    return 0;
+}
+
+fn _t_redaction_target_display(): i64 {
+    test_group("test_redaction_target_display");
+    assert(_t_str_is(_t_target_text(SL_TARGET_EMAIL, 0), "email"), "email");
+    assert(_t_str_is(_t_target_text(SL_TARGET_PHONE, 0), "phone"), "phone");
+    assert(_t_str_is(_t_target_text(SL_TARGET_CUSTOM, str_from("SSN")), "custom: SSN"), "custom");
+    return 0;
+}
+
+fn _t_annotation_new(): i64 {
+    test_group("test_annotation_new");
+    var a: *SlAnnotation = SlAnnotation_new(SL_KIND_ARROW, _t_rect(0.0, 0.0, 50.0, 50.0), SL_COLOR_RED);
+    assert(a != 0, "allocated");
+    assert(a.kind == SL_KIND_ARROW, "kind");
+    assert(a.text == 0, "no text");
+    SlAnnotation_free(a);
+    return 0;
+}
+
+fn _t_annotation_with_text(): i64 {
+    test_group("test_annotation_with_text");
+    var pos = _t_rect(0.0, 0.0, 200.0, 30.0);
+    var a: *SlAnnotation = SlAnnotation_with_text(SL_KIND_TEXT, pos, SL_COLOR_BLACK, str_from("Hello"));
+    assert(a.kind == SL_KIND_TEXT, "kind");
+    assert(_t_str_is(a.text, "Hello"), "text");
+    SlAnnotation_free(a);
+    return 0;
+}
+
+fn _t_image_format_from_str(): i64 {
+    test_group("test_image_format_from_str");
+    assert(_t_parse_format("png") == SL_FMT_PNG, "png");
+    assert(_t_parse_format("jpg") == SL_FMT_JPEG, "jpg");
+    assert(_t_parse_format("jpeg") == SL_FMT_JPEG, "jpeg");
+    assert(_t_parse_format("bmp") == SL_FMT_BMP, "bmp");
+    assert(_t_parse_format("webp") == SL_FMT_WEBP, "webp");
+    assert(_t_parse_format("PNG") == SL_FMT_PNG, "PNG");
+    assert(_t_parse_format("tiff") == -1, "tiff refused");
+    return 0;
+}
+
+fn _t_xml_escape(): i64 {
+    test_group("test_xml_escape");
+    assert(_t_str_is(_t_xml("hello"), "hello"), "plain");
+    assert(_t_str_is(_t_xml("<script>"), "&lt;script&gt;"), "tags");
+    assert(_t_str_is(_t_xml("a&b"), "a&amp;b"), "amp");
+    assert(_t_str_is(_t_xml("x\"y'z"), "x&quot;y&#x27;z"), "quotes");
+    return 0;
+}
+
+fn _t_derive_output_path(): i64 {
+    test_group("test_derive_output_path");
+    assert(_t_str_is(_t_dop("photo.png", "annotated"), "photo_annotated.png"), "annotated");
+    assert(_t_str_is(_t_dop("photo.png", "redacted"), "photo_redacted.png"), "redacted");
+    assert(_t_str_is(_t_dop("noext", "out"), "noext_out"), "noext");
+    assert(_t_str_is(_t_dop("/tmp/img.jpg", "annotated"), "img_annotated.jpg"), "absolute");
+    return 0;
+}
+
+fn _t_image_format_from_str_invalid(): i64 {
+    test_group("test_image_format_from_str_invalid");
+    var d = 0;
+    var t, v = selah_image_format_parse("tiff", 4, &d);
+    var msg = selah_error_display(v, d);
+    assert(_t_str_has(msg, "tiff"), "names it");
+    assert(_t_str_has(msg, "png"), "lists png");
+    return 0;
+}
+
+fn _t_xml_escape_all_special_chars(): i64 {
+    test_group("test_xml_escape_all_special_chars");
+    var out = _t_xml("<a href=\"x\">&'test'</a>");
+    assert(_t_str_is(out, "&lt;a href=&quot;x&quot;&gt;&amp;&#x27;test&#x27;&lt;/a&gt;"), "all five");
+    return 0;
+}
+
+fn _t_xml_escape_strips_xml_illegal_chars(): i64 {
+    test_group("test_xml_escape_strips_xml_illegal_chars");
+    assert(_t_str_is(selah_xml_escape("a\x00b\x1bc", 5), "abc"), "controls dropped");
+    assert(_t_str_is(_t_xml("tab\tnl\ncr\r"), "tab\tnl\ncr\r"), "tab, LF, CR kept");
+    assert(_t_str_is(_t_xml("x\xef\xbf\xbey\xef\xbf\xbfz"), "xyz"), "U+FFFE, U+FFFF dropped");
+    assert(_t_str_is(_t_xml("\xef\xbf\xbd\xef\xbc\x81"), "\xef\xbf\xbd\xef\xbc\x81"), "U+FFFD, U+FF01 kept");
+    return 0;
+}
+
+fn _t_xml_escape_multibyte_preserved(): i64 {
+    test_group("test_xml_escape_multibyte_preserved");
+    var out = _t_xml("h\xc3\xa9llo <w\xc3\xb6rld> \xe6\x97\xa5\xe6\x9c\xac");
+    assert(_t_str_is(out, "h\xc3\xa9llo &lt;w\xc3\xb6rld&gt; \xe6\x97\xa5\xe6\x9c\xac"), "multibyte");
+    return 0;
+}
+
+fn _t_image_format_from_path(): i64 {
+    test_group("test_image_format_from_path");
+    assert(_t_from_path("a/b.JPG") == SL_FMT_JPEG, "JPG");
+    assert(_t_from_path("x.webp") == SL_FMT_WEBP, "webp");
+    assert(_t_from_path("noext") == -1, "noext");
+    assert(_t_from_path("x.tiff") == -1, "tiff");
+    return 0;
+}
+
+fn _t_annotation_kind_from_str_roundtrip(): i64 {
+    test_group("test_annotation_kind_from_str_roundtrip");
+    var k = SL_KIND_ARROW;
+    while (k <= SL_KIND_FREEFORM) {
+        var name = selah_annotation_kind_name(k);
+        assert(_t_parse_kind(name) == k, name);
+        k = k + 1;
+    }
+    assert(_t_parse_kind("Rectangle") == SL_KIND_RECTANGLE, "Rectangle");
+    assert(_t_parse_kind("FreeForm") == SL_KIND_FREEFORM, "FreeForm");
+    assert(_t_parse_kind("blob") == -1, "blob refused");
+    return 0;
+}
+
+fn _t_redaction_target_key(): i64 {
+    test_group("test_redaction_target_key");
+    assert(_t_cstr_is(SlRedactionTarget_new(SL_TARGET_EMAIL, 0).key(), "email"), "email");
+    assert(_t_cstr_is(SlRedactionTarget_new(SL_TARGET_PHONE, 0).key(), "phone"), "phone");
+    assert(_t_cstr_is(SlRedactionTarget_new(SL_TARGET_CREDIT_CARD, 0).key(), "credit_card"), "credit_card");
+    assert(_t_cstr_is(SlRedactionTarget_new(SL_TARGET_IP_ADDRESS, 0).key(), "ip_address"), "ip_address");
+    assert(_t_cstr_is(SlRedactionTarget_new(SL_TARGET_CUSTOM, str_from("x")).key(), "custom"), "custom");
+    return 0;
+}
+
+fn _t_xml_escape_empty(): i64 {
+    test_group("test_xml_escape_empty");
+    assert(_t_str_is(_t_xml(""), ""), "empty");
+    return 0;
+}
+
+fn _t_xml_escape_no_special(): i64 {
+    test_group("test_xml_escape_no_special");
+    assert(_t_str_is(_t_xml("plain text 123"), "plain text 123"), "plain");
+    return 0;
+}
+
+fn _t_derive_output_path_dotfile(): i64 {
+    test_group("test_derive_output_path_dotfile");
+    assert(_t_str_is(_t_dop(".hidden", "out"), ".hidden_out"), "dotfile");
+    return 0;
+}
+
+fn _t_derive_output_path_multiple_dots(): i64 {
+    test_group("test_derive_output_path_multiple_dots");
+    assert(_t_str_is(_t_dop("file.backup.png", "annotated"), "file.backup_annotated.png"), "dots");
+    return 0;
+}
+
+fn _t_capture_source_display_all_variants(): i64 {
+    test_group("test_capture_source_display_all_variants");
+    var z = SlRect_default();
+    assert(_t_str_is(_t_source_text(SL_SOURCE_FULL_SCREEN, z, 0), "full screen"), "full screen");
+    assert(_t_str_is(_t_source_text(SL_SOURCE_WINDOW, z, str_from("firefox")), "window firefox"), "window");
+    var s = _t_source_text(SL_SOURCE_REGION, _t_rect(0.0, 0.0, 1920.0, 1080.0), 0);
+    assert(_t_str_has(s, "1920") && _t_str_has(s, "1080"), "region");
+    return 0;
+}
+
+fn _t_annotation_with_text_has_correct_fields(): i64 {
+    test_group("test_annotation_with_text_has_correct_fields");
+    var pos = _t_rect(10.0, 20.0, 200.0, 30.0);
+    var text = str_from("Hello <World>");
+    var a: *SlAnnotation = SlAnnotation_with_text(SL_KIND_TEXT, pos, SL_COLOR_BLUE, text);
+    assert(a.kind == SL_KIND_TEXT, "kind");
+    assert(_t_color_eq(a.color, SL_COLOR_BLUE), "colour");
+    assert(_t_str_is(a.text, "Hello <World>"), "text");
+    assert(a.position.x() == 10.0, "x");
+    SlAnnotation_free(a);
+    return 0;
+}
+
+fn _t_annotation_new_generates_unique_ids(): i64 {
+    test_group("test_annotation_new_generates_unique_ids");
+    var a: *SlAnnotation = SlAnnotation_new(SL_KIND_ARROW, SlRect_default(), SL_COLOR_RED);
+    var b: *SlAnnotation = SlAnnotation_new(SL_KIND_ARROW, SlRect_default(), SL_COLOR_RED);
+    assert(memeq(_sl_addr(a), _sl_addr(b), 16) == 0, "ids differ");
+    SlAnnotation_free(a);
+    SlAnnotation_free(b);
+    return 0;
+}
+
+fn _t_color_new_and_constants(): i64 {
+    test_group("test_color_new_and_constants");
+    var c = SlColor_new(1, 2, 3, 4);
+    assert(c.r == 1 && c.g == 2 && c.b == 3 && c.a == 4, "channels");
+    assert(_t_color_eq(SL_COLOR_WHITE, SlColor_new(255, 255, 255, 255)), "white");
+    assert(_t_color_eq(SL_COLOR_BLACK, SlColor_new(0, 0, 0, 255)), "black");
+    return 0;
+}
+
+fn _t_color_to_css_semi_transparent(): i64 {
+    test_group("test_color_to_css_semi_transparent");
+    var css = SlColor_new(0, 128, 255, 128).to_css();
+    assert(_t_str_has(css, "rgba(0,128,255,") && memeq(str_data(css), "rgba(0,128,255,", 15) == 1, "prefix");
+    assert(_t_str_has(css, "0.50"), "alpha");
+    return 0;
+}
+
+fn _t_redaction_target_display_all_variants(): i64 {
+    test_group("test_redaction_target_display_all_variants");
+    assert(_t_str_is(_t_target_text(SL_TARGET_CREDIT_CARD, 0), "credit card"), "credit card");
+    assert(_t_str_is(_t_target_text(SL_TARGET_IP_ADDRESS, 0), "IP address"), "IP address");
+    return 0;
+}
+
+fn _t_annotation_kind_display_all(): i64 {
+    test_group("test_annotation_kind_display_all");
+    assert(_t_str_is(_t_kind_text(SL_KIND_RECTANGLE), "rectangle"), "rectangle");
+    assert(_t_str_is(_t_kind_text(SL_KIND_CIRCLE), "circle"), "circle");
+    assert(_t_str_is(_t_kind_text(SL_KIND_TEXT), "text"), "text");
+    assert(_t_str_is(_t_kind_text(SL_KIND_HIGHLIGHT), "highlight"), "highlight");
+    return 0;
+}
+
+fn _t_image_format_bmp_and_webp_mime(): i64 {
+    test_group("test_image_format_bmp_and_webp_mime");
+    assert(_t_cstr_is(selah_image_format_mime_type(SL_FMT_BMP), "image/bmp"), "bmp");
+    assert(_t_cstr_is(selah_image_format_mime_type(SL_FMT_WEBP), "image/webp"), "webp");
+    return 0;
+}
+
+# The five doctests of core.rs.
+fn _t_doctests(): i64 {
+    test_group("doctests core");
+    var a: *SlAnnotation = SlAnnotation_new(SL_KIND_RECTANGLE, _t_rect(10.0, 20.0, 100.0, 50.0), SL_COLOR_RED);
+    assert(a.text == 0, "Annotation::new: no text");
+    SlAnnotation_free(a);
+    assert(_t_cstr_is(selah_image_format_extension(SL_FMT_PNG), "png"), "ImageFormat: extension");
+    assert(_t_parse_format("jpg") == SL_FMT_JPEG, "ImageFormat: parse");
+    assert(_t_from_path("shot.JPEG") == SL_FMT_JPEG, "from_path: JPEG");
+    assert(_t_from_path("notes.txt") == -1, "from_path: txt");
+    var x = _t_xml("<script>alert('xss')</script>");
+    assert(_t_str_is(x, "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;"), "xml_escape");
+    assert(_t_str_is(_t_dop("photo.png", "annotated"), "photo_annotated.png"), "derive_output_path");
+    return 0;
+}
+
+# Cyrius-only: a v4 id carries version 4 and the RFC 4122 variant, and two differ.
+fn _t_uuid_v4(): i64 {
+    test_group("uuid v4");
+    var a: u8[16];
+    var b: u8[16];
+    assert(_sl_uuid_v4(&a) == 1, "entropy");
+    assert(_sl_uuid_v4(&b) == 1, "entropy");
+    assert((load8(&a + 6) >> 4) == 4, "version 4");
+    assert((load8(&a + 8) & 0xC0) == 0x80, "variant");
+    assert(memeq(&a, &b, 16) == 0, "differ");
+    var sb = str_builder_new();
+    _sl_uuid_fmt(sb, &a, 1);
+    var s = str_builder_build(sb);
+    var back: u8[16];
+    assert(_sl_uuid_parse(str_data(s), str_len(s), &back) == 1 && memeq(&a, &back, 16) == 1, "round trip");
+    return 0;
+}
+
+# Cyrius-only: the current time round-trips through the RFC 3339 writer and reader.
+fn _t_rfc3339_now(): i64 {
+    test_group("rfc3339 now");
+    var ns = clock_epoch_ns();
+    var secs = ns / 1000000000;
+    var nanos = ns % 1000000000;
+    var sb = str_builder_new();
+    _sl_rfc3339_fmt(sb, secs, nanos);
+    var s = str_builder_build(sb);
+    var s2 = 0;
+    var n2 = 0;
+    assert(_sl_rfc3339_parse(str_data(s), str_len(s), &s2, &n2) == 1, "parses");
+    assert(s2 == secs && n2 == nanos, "same instant");
+    return 0;
+}
+
+# Runs the suite; the exit code is the failure count, clamped.
+fn main(): i64 {
+    alloc_init();
+    _t_color_default_is_red();
+    _t_color_display();
+    _t_color_to_css();
+    _t_image_format_extension();
+    _t_image_format_mime();
+    _t_image_format_default_is_png();
+    _t_image_format_display();
+    _t_core_rect_contains_point();
+    _t_core_rect_area();
+    _t_core_rect_center();
+    _t_core_rect_intersects();
+    _t_core_rect_default_is_zero();
+    _t_capture_source_display();
+    _t_annotation_kind_display();
+    _t_redaction_target_display();
+    _t_annotation_new();
+    _t_annotation_with_text();
+    _t_image_format_from_str();
+    _t_xml_escape();
+    _t_derive_output_path();
+    _t_image_format_from_str_invalid();
+    _t_xml_escape_all_special_chars();
+    _t_xml_escape_strips_xml_illegal_chars();
+    _t_xml_escape_multibyte_preserved();
+    _t_image_format_from_path();
+    _t_annotation_kind_from_str_roundtrip();
+    _t_redaction_target_key();
+    _t_xml_escape_empty();
+    _t_xml_escape_no_special();
+    _t_derive_output_path_dotfile();
+    _t_derive_output_path_multiple_dots();
+    _t_capture_source_display_all_variants();
+    _t_annotation_with_text_has_correct_fields();
+    _t_annotation_new_generates_unique_ids();
+    _t_color_new_and_constants();
+    _t_color_to_css_semi_transparent();
+    _t_redaction_target_display_all_variants();
+    _t_annotation_kind_display_all();
+    _t_image_format_bmp_and_webp_mime();
+    _t_doctests();
+    _t_uuid_v4();
+    _t_rfc3339_now();
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

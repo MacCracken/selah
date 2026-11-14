@@ -1,0 +1,259 @@
+# geometry.cyr — selah's rectangle and point (Rust: rust-old/src/geometry.rs, a wrapper over hisab 1.4's Rect).
+#
+# Port plan D4, D5. hisab 3.4.1 (Cyrius) has no 2D rect, so SlRect is local. It keeps hisab's Rust layout,
+# `{min, max}` in f32, so `SlRect_new(x, y, w, h)` stores `x + w` rounded to f32 exactly as Rust does, and
+# width = max.x − min.x. Every operation is f32 arithmetic in Rust's order; tests/golden/geometry.tsv pins each one
+# bit for bit (a NaN matches any NaN).
+#
+# Cyrius has no f32 return type, so the accessors (`x`, `y`, `width`, `height`, `area`) return an f64 holding the
+# f32's exact value; `f32_from` of it gives the f32 back unchanged (ADR 0002 #15).
+#
+# JSON (serde's shape, kept for backward compatibility): `{"x":…,"y":…,"width":…,"height":…}`, each an f32 in
+# serde_json's form. Reading takes that object or serde's array form `[x, y, width, height]`, each field as an f64
+# narrowed `as f32`, then refuses a rect that is not finite, as Rust's custom Deserialize does.
+
+struct SlVec2 { x: f32; y: f32; }
+struct SlRect { min_x: f32; min_y: f32; max_x: f32; max_y: f32; }
+
+# Rust's f32::min: the non-NaN operand when one is NaN; otherwise the lesser (glam 0.29.3's Vec2::min).
+fn _sl_f32_min(a: f32, b: f32, out: *f32): i64 {
+    var da: f64 = f32_to(a);
+    var db: f64 = f32_to(b);
+    if (db != db) { *out = a; return 0; }
+    if (da != da) { *out = b; return 0; }
+    if (da < db) { *out = a; return 0; }
+    *out = b;
+    return 0;
+}
+
+# Rust's f32::max: the non-NaN operand when one is NaN; otherwise the greater.
+fn _sl_f32_max(a: f32, b: f32, out: *f32): i64 {
+    var da: f64 = f32_to(a);
+    var db: f64 = f32_to(b);
+    if (db != db) { *out = a; return 0; }
+    if (da != da) { *out = b; return 0; }
+    if (da > db) { *out = a; return 0; }
+    *out = b;
+    return 0;
+}
+
+# 1 when the f32 is finite.
+#must_use
+fn _sl_f32_finite(a: f32): bool {
+    var d: f64 = f32_to(a);
+    return d - d == 0.0;
+}
+
+# Rust's normalized bounds of one axis, in f64: (min, max) = (f32::min(a, b), f32::max(a, b)) — the non-NaN operand
+# when one is NaN; on equal operands (±0 included) b.
+fn _sl_axis(a: f64, b: f64): (i64, i64) {
+    var lo: f64 = b;
+    var hi: f64 = b;
+    if (b != b) {
+        lo = a;
+        hi = a;
+    } elif (a == a) {
+        if (a < b) { lo = a; }
+        if (a > b) { hi = a; }
+    }
+    return (lo, hi);
+}
+
+impl SlVec2 {
+    # A point.
+    #must_use
+    fn new(x: f32, y: f32): SlVec2 {
+        var v: SlVec2;
+        v.x = x;
+        v.y = y;
+        return v;
+    }
+}
+
+impl SlRect {
+    # Rust's Rect::new: min = (x, y), max = (x + width, y + height), each sum rounded to f32. A negative size is kept
+    # (an arrow's direction).
+    #must_use
+    fn new(x: f32, y: f32, width: f32, height: f32): SlRect {
+        var r: SlRect;
+        r.min_x = x;
+        r.min_y = y;
+        r.max_x = x + width;
+        r.max_y = y + height;
+        return r;
+    }
+
+    # X of the origin corner (min.x), as the f32's exact f64.
+    #must_use
+    fn x(self): f64 {
+        var d: f64 = f32_to(self.min_x);
+        return d;
+    }
+
+    # Y of the origin corner (min.y), as the f32's exact f64.
+    #must_use
+    fn y(self): f64 {
+        var d: f64 = f32_to(self.min_y);
+        return d;
+    }
+
+    # The signed width, max.x − min.x in f32, as its exact f64.
+    #must_use
+    fn width(self): f64 {
+        var w: f32 = self.max_x - self.min_x;
+        var d: f64 = f32_to(w);
+        return d;
+    }
+
+    # The signed height, max.y − min.y in f32, as its exact f64.
+    #must_use
+    fn height(self): f64 {
+        var h: f32 = self.max_y - self.min_y;
+        var d: f64 = f32_to(h);
+        return d;
+    }
+
+    # |width| × |height| in f32, as its exact f64.
+    #must_use
+    fn area(self): f64 {
+        var w: f32 = self.max_x - self.min_x;
+        var h: f32 = self.max_y - self.min_y;
+        var wd: f64 = f32_to(w);
+        var hd: f64 = f32_to(h);
+        var aw: f32 = f32_from(f64_abs(wd));
+        var ah: f32 = f32_from(f64_abs(hd));
+        var a: f32 = aw * ah;
+        var d: f64 = f32_to(a);
+        return d;
+    }
+
+    # (min + max) × 0.5, each component in f32 (hisab's Rect::center).
+    #must_use
+    fn center(self): SlVec2 {
+        var half: f32 = f32_from(0.5);
+        var cx: f32 = self.min_x + self.max_x;
+        var cy: f32 = self.min_y + self.max_y;
+        var c: SlVec2;
+        c.x = cx * half;
+        c.y = cy * half;
+        return c;
+    }
+
+    # 1 when all four layout values are finite.
+    #must_use
+    fn is_finite(self): bool {
+        if (_sl_f32_finite(self.min_x) == false) { return false; }
+        if (_sl_f32_finite(self.min_y) == false) { return false; }
+        if (_sl_f32_finite(self.max_x) == false) { return false; }
+        return _sl_f32_finite(self.max_y);
+    }
+
+    # min = min(min, max), max = max(min, max), per component (Rust's f32::min / f32::max).
+    #must_use
+    fn normalized(self): SlRect {
+        var r: SlRect;
+        var t: f32 = self.min_x;
+        _sl_f32_min(self.min_x, self.max_x, &t);
+        r.min_x = t;
+        _sl_f32_min(self.min_y, self.max_y, &t);
+        r.min_y = t;
+        _sl_f32_max(self.min_x, self.max_x, &t);
+        r.max_x = t;
+        _sl_f32_max(self.min_y, self.max_y, &t);
+        r.max_y = t;
+        return r;
+    }
+
+    # 1 when p lies in the normalized rect, edges included.
+    #must_use
+    fn contains_point(self, p: SlVec2): bool {
+        var x0, x1 = _sl_axis(f32_to(self.min_x), f32_to(self.max_x));
+        var y0, y1 = _sl_axis(f32_to(self.min_y), f32_to(self.max_y));
+        var px: f64 = f32_to(p.x);
+        var py: f64 = f32_to(p.y);
+        var lx: f64 = x0;
+        var hx: f64 = x1;
+        var ly: f64 = y0;
+        var hy: f64 = y1;
+        return px >= lx && px <= hx && py >= ly && py <= hy;
+    }
+
+    # 1 when the normalized rects overlap with positive area (touching edges don't).
+    #must_use
+    fn intersects(self, other: *SlRect): bool {
+        var a0, a1 = _sl_axis(f32_to(self.min_x), f32_to(self.max_x));
+        var b0, b1 = _sl_axis(f32_to(other.min_x), f32_to(other.max_x));
+        var ax0: f64 = a0;
+        var ax1: f64 = a1;
+        var bx0: f64 = b0;
+        var bx1: f64 = b1;
+        if ((ax0 < bx1 && ax1 > bx0) == false) { return false; }
+        var c0, c1 = _sl_axis(f32_to(self.min_y), f32_to(self.max_y));
+        var d0, d1 = _sl_axis(f32_to(other.min_y), f32_to(other.max_y));
+        var ay0: f64 = c0;
+        var ay1: f64 = c1;
+        var by0: f64 = d0;
+        var by1: f64 = d1;
+        return ay0 < by1 && ay1 > by0;
+    }
+
+    # Appends serde's JSON for the rect: {"x":…,"y":…,"width":…,"height":…}.
+    fn to_json(self, sb): i64 {
+        var w: f32 = self.max_x - self.min_x;
+        var h: f32 = self.max_y - self.min_y;
+        str_builder_add_cstr(sb, "{\"x\":");
+        _sl_fmt_f32_json(sb, self.min_x);
+        str_builder_add_cstr(sb, ",\"y\":");
+        _sl_fmt_f32_json(sb, self.min_y);
+        str_builder_add_cstr(sb, ",\"width\":");
+        _sl_fmt_f32_json(sb, w);
+        str_builder_add_cstr(sb, ",\"height\":");
+        _sl_fmt_f32_json(sb, h);
+        str_builder_putc(sb, 125);
+        return 0;
+    }
+}
+
+# Rust's Rect::default(): new(0, 0, 0, 0).
+#must_use
+fn SlRect_default(): SlRect {
+    var z: f32 = f32_from(0.0);
+    return SlRect_new(z, z, z, z);
+}
+
+# Read a rect from a parsed JSON value into *out, as Rust's Deserialize does: an object {x, y, width, height}, or
+# serde's array form [x, y, width, height]. Ok(0), or Err(SL_ERR_SERDE).
+fn _sl_rect_from_value(v, out: *SlRect, detail_out): Result {
+    if (v == 0 || (bayan_json_v_is_obj(v) == false && bayan_json_v_is_arr(v) == false)) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "rect: expected a JSON object or array");
+    }
+    var x: f64 = 0.0;
+    var y: f64 = 0.0;
+    var w: f64 = 0.0;
+    var h: f64 = 0.0;
+    if (_sl_json_as_f64(_sl_json_field(v, "x", 4, 0), &x) == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "rect: `x` is missing or not a number");
+    }
+    if (_sl_json_as_f64(_sl_json_field(v, "y", 4, 1), &y) == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "rect: `y` is missing or not a number");
+    }
+    if (_sl_json_as_f64(_sl_json_field(v, "width", 4, 2), &w) == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "rect: `width` is missing or not a number");
+    }
+    if (_sl_json_as_f64(_sl_json_field(v, "height", 4, 3), &h) == 0) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "rect: `height` is missing or not a number");
+    }
+    var r = SlRect_new(f32_from(x), f32_from(y), f32_from(w), f32_from(h));
+    if (r.is_finite() == false) {
+        return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "rect coordinates must be finite and within f32 range");
+    }
+    *out = r;
+    return Ok(0);
+}
+
+# Read a rect from JSON text p[0..n) into *out. Ok(0), or Err(SL_ERR_SERDE).
+fn SlRect_from_json(p, n, out: *SlRect, detail_out = 0): Result {
+    var v = _sl_json_parse(p, n);
+    if (v == 0) { return _sl_fail_cstr(SL_ERR_SERDE, detail_out, "rect: not a JSON document"); }
+    return _sl_rect_from_value(v, out, detail_out);
+}

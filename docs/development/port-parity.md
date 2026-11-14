@@ -105,7 +105,19 @@ with a recommendation; the choice is the maintainer's.
     **Recommended.**
   - (b) convert CMYK in selah. Not possible on chitra's RGBA8-only output.
 
-## 3. Bounds
+## 3. M1 (2026-11-14): everything class A, nothing measured
+
+The six M1 modules have no tolerance class but A: 34,863 rows (`error` 30, `fmtf` 24,060, `geometry` 8,129, `core`
+1,331, `uuid` 144, `rfc3339` 1,169), **every one equal, and the harness output byte-identical on x86_64 ELF, aarch64
+(qemu) and x86_64 PE (wine)**. f32 arithmetic in Rust's order needed no bound: every rect operation is bit-identical,
+NaN rows matching as NaN. Three facts the corpus taught (each now pinned):
+
+- serde_json 1.0.154 (zmij) writes floats positionally for a decimal exponent in −5..=15 (f64) but −6..=12 (f32);
+- serde accepts a unit variant as `{"Variant": null}` and a struct as a JSON array of its fields;
+- Rust's `f32::min` / `f32::max` (glam 0.29.3's `Vec2::min` / `max`) give the second operand on equal operands,
+  ±0 included, and the non-NaN one when one is NaN.
+
+## 4. Bounds
 
 | Bound | Value | Set | Gates from |
 |---|---|---|---|

@@ -1,0 +1,500 @@
+# fmtf.cyr — float text as Rust prints it: the shortest round-trip digits, in Rust's Display and serde_json's forms.
+#
+# UPSTREAM(L1): cyrius issue 2026-11-13-derive-debug-and-shortest-float-digits. The stdlib has no shortest
+# round-trip printer, so this is impetus's `src/fmtf.cyr` (its ADR 0010: Burger & Dybvig's free-format algorithm,
+# "Printing Floating-Point Numbers Quickly and Accurately", 1996, on a small exact bignum), generalised over the
+# format as pravash's is (`hidden`, `emin`) so it prints f32 in its own shortest digits too. It leaves when the
+# stdlib ships a printer.
+#
+# selah writes f32 rect coordinates into SVG through Rust's `Display` and every float in its JSON through
+# serde_json 1.0.154 (zmij). Both print the shortest digits that read back, choosing the closest to the exact value
+# among them; they differ on an exact tie between two closest candidates (core rounds it up, zmij to the even
+# digit) and in where the digits go. tests/golden/fmtf.tsv pins all four forms against Rust.
+#
+# Forms (each appends to a str_builder):
+# - `_sl_fmt_f32_display`, `_sl_fmt_f64_display`: Rust's `{}` — always positional, no ".0" (`100`, `0.1`, `-0`),
+#   `NaN`, `inf`, `-inf`.
+# - `_sl_fmt_f32_json`, `_sl_fmt_f64_json`: serde_json — positional while the decimal exponent is in −5..=15 (f64) or
+#   −6..=12 (f32), with ".0" on an integer (`100.0`, `0.00001`); otherwise `d.ddde±x` (`1e+16`, `1.5e-7`); `null` for
+#   NaN and ±∞.
+
+# ── bits ──────────────────────────────────────────────────────────────────────────────
+
+# The 64 bits of an f64.
+#must_use
+fn _sl_f64_bits(x): i64 {
+    return x;
+}
+
+# The 32 bits of an f32.
+#must_use
+fn _sl_f32_bits(x: f32): i64 {
+    var c: f32 = x;
+    return load32(&c) & 0xFFFFFFFF;
+}
+
+# Appends n bytes at p in one copy, through a Str header on the stack (str_builder has no (ptr, len) form).
+fn _sl_sb_bytes(sb, p, n): i64 {
+    if (n <= 0) { return 0; }
+    var hdr: i64[2];
+    hdr[0] = p;
+    hdr[1] = n;
+    return str_builder_add(sb, &hdr);
+}
+
+# ── bignum ────────────────────────────────────────────────────────────────────────────
+# A non-negative integer in 32-bit limbs, little-endian: word 0 the limb count, words 1..40 the limbs. 40 limbs
+# hold 2^1280; the algorithm's values stay below 2^1140. No leading zero limbs.
+
+# a := v, for 0 <= v < 2^63.
+fn _sl_bn_set(a, v): i64 {
+    var n = 0;
+    var x = v;
+    while (x != 0) {
+        store64(a + 8 + n * 8, x & 0xFFFFFFFF);
+        x = x >> 32;
+        n = n + 1;
+    }
+    store64(a, n);
+    return 0;
+}
+
+# dst := src.
+fn _sl_bn_copy(dst, src): i64 {
+    var n = load64(src);
+    var i = 0;
+    while (i <= n) {
+        store64(dst + i * 8, load64(src + i * 8));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# a := a × m, for 0 < m < 2^31.
+fn _sl_bn_mul_small(a, m): i64 {
+    var n = load64(a);
+    var carry = 0;
+    var i = 0;
+    while (i < n) {
+        var t = load64(a + 8 + i * 8) * m + carry;
+        store64(a + 8 + i * 8, t & 0xFFFFFFFF);
+        carry = t >> 32;
+        i = i + 1;
+    }
+    while (carry != 0) {
+        store64(a + 8 + n * 8, carry & 0xFFFFFFFF);
+        carry = carry >> 32;
+        n = n + 1;
+    }
+    store64(a, n);
+    return 0;
+}
+
+# a := a × 10^k, for k >= 0 (in steps of 10^9).
+fn _sl_bn_mul_pow10(a, k): i64 {
+    var left = k;
+    while (left >= 9) {
+        _sl_bn_mul_small(a, 1000000000);
+        left = left - 9;
+    }
+    var m = 1;
+    while (left > 0) {
+        m = m * 10;
+        left = left - 1;
+    }
+    if (m > 1) { _sl_bn_mul_small(a, m); }
+    return 0;
+}
+
+# a := a × 2^k, for k >= 0.
+fn _sl_bn_shl(a, k): i64 {
+    var n = load64(a);
+    if (n == 0) { return 0; }
+    var q = k / 32;
+    var b = k % 32;
+    if (b != 0) {
+        var carry = 0;
+        var i = 0;
+        while (i < n) {
+            var t = (load64(a + 8 + i * 8) << b) | carry;
+            store64(a + 8 + i * 8, t & 0xFFFFFFFF);
+            carry = t >> 32;
+            i = i + 1;
+        }
+        if (carry != 0) {
+            store64(a + 8 + n * 8, carry);
+            n = n + 1;
+        }
+    }
+    if (q > 0) {
+        var j = n - 1;
+        while (j >= 0) {
+            store64(a + 8 + (j + q) * 8, load64(a + 8 + j * 8));
+            j = j - 1;
+        }
+        var z = 0;
+        while (z < q) {
+            store64(a + 8 + z * 8, 0);
+            z = z + 1;
+        }
+        n = n + q;
+    }
+    store64(a, n);
+    return 0;
+}
+
+# dst := a + b (dst distinct from both).
+fn _sl_bn_sum(dst, a, b): i64 {
+    var na = load64(a);
+    var nb = load64(b);
+    var n = na;
+    if (nb > n) { n = nb; }
+    var carry = 0;
+    var i = 0;
+    while (i < n) {
+        var x = 0;
+        var y = 0;
+        if (i < na) { x = load64(a + 8 + i * 8); }
+        if (i < nb) { y = load64(b + 8 + i * 8); }
+        var t = x + y + carry;
+        store64(dst + 8 + i * 8, t & 0xFFFFFFFF);
+        carry = t >> 32;
+        i = i + 1;
+    }
+    if (carry != 0) {
+        store64(dst + 8 + n * 8, carry);
+        n = n + 1;
+    }
+    store64(dst, n);
+    return 0;
+}
+
+# -1, 0 or 1 as a < b, a = b, a > b.
+#must_use
+fn _sl_bn_cmp(a, b): i64 {
+    var na = load64(a);
+    var nb = load64(b);
+    if (na != nb) {
+        if (na < nb) { return -1; }
+        return 1;
+    }
+    var i = na - 1;
+    while (i >= 0) {
+        var x = load64(a + 8 + i * 8);
+        var y = load64(b + 8 + i * 8);
+        if (x != y) {
+            if (x < y) { return -1; }
+            return 1;
+        }
+        i = i - 1;
+    }
+    return 0;
+}
+
+# a := a − b, for a >= b.
+fn _sl_bn_sub(a, b): i64 {
+    var na = load64(a);
+    var nb = load64(b);
+    var borrow = 0;
+    var i = 0;
+    while (i < na) {
+        var y = 0;
+        if (i < nb) { y = load64(b + 8 + i * 8); }
+        var t = load64(a + 8 + i * 8) - y - borrow;
+        borrow = 0;
+        if (t < 0) {
+            t = t + 0x100000000;
+            borrow = 1;
+        }
+        store64(a + 8 + i * 8, t);
+        i = i + 1;
+    }
+    while (na > 0 && load64(a + na * 8) == 0) { na = na - 1; }
+    store64(a, na);
+    return 0;
+}
+
+# The number of bits in x > 0.
+#must_use
+fn _sl_bitlen(x): i64 {
+    var n = 0;
+    var v = x;
+    while (v != 0) {
+        v = v >> 1;
+        n = n + 1;
+    }
+    return n;
+}
+
+# ── shortest digits (Burger & Dybvig, free format) ───────────────────────────────────
+
+# The shortest decimal digits of the positive finite value f × 2^e that read back to it in its format, the closest
+# to its exact value among them. `hidden` is the format's hidden bit (2^52, 2^23) and `emin` its least exponent
+# (-1074, -149): f = hidden with e > emin is a power of two, whose lower neighbour is half as far. When the exact
+# value lies exactly halfway between the two closest candidates, `tie_even` 0 takes the upper one (Rust's core
+# printer) and 1 the even one (serde_json's zmij). Writes the ASCII digits to `digits` (17 bytes is enough) and
+# returns (n, k), with value = 0.d1d2…dn × 10^k.
+fn _sl_shortest(f, e, hidden, emin, digits, tie_even): (i64, i64) {
+    # IEEE round-half-even on reading: the interval's ends belong to it when f is even.
+    var even = 1 - (f & 1);
+    var r[328];
+    var s[328];
+    var mp[328];
+    var mm[328];
+    var t[328];
+    if (e >= 0) {
+        if (f != hidden) {
+            _sl_bn_set(&r, f);
+            _sl_bn_shl(&r, e + 1);
+            _sl_bn_set(&s, 2);
+            _sl_bn_set(&mp, 1);
+            _sl_bn_shl(&mp, e);
+            _sl_bn_copy(&mm, &mp);
+        } else {
+            _sl_bn_set(&r, f);
+            _sl_bn_shl(&r, e + 2);
+            _sl_bn_set(&s, 4);
+            _sl_bn_set(&mp, 1);
+            _sl_bn_shl(&mp, e + 1);
+            _sl_bn_set(&mm, 1);
+            _sl_bn_shl(&mm, e);
+        }
+    } else {
+        if (e == emin || f != hidden) {
+            _sl_bn_set(&r, f);
+            _sl_bn_shl(&r, 1);
+            _sl_bn_set(&s, 1);
+            _sl_bn_shl(&s, 1 - e);
+            _sl_bn_set(&mp, 1);
+            _sl_bn_set(&mm, 1);
+        } else {
+            _sl_bn_set(&r, f);
+            _sl_bn_shl(&r, 2);
+            _sl_bn_set(&s, 1);
+            _sl_bn_shl(&s, 2 - e);
+            _sl_bn_set(&mp, 2);
+            _sl_bn_set(&mm, 1);
+        }
+    }
+    # k = ⌈log10(v) − 1e-10⌉ from the binary exponent: never too large, at most one too small (the fixup below adds
+    # the one).
+    var lg: f64 = f64_from(e + _sl_bitlen(f) - 1);
+    var est: f64 = lg * 0.30102999566398114 - 0.0000000001;
+    var k = f64_to(f64_ceil(est));
+    if (k >= 0) {
+        _sl_bn_mul_pow10(&s, k);
+    } else {
+        _sl_bn_mul_pow10(&r, -k);
+        _sl_bn_mul_pow10(&mp, -k);
+        _sl_bn_mul_pow10(&mm, -k);
+    }
+    _sl_bn_sum(&t, &r, &mp);
+    var c = _sl_bn_cmp(&t, &s);
+    if ((even == 1 && c >= 0) || (even == 0 && c > 0)) {
+        _sl_bn_mul_small(&s, 10);
+        k = k + 1;
+    }
+    var n = 0;
+    loop {
+        _sl_bn_mul_small(&r, 10);
+        _sl_bn_mul_small(&mp, 10);
+        _sl_bn_mul_small(&mm, 10);
+        var d = 0;
+        while (_sl_bn_cmp(&r, &s) >= 0) {
+            _sl_bn_sub(&r, &s);
+            d = d + 1;
+        }
+        var lo = _sl_bn_cmp(&r, &mm);
+        var tc1 = 0;
+        if (lo < 0 || (even == 1 && lo == 0)) { tc1 = 1; }
+        _sl_bn_sum(&t, &r, &mp);
+        var hi = _sl_bn_cmp(&t, &s);
+        var tc2 = 0;
+        if (hi > 0 || (even == 1 && hi == 0)) { tc2 = 1; }
+        if (tc1 == 0 && tc2 == 0) {
+            store8(digits + n, 48 + d);
+            n = n + 1;
+        } else {
+            if (tc1 == 1 && tc2 == 1) {
+                # Both neighbours read back: the closer one, 2r against s; a tie per `tie_even`.
+                _sl_bn_copy(&t, &r);
+                _sl_bn_shl(&t, 1);
+                var half = _sl_bn_cmp(&t, &s);
+                if (half > 0) { d = d + 1; }
+                if (half == 0 && (tie_even == 0 || (d & 1) == 1)) { d = d + 1; }
+            } elif (tc2 == 1) {
+                d = d + 1;
+            }
+            store8(digits + n, 48 + d);
+            n = n + 1;
+            return (n, k);
+        }
+    }
+    return (n, k);
+}
+
+# ── layout ────────────────────────────────────────────────────────────────────────────
+
+# Appends `count` copies of byte c.
+fn _sl_sb_repeat(sb, c, count): i64 {
+    var i = 0;
+    while (i < count) {
+        str_builder_putc(sb, c);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Appends 0.d1…dn × 10^k positionally: "123.45", "0.00012", "12300". With `int_suffix` 1, an integer gets ".0"
+# (serde_json's form).
+fn _sl_sb_positional(sb, digits, n, k, int_suffix): i64 {
+    if (k <= 0) {
+        str_builder_putc(sb, 48);
+        str_builder_putc(sb, 46);
+        _sl_sb_repeat(sb, 48, -k);
+        _sl_sb_bytes(sb, digits, n);
+        return 0;
+    }
+    if (k >= n) {
+        _sl_sb_bytes(sb, digits, n);
+        _sl_sb_repeat(sb, 48, k - n);
+        if (int_suffix == 1) {
+            str_builder_putc(sb, 46);
+            str_builder_putc(sb, 48);
+        }
+        return 0;
+    }
+    _sl_sb_bytes(sb, digits, k);
+    str_builder_putc(sb, 46);
+    _sl_sb_bytes(sb, digits + k, n - k);
+    return 0;
+}
+
+# Appends 0.d1…dn × 10^k in serde_json's form: positional while the decimal exponent is in lo..=hi (zmij's ranges:
+# −5..=15 for f64, −6..=12 for f32, as tests/golden/fmtf.tsv measures), otherwise d.ddd e±x.
+fn _sl_sb_json_digits(sb, digits, n, k, lo, hi): i64 {
+    var ex = k - 1;
+    if (ex >= lo && ex <= hi) {
+        return _sl_sb_positional(sb, digits, n, k, 1);
+    }
+    str_builder_putc(sb, load8(digits));
+    if (n > 1) {
+        str_builder_putc(sb, 46);
+        _sl_sb_bytes(sb, digits + 1, n - 1);
+    }
+    str_builder_putc(sb, 101);
+    if (ex >= 0) {
+        str_builder_putc(sb, 43);
+        str_builder_add_int(sb, ex);
+    } else {
+        str_builder_putc(sb, 45);
+        str_builder_add_int(sb, -ex);
+    }
+    return 0;
+}
+
+# The shortest digits of an f64 magnitude (positive, finite, non-zero bits).
+fn _sl_f64_digits(mag, digits, tie_even): (i64, i64) {
+    var be = (mag >> 52) & 0x7FF;
+    var f = mag & 0xFFFFFFFFFFFFF;
+    var e = -1074;
+    if (be != 0) {
+        f = f | 0x10000000000000;
+        e = be - 1075;
+    }
+    return _sl_shortest(f, e, 0x10000000000000, -1074, digits, tie_even);
+}
+
+# The shortest digits of an f32 magnitude (positive, finite, non-zero bits).
+fn _sl_f32_digits(mag, digits, tie_even): (i64, i64) {
+    var be = (mag >> 23) & 0xFF;
+    var f = mag & 0x7FFFFF;
+    var e = -149;
+    if (be != 0) {
+        f = f | 0x800000;
+        e = be - 150;
+    }
+    return _sl_shortest(f, e, 0x800000, -149, digits, tie_even);
+}
+
+# ── the four forms ────────────────────────────────────────────────────────────────────
+
+# Appends x as Rust's `Display` (`{}`) writes an f64.
+fn _sl_fmt_f64_display(sb, x: f64): i64 {
+    if (x != x) {
+        str_builder_add_cstr(sb, "NaN");
+        return 0;
+    }
+    var bits = _sl_f64_bits(x);
+    if (bits < 0) { str_builder_putc(sb, 45); }
+    var mag = bits & 0x7FFFFFFFFFFFFFFF;
+    if (mag == 0x7FF0000000000000) {
+        str_builder_add_cstr(sb, "inf");
+        return 0;
+    }
+    if (mag == 0) {
+        str_builder_putc(sb, 48);
+        return 0;
+    }
+    var digits[24];
+    var n, k = _sl_f64_digits(mag, &digits, 0);
+    return _sl_sb_positional(sb, &digits, n, k, 0);
+}
+
+# Appends x as serde_json 1.0.154 writes an f64 (zmij); `null` for NaN and ±∞.
+fn _sl_fmt_f64_json(sb, x: f64): i64 {
+    var bits = _sl_f64_bits(x);
+    var mag = bits & 0x7FFFFFFFFFFFFFFF;
+    if (mag >= 0x7FF0000000000000) {
+        str_builder_add_cstr(sb, "null");
+        return 0;
+    }
+    if (bits < 0) { str_builder_putc(sb, 45); }
+    if (mag == 0) {
+        str_builder_add_cstr(sb, "0.0");
+        return 0;
+    }
+    var digits[24];
+    var n, k = _sl_f64_digits(mag, &digits, 1);
+    return _sl_sb_json_digits(sb, &digits, n, k, -5, 15);
+}
+
+# Appends x as Rust's `Display` (`{}`) writes an f32: its own shortest digits.
+fn _sl_fmt_f32_display(sb, x: f32): i64 {
+    var w = _sl_f32_bits(x);
+    var mag = w & 0x7FFFFFFF;
+    if (mag > 0x7F800000) {
+        str_builder_add_cstr(sb, "NaN");
+        return 0;
+    }
+    if (((w >> 31) & 1) == 1) { str_builder_putc(sb, 45); }
+    if (mag == 0x7F800000) {
+        str_builder_add_cstr(sb, "inf");
+        return 0;
+    }
+    if (mag == 0) {
+        str_builder_putc(sb, 48);
+        return 0;
+    }
+    var digits[24];
+    var n, k = _sl_f32_digits(mag, &digits, 0);
+    return _sl_sb_positional(sb, &digits, n, k, 0);
+}
+
+# Appends x as serde_json 1.0.154 writes an f32 (zmij, its own shortest digits); `null` for NaN and ±∞.
+fn _sl_fmt_f32_json(sb, x: f32): i64 {
+    var w = _sl_f32_bits(x);
+    var mag = w & 0x7FFFFFFF;
+    if (mag >= 0x7F800000) {
+        str_builder_add_cstr(sb, "null");
+        return 0;
+    }
+    if (((w >> 31) & 1) == 1) { str_builder_putc(sb, 45); }
+    if (mag == 0) {
+        str_builder_add_cstr(sb, "0.0");
+        return 0;
+    }
+    var digits[24];
+    var n, k = _sl_f32_digits(mag, &digits, 1);
+    return _sl_sb_json_digits(sb, &digits, n, k, -6, 12);
+}

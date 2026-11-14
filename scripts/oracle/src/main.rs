@@ -7,7 +7,13 @@
 //! ```
 
 mod fixtures;
+mod m_core;
 mod m_decode;
+mod m_error;
+mod m_fmtf;
+mod m_geometry;
+mod m_rfc3339;
+mod m_uuid;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -29,21 +35,49 @@ pub struct Row {
     pub note: String,
 }
 
-/// Escape a string token's payload: backslash, tab, newline, carriage return, and space (tokens are
-/// space-separated), so a token never contains raw whitespace.
+/// Escape a string token's payload so a token is one run of printable, non-space bytes: `\\`, `\t`, `\n`, `\r`,
+/// `\s` (space), and `\xNN` for every other byte below 0x20 and for 0x7F. Bytes from 0x80 up (UTF-8) are written
+/// as they are.
 pub fn esc(s: &str) -> String {
-    let mut o = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => o.push_str("\\\\"),
-            '\t' => o.push_str("\\t"),
-            '\n' => o.push_str("\\n"),
-            '\r' => o.push_str("\\r"),
-            ' ' => o.push_str("\\s"),
-            c => o.push(c),
+    let mut o: Vec<u8> = Vec::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        match b {
+            b'\\' => o.extend_from_slice(b"\\\\"),
+            b'\t' => o.extend_from_slice(b"\\t"),
+            b'\n' => o.extend_from_slice(b"\\n"),
+            b'\r' => o.extend_from_slice(b"\\r"),
+            b' ' => o.extend_from_slice(b"\\s"),
+            b if b < 0x20 || b == 0x7F => o.extend_from_slice(format!("\\x{b:02X}").as_bytes()),
+            b => o.push(b),
         }
     }
-    o
+    // Only ASCII bytes were rewritten (to ASCII), so the result is still the input's valid UTF-8.
+    String::from_utf8(o).expect("escaping keeps UTF-8 valid")
+}
+
+/// Token constructors (format 1, scripts/oracle/README.md).
+pub fn tg(x: f32) -> String { format!("g:{:08x}", x.to_bits()) }
+pub fn tf(x: f64) -> String { format!("f:{:016x}", x.to_bits()) }
+pub fn ti(x: i64) -> String { format!("i:{x}") }
+pub fn tb(x: bool) -> String { format!("b:{}", u8::from(x)) }
+pub fn ts(x: &str) -> String { format!("s:{}", esc(x)) }
+pub fn th(x: &[u8]) -> String {
+    let mut s = String::from("h:");
+    for b in x { s.push_str(&format!("{b:02x}")); }
+    s
+}
+
+/// Seeded xorshift64 for grids.
+pub struct Xs(pub u64);
+impl Xs {
+    pub fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
 }
 
 /// Notes are free text for people; only tabs and newlines are escaped so a row stays one line.
@@ -96,6 +130,18 @@ fn main() {
     let mut modules = Vec::new();
     m_decode::emit(&mut out, &fixtures);
     modules.push("decode");
+    m_error::emit(&mut out);
+    modules.push("error");
+    m_fmtf::emit(&mut out);
+    modules.push("fmtf");
+    m_geometry::emit(&mut out);
+    modules.push("geometry");
+    m_core::emit(&mut out);
+    modules.push("core");
+    m_uuid::emit(&mut out);
+    modules.push("uuid");
+    m_rfc3339::emit(&mut out);
+    modules.push("rfc3339");
     out.insert("modules.txt".to_string(), format!("{}\n", modules.join("\n")).into_bytes());
 
     let mut existing = Vec::new();

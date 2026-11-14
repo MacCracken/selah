@@ -18,6 +18,11 @@ flate2 = "=1.1.11"
 # Fixture producer only (never on the oracle's path): JPEG chroma subsampling, progressive, restart
 # intervals and CMYK, which `image`'s own JPEG encoder cannot write.
 jpeg-encoder = "=0.6.1"
+# M1: the serde shapes selah writes and reads, at the oracle's versions.
+serde = "=1.0.229"
+serde_json = "=1.0.154"
+uuid = "=1.29.2"
+chrono = { version = "=0.4.45", default-features = false, features = ["std", "serde"] }
 
 [[bin]]
 name = "oracle"

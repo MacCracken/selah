@@ -1,0 +1,78 @@
+# uuid.cyr — selah's ids (Rust: uuid 1.29.2 `Uuid`), as 16 bytes in RFC 4122 order.
+#
+# Written hyphenated and lowercase (serde, Display) or simple (`Uuid::simple`, the SVG arrow-marker ids); read
+# through serde, which takes `Uuid::parse_str`'s four forms: hyphenated (36), simple (32 hex), braced (`{…}`, 38)
+# and URN (`urn:uuid:` + hyphenated, the prefix in any case), the hex digits in any case. tests/golden/uuid.tsv pins
+# both directions.
+
+# A random (version 4, RFC 4122 variant) id into out[0..16). Returns 1, or 0 when the kernel gives no entropy.
+fn _sl_uuid_v4(out): i64 {
+    if (random_bytes(out, 16) != 16) { return 0; }
+    store8(out + 6, (load8(out + 6) & 0x0F) | 0x40);
+    store8(out + 8, (load8(out + 8) & 0x3F) | 0x80);
+    return 1;
+}
+
+# Appends the 16 bytes at b as lowercase hex, hyphenated (8-4-4-4-12) when `hyphens` is 1.
+fn _sl_uuid_fmt(sb, b, hyphens): i64 {
+    var i = 0;
+    while (i < 16) {
+        if (hyphens == 1 && (i == 4 || i == 6 || i == 8 || i == 10)) { str_builder_putc(sb, 45); }
+        var x = load8(b + i);
+        str_builder_putc(sb, load8(_SL_HEX + (x >> 4)));
+        str_builder_putc(sb, load8(_SL_HEX + (x & 15)));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The value of one hex digit, or -1.
+#must_use
+fn _sl_hexval(c): i64 {
+    if (c >= 48 && c <= 57) { return c - 48; }
+    if (c >= 97 && c <= 102) { return c - 87; }
+    if (c >= 65 && c <= 70) { return c - 55; }
+    return -1;
+}
+
+# Parse 32 hex digits from p (skipping a hyphen at each of `hyphens`' positions when 1) into out. 1 on success.
+fn _sl_uuid_hex(p, n, out, hyphens): i64 {
+    var i = 0;
+    var o = 0;
+    while (i < n) {
+        if (hyphens == 1 && (i == 8 || i == 13 || i == 18 || i == 23)) {
+            if (load8(p + i) != 45) { return 0; }
+            i = i + 1;
+            continue;
+        }
+        var hi = _sl_hexval(load8(p + i));
+        var lo = -1;
+        if (i + 1 < n) { lo = _sl_hexval(load8(p + i + 1)); }
+        if (hi < 0 || lo < 0) { return 0; }
+        if (o >= 16) { return 0; }
+        store8(out + o, (hi << 4) | lo);
+        o = o + 1;
+        i = i + 2;
+    }
+    if (o != 16) { return 0; }
+    return 1;
+}
+
+# Parse an id in any of `Uuid::parse_str`'s forms into out[0..16). Returns 1, or 0 when it is none of them.
+fn _sl_uuid_parse(p, n, out): i64 {
+    if (n == 32) { return _sl_uuid_hex(p, 32, out, 0); }
+    if (n == 36) { return _sl_uuid_hex(p, 36, out, 1); }
+    if (n == 38 && load8(p) == 123 && load8(p + 37) == 125) { return _sl_uuid_hex(p + 1, 36, out, 1); }
+    if (n == 45) {
+        var pre = "urn:uuid:";
+        var i = 0;
+        while (i < 9) {
+            var c = load8(p + i);
+            if (c >= 65 && c <= 90) { c = c + 32; }
+            if (c != load8(pre + i)) { return 0; }
+            i = i + 1;
+        }
+        return _sl_uuid_hex(p + 9, 36, out, 1);
+    }
+    return 0;
+}

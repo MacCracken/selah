@@ -1,0 +1,49 @@
+# support.cyr — helpers the ported Rust tests share.
+
+# 1 when the Str s holds exactly the NUL-terminated text.
+fn _t_str_is(s, text): i64 {
+    if (s == 0) { return 0; }
+    var n = strlen(text);
+    return str_len(s) == n && memeq(str_data(s), text, n) == 1;
+}
+
+# 1 when the Str s contains the NUL-terminated text.
+fn _t_str_has(s, text): i64 {
+    if (s == 0) { return 0; }
+    var n = strlen(text);
+    var p = str_data(s);
+    var m = str_len(s);
+    var i = 0;
+    while (i + n <= m) {
+        if (memeq(p + i, text, n) == 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# A str_builder's text as a Str (the builder is consumed).
+fn _t_built(sb): i64 {
+    return str_builder_build(sb);
+}
+
+# An f32 from an f64 literal.
+fn _t_f(x: f64, out: *f32): i64 {
+    *out = f32_from(x);
+    return 0;
+}
+
+# Rect::new from four f64 literals.
+fn _t_rect(x: f64, y: f64, w: f64, h: f64): SlRect {
+    return SlRect_new(f32_from(x), f32_from(y), f32_from(w), f32_from(h));
+}
+
+# Vec2::new from two f64 literals.
+fn _t_vec2(x: f64, y: f64): SlVec2 {
+    return SlVec2_new(f32_from(x), f32_from(y));
+}
+
+# 1 when two NUL-terminated strings are equal.
+fn _t_cstr_is(a, b): i64 {
+    var n = strlen(a);
+    return n == strlen(b) && memeq(a, b, n) == 1;
+}

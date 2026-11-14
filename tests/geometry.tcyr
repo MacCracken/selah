@@ -1,0 +1,269 @@
+# geometry.tcyr — rust-old/src/geometry.rs's tests and doctests, ported (port plan M1). Golden parity:
+# tests/golden/geometry.tsv.
+
+include "tests/selah_src.cyr"
+include "tests/support.cyr"
+
+# test_rect_new_and_accessors
+fn _t_rect_new_and_accessors(): i64 {
+    test_group("test_rect_new_and_accessors");
+    var r = _t_rect(10.0, 20.0, 100.0, 50.0);
+    assert(r.x() == 10.0, "x");
+    assert(r.y() == 20.0, "y");
+    assert(r.width() == 100.0, "width");
+    assert(r.height() == 50.0, "height");
+    return 0;
+}
+
+# test_rect_area
+fn _t_rect_area(): i64 {
+    test_group("test_rect_area");
+    assert(_t_rect(0.0, 0.0, 100.0, 50.0).area() == 5000.0, "area");
+    return 0;
+}
+
+# test_rect_center
+fn _t_rect_center(): i64 {
+    test_group("test_rect_center");
+    var c = _t_rect(0.0, 0.0, 100.0, 50.0).center();
+    var cx: f64 = f32_to(c.x);
+    var cy: f64 = f32_to(c.y);
+    assert(cx == 50.0, "x");
+    assert(cy == 25.0, "y");
+    return 0;
+}
+
+# test_rect_contains_point
+fn _t_rect_contains_point(): i64 {
+    test_group("test_rect_contains_point");
+    var r = _t_rect(10.0, 10.0, 100.0, 50.0);
+    assert(r.contains_point(_t_vec2(50.0, 30.0)), "inside");
+    assert(r.contains_point(_t_vec2(10.0, 10.0)), "on edge");
+    assert(r.contains_point(_t_vec2(110.0, 60.0)), "on far edge");
+    assert(r.contains_point(_t_vec2(5.0, 30.0)) == false, "outside left");
+    assert(r.contains_point(_t_vec2(50.0, 65.0)) == false, "outside bottom");
+    return 0;
+}
+
+# test_rect_intersects
+fn _t_rect_intersects(): i64 {
+    test_group("test_rect_intersects");
+    var a = _t_rect(0.0, 0.0, 100.0, 100.0);
+    var b = _t_rect(50.0, 50.0, 100.0, 100.0);
+    var c = _t_rect(200.0, 200.0, 50.0, 50.0);
+    assert(a.intersects(&b), "overlap");
+    assert(a.intersects(&c) == false, "apart");
+    return 0;
+}
+
+# test_rect_default_is_zero
+fn _t_rect_default_is_zero(): i64 {
+    test_group("test_rect_default_is_zero");
+    var r = SlRect_default();
+    assert(r.x() == 0.0, "x");
+    assert(r.area() == 0.0, "area");
+    return 0;
+}
+
+# A rect's serde JSON read back.
+fn _t_roundtrip(r: SlRect, out: *SlRect): i64 {
+    var sb = str_builder_new();
+    r.to_json(sb);
+    var j = str_builder_build(sb);
+    var t, v = SlRect_from_json(str_data(j), str_len(j), out);
+    return is_ok(t);
+}
+
+# test_rect_serde_roundtrip
+fn _t_rect_serde_roundtrip(): i64 {
+    test_group("test_rect_serde_roundtrip");
+    var r = _t_rect(10.5, 20.5, 100.0, 50.0);
+    var r2 = SlRect_default();
+    assert(_t_roundtrip(r, &r2) == 1, "reads back");
+    assert(f64_abs(r.x() - r2.x()) < 0.01, "x");
+    assert(f64_abs(r.y() - r2.y()) < 0.01, "y");
+    assert(f64_abs(r.width() - r2.width()) < 0.01, "width");
+    assert(f64_abs(r.height() - r2.height()) < 0.01, "height");
+    return 0;
+}
+
+# test_rect_serde_negative_width_arrow
+fn _t_rect_serde_negative_width_arrow(): i64 {
+    test_group("test_rect_serde_negative_width_arrow");
+    var r = _t_rect(100.0, 100.0, -50.0, -30.0);
+    var r2 = SlRect_default();
+    assert(_t_roundtrip(r, &r2) == 1, "reads back");
+    assert(f64_abs(r.width() - r2.width()) < 0.01, "width");
+    assert(f64_abs(r.height() - r2.height()) < 0.01, "height");
+    return 0;
+}
+
+# test_rect_serde_from_f64_json
+fn _t_rect_serde_from_f64_json(): i64 {
+    test_group("test_rect_serde_from_f64_json");
+    var j = "{\"x\":10.123456789,\"y\":20.987654321,\"width\":100.5,\"height\":50.25}";
+    var r = SlRect_default();
+    var t, v = SlRect_from_json(j, strlen(j), &r);
+    assert(is_ok(t), "reads");
+    assert(f64_abs(r.x() - 10.1234) < 0.01, "x");
+    assert(f64_abs(r.width() - 100.5) < 0.01, "width");
+    return 0;
+}
+
+# test_rect_serde_rejects_out_of_range
+fn _t_rect_serde_rejects_out_of_range(): i64 {
+    test_group("test_rect_serde_rejects_out_of_range");
+    var r = SlRect_default();
+    var d = 0;
+    var j = "{\"x\":1e39,\"y\":0,\"width\":10,\"height\":10}";
+    var t, v = SlRect_from_json(j, strlen(j), &r, &d);
+    assert(is_err_result(t) == 1, "1e39 refused");
+    assert(_t_str_has(d, "finite"), "says finite");
+    var j2 = "{\"x\":0,\"y\":0,\"width\":-1e300,\"height\":10}";
+    var t2, v2 = SlRect_from_json(j2, strlen(j2), &r);
+    assert(is_err_result(t2) == 1, "-1e300 refused");
+    return 0;
+}
+
+# test_rect_intersects_touching_edges
+fn _t_rect_intersects_touching_edges(): i64 {
+    test_group("test_rect_intersects_touching_edges");
+    var a = _t_rect(0.0, 0.0, 100.0, 100.0);
+    var b = _t_rect(100.0, 0.0, 100.0, 100.0);
+    assert(a.intersects(&b) == false, "touching");
+    return 0;
+}
+
+# test_rect_intersects_self
+fn _t_rect_intersects_self(): i64 {
+    test_group("test_rect_intersects_self");
+    var a = _t_rect(10.0, 10.0, 50.0, 50.0);
+    assert(a.intersects(&a), "self");
+    return 0;
+}
+
+# test_rect_intersects_contained
+fn _t_rect_intersects_contained(): i64 {
+    test_group("test_rect_intersects_contained");
+    var outer = _t_rect(0.0, 0.0, 200.0, 200.0);
+    var inner = _t_rect(50.0, 50.0, 10.0, 10.0);
+    assert(outer.intersects(&inner), "outer, inner");
+    assert(inner.intersects(&outer), "inner, outer");
+    return 0;
+}
+
+# test_rect_contains_point_just_outside
+fn _t_rect_contains_point_just_outside(): i64 {
+    test_group("test_rect_contains_point_just_outside");
+    var r = _t_rect(10.0, 10.0, 100.0, 50.0);
+    assert(r.contains_point(_t_vec2(9.99, 30.0)) == false, "left");
+    assert(r.contains_point(_t_vec2(110.01, 30.0)) == false, "right");
+    assert(r.contains_point(_t_vec2(50.0, 9.99)) == false, "top");
+    assert(r.contains_point(_t_vec2(50.0, 60.01)) == false, "bottom");
+    return 0;
+}
+
+# test_rect_area_negative_dimensions
+fn _t_rect_area_negative_dimensions(): i64 {
+    test_group("test_rect_area_negative_dimensions");
+    assert(_t_rect(100.0, 100.0, -50.0, -30.0).area() == 1500.0, "area");
+    return 0;
+}
+
+# test_rect_negative_dimensions_contains_and_intersects
+fn _t_rect_negative_dimensions_contains_and_intersects(): i64 {
+    test_group("test_rect_negative_dimensions_contains_and_intersects");
+    var r = _t_rect(100.0, 100.0, -50.0, -30.0);
+    var s = _t_rect(60.0, 80.0, 5.0, 5.0);
+    assert(r.contains_point(_t_vec2(75.0, 85.0)), "inside");
+    assert(r.contains_point(_t_vec2(110.0, 85.0)) == false, "outside");
+    assert(r.intersects(&s), "r, s");
+    assert(s.intersects(&r), "s, r");
+    return 0;
+}
+
+# 1 when two rects have the same layout bits.
+fn _t_same(a: SlRect, b: SlRect): i64 {
+    return _sl_f32_bits(a.min_x) == _sl_f32_bits(b.min_x) && _sl_f32_bits(a.min_y) == _sl_f32_bits(b.min_y)
+    && _sl_f32_bits(a.max_x) == _sl_f32_bits(b.max_x) && _sl_f32_bits(a.max_y) == _sl_f32_bits(b.max_y);
+}
+
+# test_rect_normalized (and the normalized() doctest)
+fn _t_rect_normalized(): i64 {
+    test_group("test_rect_normalized");
+    var r = _t_rect(100.0, 100.0, -50.0, -30.0).normalized();
+    assert(r.x() == 50.0, "x");
+    assert(r.y() == 70.0, "y");
+    assert(r.width() == 50.0, "width");
+    assert(r.height() == 30.0, "height");
+    var p = _t_rect(1.0, 2.0, 3.0, 4.0);
+    assert(_t_same(p.normalized(), p) == 1, "already normalized");
+    return 0;
+}
+
+# test_rect_is_finite
+fn _t_rect_is_finite(): i64 {
+    test_group("test_rect_is_finite");
+    var zero: f64 = 0.0;
+    var nan: f64 = zero / zero;
+    var inf: f64 = 1.0 / zero;
+    assert(_t_rect(0.0, 0.0, 1.0, 1.0).is_finite(), "finite");
+    assert(_t_rect(nan, 0.0, 1.0, 1.0).is_finite() == false, "NaN");
+    assert(_t_rect(0.0, 0.0, inf, 1.0).is_finite() == false, "inf");
+    return 0;
+}
+
+# test_rect_as_hisab: the layout (Rust reads it through as_hisab; here the fields are the layout).
+fn _t_rect_as_hisab(): i64 {
+    test_group("test_rect_as_hisab");
+    var r = _t_rect(10.0, 20.0, 30.0, 40.0);
+    var a: f64 = f32_to(r.min_x);
+    var b: f64 = f32_to(r.min_y);
+    var c: f64 = f32_to(r.max_x);
+    var d: f64 = f32_to(r.max_y);
+    assert(a == 10.0, "min.x");
+    assert(b == 20.0, "min.y");
+    assert(c == 40.0, "max.x");
+    assert(d == 60.0, "max.y");
+    return 0;
+}
+
+# doctest (Rect): new, accessors, contains_point.
+fn _t_doctest_rect(): i64 {
+    test_group("doctest geometry::Rect");
+    var r = _t_rect(10.0, 20.0, 100.0, 50.0);
+    assert(r.x() == 10.0, "x");
+    assert(r.width() == 100.0, "width");
+    assert(r.contains_point(_t_vec2(50.0, 40.0)), "contains");
+    return 0;
+}
+
+# Runs the suite; the exit code is the failure count, clamped.
+fn main(): i64 {
+    alloc_init();
+    _t_rect_new_and_accessors();
+    _t_rect_area();
+    _t_rect_center();
+    _t_rect_contains_point();
+    _t_rect_intersects();
+    _t_rect_default_is_zero();
+    _t_rect_serde_roundtrip();
+    _t_rect_serde_negative_width_arrow();
+    _t_rect_serde_from_f64_json();
+    _t_rect_serde_rejects_out_of_range();
+    _t_rect_intersects_touching_edges();
+    _t_rect_intersects_self();
+    _t_rect_intersects_contained();
+    _t_rect_contains_point_just_outside();
+    _t_rect_area_negative_dimensions();
+    _t_rect_negative_dimensions_contains_and_intersects();
+    _t_rect_normalized();
+    _t_rect_is_finite();
+    _t_rect_as_hisab();
+    _t_doctest_rect();
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

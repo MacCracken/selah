@@ -1,0 +1,155 @@
+# json.cyr — JSON as selah's Rust crate writes and reads it (serde_json 1.0.154), on bayan.
+#
+# UPSTREAM(L2): `#derive(Serialize)` has open defects (cyrius issues 2026-11-07-derive-serialize-*,
+# 2026-11-11-derive-*, 2026-11-12-derive-serialize-in-a-second-private-file-fails-to-compile), so the codecs are
+# written by hand: these helpers, and each type's own to_json / from_json beside it.
+#
+# Writing: byte-identical to serde_json. Strings escape `"`, `\` and the C0 controls (`\b \t \n \f \r`, the rest as
+# `\u00xx`, lowercase); everything else, `/`, DEL and UTF-8 included, is written as it is. Floats go through
+# fmtf.cyr's serde_json forms.
+#
+# Reading: bayan's value tree (`bayan_json_v_parse_buf`) and the typed getters below, which accept what serde's
+# derived impls accept for each field type, and refuse what they refuse. A refusal is `SL_ERR_SERDE`; the message is
+# the port's own, not serde_json's (ADR 0002 #14), so golden rows compare the verdict.
+
+# ── writing ───────────────────────────────────────────────────────────────────────────
+
+var _SL_HEX = "0123456789abcdef";
+
+# Appends bytes p[0..n) as a JSON string, quotes included.
+fn _sl_json_str(sb, p, n): i64 {
+    str_builder_putc(sb, 34);
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        if (c == 34) {
+            str_builder_putc(sb, 92);
+            str_builder_putc(sb, 34);
+        } elif (c == 92) {
+            str_builder_putc(sb, 92);
+            str_builder_putc(sb, 92);
+        } elif (c < 32) {
+            str_builder_putc(sb, 92);
+            if (c == 8) { str_builder_putc(sb, 98); }
+            elif (c == 9) { str_builder_putc(sb, 116); }
+            elif (c == 10) { str_builder_putc(sb, 110); }
+            elif (c == 12) { str_builder_putc(sb, 102); }
+            elif (c == 13) { str_builder_putc(sb, 114); }
+            else {
+                str_builder_add_cstr(sb, "u00");
+                str_builder_putc(sb, load8(_SL_HEX + (c >> 4)));
+                str_builder_putc(sb, load8(_SL_HEX + (c & 15)));
+            }
+        } else {
+            str_builder_putc(sb, c);
+        }
+        i = i + 1;
+    }
+    str_builder_putc(sb, 34);
+    return 0;
+}
+
+# Appends a Str as a JSON string.
+fn _sl_json_str_s(sb, s): i64 {
+    return _sl_json_str(sb, str_data(s), str_len(s));
+}
+
+# Appends `"key":` for a NUL-terminated key (selah's keys need no escaping).
+fn _sl_json_key(sb, key): i64 {
+    str_builder_putc(sb, 34);
+    str_builder_add_cstr(sb, key);
+    str_builder_putc(sb, 34);
+    str_builder_putc(sb, 58);
+    return 0;
+}
+
+# ── reading ───────────────────────────────────────────────────────────────────────────
+
+# Parse p[0..n) into a bayan value tree; 0 when it isn't one JSON document.
+#must_use
+fn _sl_json_parse(p, n): i64 {
+    if (n < 0) { return 0; }
+    return bayan_json_v_parse_buf(p, n);
+}
+
+# The member `key` of object v: 0 when v is not an object or has no such member.
+#must_use
+fn _sl_json_member(v, key): i64 {
+    if (v == 0) { return 0; }
+    if (bayan_json_v_is_obj(v) == false) { return 0; }
+    return bayan_json_v_obj_get_by_cstr(v, key);
+}
+
+# A JSON number as serde reads it into an f64 field: an integer converts (Rust `as f64`), a float is the parse's
+# correctly rounded double. Writes the value through `out` and returns 1, or returns 0 for anything else.
+fn _sl_json_as_f64(v, out): i64 {
+    if (v == 0) { return 0; }
+    var tag = bayan_json_v_tag(v);
+    if (tag == JTAG_INT) {
+        var d: f64 = f64_from(bayan_json_v_int(v));
+        store64(out, d);
+        return 1;
+    }
+    if (tag == JTAG_FLOAT) {
+        store64(out, bayan_json_v_float(v));
+        return 1;
+    }
+    return 0;
+}
+
+# A JSON number as serde reads it into a u8 field: an integer 0..=255 only (a float, even 1.0, is refused, as
+# serde_json refuses it). Returns the value, or -1.
+#must_use
+fn _sl_json_as_u8(v): i64 {
+    if (v == 0) { return -1; }
+    if (bayan_json_v_tag(v) != JTAG_INT) { return -1; }
+    var x = bayan_json_v_int(v);
+    if (x < 0 || x > 255) { return -1; }
+    return x;
+}
+
+# A JSON string's Str, or 0 when v is not a string.
+#must_use
+fn _sl_json_as_str(v): i64 {
+    if (v == 0) { return 0; }
+    if (bayan_json_v_tag(v) != JTAG_STR) { return 0; }
+    return bayan_json_v_str(v);
+}
+
+# serde_json's externally tagged enum forms: a string is a unit variant's name; an object of exactly one member is
+# `{"<variant>": <content>}`. Returns the variant's name (a Str) and stores its content value through `content_out`
+# (0 for the string form), or returns 0 when v is neither.
+fn _sl_json_variant(v, content_out): i64 {
+    store64(content_out, 0);
+    if (v == 0) { return 0; }
+    var s = _sl_json_as_str(v);
+    if (s != 0) { return s; }
+    if (bayan_json_v_is_obj(v) == false || bayan_json_v_obj_len(v) != 1) { return 0; }
+    store64(content_out, bayan_json_v_obj_val(v, 0));
+    var k = bayan_json_v_obj_key(v, 0);
+    return k;
+}
+
+# 1 when a variant's content is what serde accepts for a unit variant: the string form, or `null`.
+#must_use
+fn _sl_json_unit_content(content): i64 {
+    if (content == 0) { return 1; }
+    if (bayan_json_v_is_null(content) == true) { return 1; }
+    return 0;
+}
+
+# A struct read from a JSON array, as serde's derived `visit_seq` does: element i, or 0 when v is not an array of
+# exactly `len` elements.
+#must_use
+fn _sl_json_seq_elem(v, len, i): i64 {
+    if (v == 0 || bayan_json_v_is_arr(v) == false) { return 0; }
+    if (bayan_json_v_arr_len(v) != len) { return 0; }
+    return bayan_json_v_arr_get(v, i);
+}
+
+# A struct field, from either serde form: object member `key`, or array element i of `len`.
+#must_use
+fn _sl_json_field(v, key, len, i): i64 {
+    if (v != 0 && bayan_json_v_is_arr(v) == true) { return _sl_json_seq_elem(v, len, i); }
+    return _sl_json_member(v, key);
+}

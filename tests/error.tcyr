@@ -1,0 +1,81 @@
+# error.tcyr — rust-old/src/error.rs's tests, ported (port plan M1). Golden parity: tests/golden/error.tsv.
+
+include "tests/selah_src.cyr"
+include "tests/support.cyr"
+
+# test_selah_error_display_capture_failed
+fn _t_selah_error_display_capture_failed(): i64 {
+    test_group("test_selah_error_display_capture_failed");
+    var s = selah_error_display(SL_ERR_CAPTURE_FAILED, str_from("timeout"));
+    assert(_t_str_is(s, "capture failed: timeout"), "display");
+    return 0;
+}
+
+# test_selah_error_display_invalid_region
+fn _t_selah_error_display_invalid_region(): i64 {
+    test_group("test_selah_error_display_invalid_region");
+    var s = selah_error_display(SL_ERR_INVALID_REGION, str_from("negative width"));
+    assert(_t_str_is(s, "invalid region: negative width"), "display");
+    return 0;
+}
+
+# test_selah_error_display_unsupported_format
+fn _t_selah_error_display_unsupported_format(): i64 {
+    test_group("test_selah_error_display_unsupported_format");
+    var s = selah_error_display(SL_ERR_UNSUPPORTED_FORMAT, str_from("tiff"));
+    assert(_t_str_is(s, "unsupported format: tiff"), "display");
+    return 0;
+}
+
+# test_selah_error_display_annotation
+fn _t_selah_error_display_annotation(): i64 {
+    test_group("test_selah_error_display_annotation");
+    var s = selah_error_display(SL_ERR_ANNOTATION, str_from("bad color"));
+    assert(_t_str_is(s, "annotation error: bad color"), "display");
+    return 0;
+}
+
+# test_selah_error_display_api
+fn _t_selah_error_display_api(): i64 {
+    test_group("test_selah_error_display_api");
+    var s = selah_error_display(SL_ERR_API, str_from("connection refused"));
+    assert(_t_str_is(s, "API error: connection refused"), "display");
+    return 0;
+}
+
+# test_selah_error_from_io: an I/O error's text is carried (Rust: From<io::Error>; here the detail).
+fn _t_selah_error_from_io(): i64 {
+    test_group("test_selah_error_from_io");
+    assert(_t_str_has(selah_error_display(SL_ERR_IO, str_from("file not found")), "file not found"), "display");
+    return 0;
+}
+
+# Cyrius-only: a fallible function hands its message through detail_out, and leaves it alone without one.
+fn _t_detail_out(): i64 {
+    test_group("detail_out");
+    var d = 0;
+    var t, v = selah_image_format_parse("tiff", 4, &d);
+    assert(is_err_result(t) == 1, "refused");
+    assert(v == SL_ERR_UNSUPPORTED_FORMAT, "code");
+    assert(_t_str_is(d, "tiff (use png, jpg, bmp, or webp)"), "message");
+    var t2, v2 = selah_image_format_parse("tiff", 4);
+    assert(is_err_result(t2) == 1, "refused without detail_out");
+    return 0;
+}
+
+# Runs the suite; the exit code is the failure count, clamped.
+fn main(): i64 {
+    alloc_init();
+    _t_selah_error_display_capture_failed();
+    _t_selah_error_display_invalid_region();
+    _t_selah_error_display_unsupported_format();
+    _t_selah_error_display_annotation();
+    _t_selah_error_display_api();
+    _t_selah_error_from_io();
+    _t_detail_out();
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

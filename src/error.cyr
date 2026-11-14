@@ -1,0 +1,88 @@
+# error.cyr — selah's error codes (Rust: `SelahError`, rust-old/src/error.rs).
+#
+# Port plan D7, ADR 0002 #10. A fallible function returns a value-form `Result`: `Ok(value)` or `Err(SL_ERR_*)`.
+# Rust's variants carry a `String`; here the text goes through the caller's optional trailing `detail_out`
+# argument (a pointer to one i64 slot): when it is non-zero, the failing function stores a `Str` there, the same
+# text the Rust variant held. `selah_error_display` adds the variant's prefix, as Rust's Display does.
+#
+# Values are append-only and never renumbered (the Rust enum is #[non_exhaustive]).
+
+enum SlError {
+    SL_ERR_NONE = 0;
+    SL_ERR_CAPTURE_FAILED = 1;
+    SL_ERR_INVALID_REGION = 2;
+    SL_ERR_UNSUPPORTED_FORMAT = 3;
+    SL_ERR_ANNOTATION = 4;
+    SL_ERR_IO = 5;
+    SL_ERR_API = 6;
+    # A JSON document selah reads was refused. Rust surfaces serde_json's error inside another variant, or (in
+    # the from_json paths the port exposes) as serde_json::Error itself; the port's message is its own
+    # (ADR 0002 #14).
+    SL_ERR_SERDE = 7;
+}
+
+# The variant's name, as Rust spells it.
+#must_use
+fn selah_error_name(code): i64 {
+    match code {
+        SL_ERR_NONE => { return "None"; }
+        SL_ERR_CAPTURE_FAILED => { return "CaptureFailed"; }
+        SL_ERR_INVALID_REGION => { return "InvalidRegion"; }
+        SL_ERR_UNSUPPORTED_FORMAT => { return "UnsupportedFormat"; }
+        SL_ERR_ANNOTATION => { return "AnnotationError"; }
+        SL_ERR_IO => { return "Io"; }
+        SL_ERR_API => { return "Api"; }
+        SL_ERR_SERDE => { return "serde"; }
+        _ => { return "Unknown"; }
+    }
+    return "Unknown";
+}
+
+# The prefix Rust's Display writes before the message ("capture failed: ").
+#must_use
+fn _sl_error_prefix(code): i64 {
+    match code {
+        SL_ERR_CAPTURE_FAILED => { return "capture failed: "; }
+        SL_ERR_INVALID_REGION => { return "invalid region: "; }
+        SL_ERR_UNSUPPORTED_FORMAT => { return "unsupported format: "; }
+        SL_ERR_ANNOTATION => { return "annotation error: "; }
+        SL_ERR_IO => { return "IO error: "; }
+        SL_ERR_API => { return "API error: "; }
+        SL_ERR_SERDE => { return "JSON error: "; }
+        _ => { return "error: "; }
+    }
+    return "error: ";
+}
+
+# Appends Rust's Display of the error: the variant's prefix, then the message (`msg` a Str, or 0).
+fn selah_error_fmt(sb, code, msg): i64 {
+    str_builder_add_cstr(sb, _sl_error_prefix(code));
+    if (msg != 0) { str_builder_add(sb, msg); }
+    return 0;
+}
+
+# Rust's Display of the error as a new Str.
+#must_use
+fn selah_error_display(code, msg): Str {
+    var sb = str_builder_new();
+    selah_error_fmt(sb, code, msg);
+    return str_builder_build(sb);
+}
+
+# A pointer as a plain address: typed-pointer arithmetic steps by sizeof(T), so byte offsets go through this.
+#must_use
+fn _sl_addr(p): i64 {
+    return p;
+}
+
+# Store `msg` (a Str) through `detail_out` when the caller asked for it, and fail with `code`.
+fn _sl_fail(code, detail_out, msg): Result {
+    if (detail_out != 0) { store64(detail_out, msg); }
+    return Err(code);
+}
+
+# As _sl_fail, from a NUL-terminated string.
+fn _sl_fail_cstr(code, detail_out, cmsg): Result {
+    if (detail_out != 0) { store64(detail_out, str_from(cmsg)); }
+    return Err(code);
+}

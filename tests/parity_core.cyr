@@ -222,3 +222,210 @@ fn _pc_summary(module): i64 {
     if (_pc_count[PC_FAILED] > 0) { return 1; }
     return 0;
 }
+
+# ── tokens (format 1) ──────────────────────────────────────────────────────────────────
+
+# The value of one hex digit, or -1.
+fn _pc_hexd(c): i64 {
+    if (c >= 48 && c <= 57) { return c - 48; }
+    if (c >= 97 && c <= 102) { return c - 87; }
+    if (c >= 65 && c <= 70) { return c - 55; }
+    return -1;
+}
+
+# The hex number at p[0..n).
+fn _pc_hex(p, n): i64 {
+    var v = 0;
+    var i = 0;
+    while (i < n) {
+        v = (v << 4) | _pc_hexd(load8(p + i));
+        i = i + 1;
+    }
+    return v;
+}
+
+# The signed decimal at p[0..n).
+fn _pc_dec(p, n): i64 {
+    if (n > 0 && load8(p) == 45) { return -_pc_int(p + 1, n - 1); }
+    return _pc_int(p, n);
+}
+
+# Decode an `s:` payload (p[0..n), without the prefix) into a fresh buffer; stores its length.
+fn _pc_unesc(p, n, len_out): i64 {
+    var out = alloc(n + 1);
+    var o = 0;
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        if (c == 92 && i + 1 < n) {
+            var e = load8(p + i + 1);
+            if (e == 92) { store8(out + o, 92); i = i + 2; }
+            elif (e == 116) { store8(out + o, 9); i = i + 2; }
+            elif (e == 110) { store8(out + o, 10); i = i + 2; }
+            elif (e == 114) { store8(out + o, 13); i = i + 2; }
+            elif (e == 115) { store8(out + o, 32); i = i + 2; }
+            elif (e == 120 && i + 3 < n) { store8(out + o, _pc_hex(p + i + 2, 2)); i = i + 4; }
+            else { store8(out + o, c); i = i + 1; }
+        } else {
+            store8(out + o, c);
+            i = i + 1;
+        }
+        o = o + 1;
+    }
+    store8(out + o, 0);
+    store64(len_out, o);
+    return out;
+}
+
+# Decode the i-th token of field f as an `s:` string (fresh buffer, length through len_out); 0 when it is not one.
+fn _pc_tok_s(f, i, len_out): i64 {
+    var p = 0;
+    var n = 0;
+    if (_pc_tok(f, i, &p, &n) == 0 || n < 2 || memeq(p, "s:", 2) != 1) { return 0; }
+    return _pc_unesc(p + 2, n - 2, len_out);
+}
+
+# The payload value of the i-th token of field f as a number: `g:`/`f:`/`h:` hex, `i:` decimal, `b:` 0/1.
+fn _pc_tok_num(f, i): i64 {
+    var p = 0;
+    var n = 0;
+    if (_pc_tok(f, i, &p, &n) == 0 || n < 2) { return 0; }
+    var k = load8(p);
+    if (k == 105) { return _pc_dec(p + 2, n - 2); }
+    if (k == 98) { return load8(p + 2) - 48; }
+    return _pc_hex(p + 2, n - 2);
+}
+
+# Token writers (the oracle's spelling).
+fn _pc_put_g(sb, bits): i64 {
+    str_builder_add_cstr(sb, "g:");
+    var i = 7;
+    while (i >= 0) {
+        str_builder_putc(sb, load8("0123456789abcdef" + ((bits >> (i * 4)) & 15)));
+        i = i - 1;
+    }
+    return 0;
+}
+fn _pc_put_f(sb, bits): i64 {
+    str_builder_add_cstr(sb, "f:");
+    var i = 15;
+    while (i >= 0) {
+        str_builder_putc(sb, load8("0123456789abcdef" + ((bits >> (i * 4)) & 15)));
+        i = i - 1;
+    }
+    return 0;
+}
+fn _pc_put_i(sb, v): i64 {
+    str_builder_add_cstr(sb, "i:");
+    str_builder_add_int(sb, v);
+    return 0;
+}
+fn _pc_put_b(sb, v): i64 {
+    str_builder_add_cstr(sb, "b:");
+    str_builder_putc(sb, 48 + (v & 1));
+    return 0;
+}
+fn _pc_put_h(sb, p, n): i64 {
+    str_builder_add_cstr(sb, "h:");
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        str_builder_putc(sb, load8("0123456789abcdef" + (c >> 4)));
+        str_builder_putc(sb, load8("0123456789abcdef" + (c & 15)));
+        i = i + 1;
+    }
+    return 0;
+}
+fn _pc_put_s(sb, p, n): i64 {
+    str_builder_add_cstr(sb, "s:");
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        if (c == 92) { str_builder_add_cstr(sb, "\\\\"); }
+        elif (c == 9) { str_builder_add_cstr(sb, "\\t"); }
+        elif (c == 10) { str_builder_add_cstr(sb, "\\n"); }
+        elif (c == 13) { str_builder_add_cstr(sb, "\\r"); }
+        elif (c == 32) { str_builder_add_cstr(sb, "\\s"); }
+        elif (c < 32 || c == 127) {
+            str_builder_add_cstr(sb, "\\x");
+            str_builder_putc(sb, load8("0123456789ABCDEF" + (c >> 4)));
+            str_builder_putc(sb, load8("0123456789ABCDEF" + (c & 15)));
+        } else {
+            str_builder_putc(sb, c);
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+fn _pc_put_sstr(sb, s): i64 {
+    if (s == 0) { return _pc_put_s(sb, "", 0); }
+    return _pc_put_s(sb, str_data(s), str_len(s));
+}
+fn _pc_put_raw(sb, cstr): i64 {
+    str_builder_add_cstr(sb, cstr);
+    return 0;
+}
+fn _pc_sp(sb): i64 {
+    str_builder_putc(sb, 32);
+    return 0;
+}
+
+# 1 when the g:/f: token a is a NaN.
+fn _pc_tok_nan(p, n): i64 {
+    if (n == 10 && load8(p) == 103) {
+        var b = _pc_hex(p + 2, 8);
+        return (b & 0x7FFFFFFF) > 0x7F800000;
+    }
+    if (n == 18 && load8(p) == 102) {
+        var b2 = _pc_hex(p + 2, 16);
+        return (b2 & 0x7FFFFFFFFFFFFFFF) > 0x7FF0000000000000;
+    }
+    return 0;
+}
+
+# Compare the port's rendered outputs (a Str) with the row's outputs field, token by token: equal text, or two NaN
+# float tokens. An expected `E:serde` compares the verdict only (ADR 0002 #14). Records the outcome.
+fn _pc_check(actual): i64 {
+    var ep = _pc_f[6];
+    var en = _pc_f[7];
+    var ap = str_data(actual);
+    var an = str_len(actual);
+    if (en >= 7 && memeq(ep, "E:serde", 7) == 1) {
+        if (an >= 7 && memeq(ap, "E:serde", 7) == 1) { return _pc_record(PC_OK, "both refuse"); }
+        return _pc_record(PC_FAILED, _pc_diff_msg(ap, an));
+    }
+    var i = 0;
+    var j = 0;
+    loop {
+        var ie = _pc_find(ep, i, en, 32);
+        var je = _pc_find(ap, j, an, 32);
+        var same = 0;
+        if (ie - i == je - j && memeq(ep + i, ap + j, ie - i) == 1) { same = 1; }
+        elif (_pc_tok_nan(ep + i, ie - i) == 1 && _pc_tok_nan(ap + j, je - j) == 1) { same = 1; }
+        if (same == 0) { return _pc_record(PC_FAILED, _pc_diff_msg(ap, an)); }
+        if (ie >= en || je >= an) {
+            if (ie >= en && je >= an) { return _pc_record(PC_OK, "equal"); }
+            return _pc_record(PC_FAILED, _pc_diff_msg(ap, an));
+        }
+        i = ie + 1;
+        j = je + 1;
+    }
+    return 0;
+}
+
+# "port gave: <first 160 bytes>".
+fn _pc_diff_msg(ap, an): i64 {
+    var n = an;
+    if (n > 160) { n = 160; }
+    var m = alloc(n + 16);
+    memcpy(m, "port gave: ", 11);
+    memcpy(m + 11, ap, n);
+    store8(m + 11 + n, 0);
+    return m;
+}
+
+# 1 when the row's fn is the NUL-terminated name.
+fn _pc_fn_is(name): i64 {
+    var n = strlen(name);
+    return _pc_f[1] == n && memeq(_pc_f[0], name, n) == 1;
+}

@@ -7,7 +7,7 @@
 
 - [x] **M0 Initialize** (2026-11-14): freeze the 0.30.0 oracle, `cyrius port`, repair the scaffold, the manifest,
   toolchain probes, the golden generator, the parity harness, decode baselines
-- [ ] **M1 Foundation**: error, log, fmtf, json, geometry, core, uuid, rfc3339
+- [x] **M1 Foundation** (2026-11-14): error, log, fmtf, json, geometry, core, uuid, rfc3339
 - [ ] **M2 PII and smart crop**: ai
 - [ ] **M3 Codecs**: chitra decode; PNG, BMP and baseline JPEG encoders; WebP refused (ADR 0002)
 - [ ] **M4 Annotation**: raster, annotate, the facade

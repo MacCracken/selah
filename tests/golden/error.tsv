@@ -1,0 +1,35 @@
+# format 1 · module error
+# oracle: selah 0.30.0 (rust-old/, tag 0.30.0), image 0.25.10, png 0.18.1, zune-jpeg 0.5.15, image-webp 0.2.4
+# regenerate: cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml
+# columns: fn<TAB>class<TAB>inputs<TAB>outputs<TAB>note · E:<variant> s:<message> → s:<Display>
+# rows: 30
+SelahError::fmt	A	E:CaptureFailed s:x	s:capture\sfailed:\sx	
+SelahError::fmt	A	E:InvalidRegion s:x	s:invalid\sregion:\sx	
+SelahError::fmt	A	E:UnsupportedFormat s:x	s:unsupported\sformat:\sx	
+SelahError::fmt	A	E:AnnotationError s:x	s:annotation\serror:\sx	
+SelahError::fmt	A	E:Api s:x	s:API\serror:\sx	
+SelahError::fmt	A	E:Io s:x	s:IO\serror:\sx	
+SelahError::fmt	A	E:CaptureFailed s:	s:capture\sfailed:\s	
+SelahError::fmt	A	E:InvalidRegion s:	s:invalid\sregion:\s	
+SelahError::fmt	A	E:UnsupportedFormat s:	s:unsupported\sformat:\s	
+SelahError::fmt	A	E:AnnotationError s:	s:annotation\serror:\s	
+SelahError::fmt	A	E:Api s:	s:API\serror:\s	
+SelahError::fmt	A	E:Io s:	s:IO\serror:\s	
+SelahError::fmt	A	E:CaptureFailed s:a:\sb	s:capture\sfailed:\sa:\sb	
+SelahError::fmt	A	E:InvalidRegion s:a:\sb	s:invalid\sregion:\sa:\sb	
+SelahError::fmt	A	E:UnsupportedFormat s:a:\sb	s:unsupported\sformat:\sa:\sb	
+SelahError::fmt	A	E:AnnotationError s:a:\sb	s:annotation\serror:\sa:\sb	
+SelahError::fmt	A	E:Api s:a:\sb	s:API\serror:\sa:\sb	
+SelahError::fmt	A	E:Io s:a:\sb	s:IO\serror:\sa:\sb	
+SelahError::fmt	A	E:CaptureFailed s:région\s"q"\n2	s:capture\sfailed:\srégion\s"q"\n2	
+SelahError::fmt	A	E:InvalidRegion s:région\s"q"\n2	s:invalid\sregion:\srégion\s"q"\n2	
+SelahError::fmt	A	E:UnsupportedFormat s:région\s"q"\n2	s:unsupported\sformat:\srégion\s"q"\n2	
+SelahError::fmt	A	E:AnnotationError s:région\s"q"\n2	s:annotation\serror:\srégion\s"q"\n2	
+SelahError::fmt	A	E:Api s:région\s"q"\n2	s:API\serror:\srégion\s"q"\n2	
+SelahError::fmt	A	E:Io s:région\s"q"\n2	s:IO\serror:\srégion\s"q"\n2	
+SelahError::fmt	A	E:CaptureFailed s:timed\sout\safter\s30s	s:capture\sfailed:\stimed\sout\safter\s30s	
+SelahError::fmt	A	E:InvalidRegion s:timed\sout\safter\s30s	s:invalid\sregion:\stimed\sout\safter\s30s	
+SelahError::fmt	A	E:UnsupportedFormat s:timed\sout\safter\s30s	s:unsupported\sformat:\stimed\sout\safter\s30s	
+SelahError::fmt	A	E:AnnotationError s:timed\sout\safter\s30s	s:annotation\serror:\stimed\sout\safter\s30s	
+SelahError::fmt	A	E:Api s:timed\sout\safter\s30s	s:API\serror:\stimed\sout\safter\s30s	
+SelahError::fmt	A	E:Io s:timed\sout\safter\s30s	s:IO\serror:\stimed\sout\safter\s30s	

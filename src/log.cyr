@@ -1,0 +1,34 @@
+# log.cyr — selah's tracing, through sakshi (Rust: `tracing`; port plan D11).
+#
+# The contract is bote's (bote/src/log.cyr):
+# - Every line goes through sakshi, to sakshi's configured output (stderr unless the embedder says otherwise). Never
+#   stdout: on the MCP stdio transport stdout is the JSON-RPC wire.
+# - Library code never configures sakshi. selah calls `_sl_log_*`, and sakshi's level filter decides.
+# - Levels: WARN for a refusal or anomaly selah survives (an unlocatable PII match, a lock timeout), INFO for an
+#   outcome (an image captured, copied to the clipboard), DEBUG for one line per operation.
+# - Never log a secret or content: no API key, image bytes, OCR text or annotation text. A size, a count, a format,
+#   a status or a path does.
+
+# A WARN line.
+fn _sl_log_warn(msg): i64 {
+    sakshi_warn(msg, strlen(msg));
+    return 0;
+}
+
+# An INFO line.
+fn _sl_log_info(msg): i64 {
+    sakshi_info(msg, strlen(msg));
+    return 0;
+}
+
+# A DEBUG line.
+fn _sl_log_debug(msg): i64 {
+    sakshi_debug(msg, strlen(msg));
+    return 0;
+}
+
+# A line with one key/value field: `level` is sakshi's (SK_WARN, SK_INFO, SK_DEBUG); `val` a NUL-terminated string.
+fn _sl_log_kv(level, msg, key, val): i64 {
+    sakshi_log_kv(level, msg, strlen(msg), key, strlen(key), val, strlen(val));
+    return 0;
+}

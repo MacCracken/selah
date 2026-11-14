@@ -1,18 +1,36 @@
-# selah test suite
-# Stdlib auto-included via cyrius.cyml
+# selah.tcyr — the consumer's view: include the bundle (dist/selah.cyr) the way a Cyrius consumer does, and call a
+# little of every ported module through it. `cyrius distlib --check` keeps the bundle current with src/.
 
-# Scaffold smoke test; the parity harness and the ported Rust tests join tests/ from M0 step 6.
-fn main() {
+include "dist/selah.cyr"
+
+# A Str holding exactly the text.
+fn _s_is(s, text): i64 {
+    var n = strlen(text);
+    return s != 0 && str_len(s) == n && memeq(str_data(s), text, n) == 1;
+}
+
+# Smoke-tests the bundle: geometry, core, errors, JSON.
+fn main(): i64 {
     alloc_init();
-    test_group("smoke");
-    assert(1, "true is true");
-    assert_eq(1 + 1, 2, "math works");
+    test_group("bundle");
+    var r = SlRect_new(f32_from(10.0), f32_from(20.0), f32_from(100.0), f32_from(50.0));
+    assert(r.width() == 100.0, "Rect::width");
+    assert(r.area() == 5000.0, "Rect::area");
+    assert(_s_is(selah_xml_escape("<a&b>", 5), "&lt;a&amp;b&gt;"), "xml_escape");
+    var d = 0;
+    var t, v = selah_image_format_parse("gif", 3, &d);
+    assert(is_err_result(t) == 1 && v == SL_ERR_UNSUPPORTED_FORMAT, "ImageFormat::from_str refuses gif");
+    var a: *SlAnnotation = SlAnnotation_with_text(SL_KIND_TEXT, r, SL_COLOR_BLUE, str_from("hi"));
+    assert(a != 0, "Annotation::with_text");
+    var sb = str_builder_new();
+    SlAnnotation_to_json(a, sb);
+    var j = str_builder_build(sb);
+    var t2, b = SlAnnotation_from_json(str_data(j), str_len(j));
+    assert(is_ok(t2), "Annotation JSON round trip");
     return assert_summary();
 }
 
 var exit_code = main();
-# Clamp before exiting: assert_summary() returns the raw failure COUNT, and a
-# wait status is only 8 bits — an unclamped 256 / 512 / 768 failures would exit
-# 0 and score PASS. Any failure at all is exit 1.
+# Clamp before exiting: assert_summary() returns the raw failure COUNT, and a wait status is only 8 bits.
 if (exit_code > 0) { exit_code = 1; }
 sys_exit_group(exit_code);

@@ -6,6 +6,14 @@
 # The exit code is the number of modules with a FAILED row, so the 8-bit exit status cannot wrap.
 
 include "tests/parity_core.cyr"
+include "src/error.cyr"
+include "src/log.cyr"
+include "src/fmtf.cyr"
+include "src/json.cyr"
+include "src/uuid.cyr"
+include "src/rfc3339.cyr"
+include "src/geometry.cyr"
+include "src/core.cyr"
 
 # ---------------------------------------------------------------- decode
 #
@@ -176,6 +184,439 @@ fn _par_decode_row(): i64 {
     return _pc_record(PC_OK, "identical");
 }
 
+# ---------------------------------------------------------------- M1 helpers
+
+# An f32 from its bits.
+fn _par_f32(bits, out: *f32): i64 {
+    store32(out, bits);
+    return 0;
+}
+
+# The rect Rect::new builds from the four g tokens starting at token i of the inputs.
+fn _par_rect(i): SlRect {
+    var x: f32 = f32_from(0.0);
+    var y: f32 = f32_from(0.0);
+    var w: f32 = f32_from(0.0);
+    var h: f32 = f32_from(0.0);
+    _par_f32(_pc_tok_num(2, i), &x);
+    _par_f32(_pc_tok_num(2, i + 1), &y);
+    _par_f32(_pc_tok_num(2, i + 2), &w);
+    _par_f32(_pc_tok_num(2, i + 3), &h);
+    return SlRect_new(x, y, w, h);
+}
+
+# Writes a rect's layout as four g tokens.
+fn _par_put_layout(sb, r: SlRect): i64 {
+    _pc_put_g(sb, _sl_f32_bits(r.min_x));
+    _pc_sp(sb);
+    _pc_put_g(sb, _sl_f32_bits(r.min_y));
+    _pc_sp(sb);
+    _pc_put_g(sb, _sl_f32_bits(r.max_x));
+    _pc_sp(sb);
+    _pc_put_g(sb, _sl_f32_bits(r.max_y));
+    return 0;
+}
+
+# Writes an f64 holding an exact f32 as a g token.
+fn _par_put_g64(sb, d: f64): i64 {
+    var x: f32 = f32_from(d);
+    return _pc_put_g(sb, _sl_f32_bits(x));
+}
+
+# Writes E:<variant> s:<detail> for a refused Result (detail a Str or 0).
+fn _par_put_err(sb, code, detail): i64 {
+    str_builder_add_cstr(sb, "E:");
+    str_builder_add_cstr(sb, selah_error_name(code));
+    _pc_sp(sb);
+    return _pc_put_sstr(sb, detail);
+}
+
+# 1 when token i of field f is exactly the NUL-terminated text.
+fn _par_tok_is(f, i, text): i64 {
+    var p = 0;
+    var n = 0;
+    if (_pc_tok(f, i, &p, &n) == 0) { return 0; }
+    return n == strlen(text) && memeq(p, text, n) == 1;
+}
+
+# The enum value named by the e: token i of the inputs, through `name_of` (value → serde name) over 0..=last.
+fn _par_enum(i, prefix, name_of, last): i64 {
+    var p = 0;
+    var n = 0;
+    _pc_tok(2, i, &p, &n);
+    var pl = strlen(prefix);
+    var v = 0;
+    while (v <= last) {
+        var nm = fncall1(name_of, v);
+        if (n == pl + strlen(nm) && memeq(p, prefix, pl) == 1 && memeq(p + pl, nm, strlen(nm)) == 1) { return v; }
+        v = v + 1;
+    }
+    return -1;
+}
+
+fn _par_kind_name(k): i64 { return _sl_kind_serde_name(k); }
+fn _par_format_name(f): i64 { return _sl_format_serde_name(f); }
+
+# ---------------------------------------------------------------- error, fmtf
+
+fn _par_error_row(): i64 {
+    if (_pc_fn_is("SelahError::fmt") == 0) { return _pc_record(PC_PENDING, "no dispatcher"); }
+    var code = SL_ERR_NONE;
+    var k = 1;
+    while (k <= SL_ERR_API) {
+        var nm = alloc(40);
+        memcpy(nm, "E:", 2);
+        memcpy(nm + 2, selah_error_name(k), strlen(selah_error_name(k)) + 1);
+        if (_par_tok_is(2, 0, nm) == 1) { code = k; }
+        k = k + 1;
+    }
+    var ml = 0;
+    var m = _pc_tok_s(2, 1, &ml);
+    var out = str_builder_new();
+    var sb = str_builder_new();
+    selah_error_fmt(sb, code, str_new(m, ml));
+    var shown = str_builder_build(sb);
+    _pc_put_sstr(out, shown);
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_fmtf_row(): i64 {
+    var sb = str_builder_new();
+    var bits = _pc_tok_num(2, 0);
+    if (_pc_fn_is("f32::fmt") == 1 || _pc_fn_is("f32::to_json") == 1) {
+        var x: f32 = f32_from(0.0);
+        _par_f32(bits, &x);
+        if (_pc_fn_is("f32::fmt") == 1) { _sl_fmt_f32_display(sb, x); } else { _sl_fmt_f32_json(sb, x); }
+    } elif (_pc_fn_is("f64::fmt") == 1 || _pc_fn_is("f64::to_json") == 1) {
+        var d: f64 = 0.0;
+        store64(&d, bits);
+        if (_pc_fn_is("f64::fmt") == 1) { _sl_fmt_f64_display(sb, d); } else { _sl_fmt_f64_json(sb, d); }
+    } else {
+        return _pc_record(PC_PENDING, "no dispatcher");
+    }
+    var text = str_builder_build(sb);
+    var out = str_builder_new();
+    _pc_put_sstr(out, text);
+    return _pc_check(str_builder_build(out));
+}
+
+# ---------------------------------------------------------------- geometry
+
+fn _par_geometry_row(): i64 {
+    var out = str_builder_new();
+    if (_pc_fn_is("Rect::from_json") == 1) {
+        var n = 0;
+        var doc = _pc_tok_s(2, 0, &n);
+        var r: SlRect = SlRect_default();
+        var t, v = SlRect_from_json(doc, n, &r);
+        if (is_err_result(t) == 1) { _pc_put_raw(out, "E:serde"); } else { _par_put_layout(out, r); }
+        return _pc_check(str_builder_build(out));
+    }
+    var r = _par_rect(0);
+    if (_pc_fn_is("Rect::new") == 1) { _par_put_layout(out, r); }
+    elif (_pc_fn_is("Rect::x") == 1) { _par_put_g64(out, r.x()); }
+    elif (_pc_fn_is("Rect::y") == 1) { _par_put_g64(out, r.y()); }
+    elif (_pc_fn_is("Rect::width") == 1) { _par_put_g64(out, r.width()); }
+    elif (_pc_fn_is("Rect::height") == 1) { _par_put_g64(out, r.height()); }
+    elif (_pc_fn_is("Rect::area") == 1) { _par_put_g64(out, r.area()); }
+    elif (_pc_fn_is("Rect::center") == 1) {
+        var c = r.center();
+        _pc_put_g(out, _sl_f32_bits(c.x));
+        _pc_sp(out);
+        _pc_put_g(out, _sl_f32_bits(c.y));
+    }
+    elif (_pc_fn_is("Rect::is_finite") == 1) { _pc_put_b(out, r.is_finite()); }
+    elif (_pc_fn_is("Rect::normalized") == 1) { _par_put_layout(out, r.normalized()); }
+    elif (_pc_fn_is("Rect::contains_point") == 1) {
+        var px: f32 = f32_from(0.0);
+        var py: f32 = f32_from(0.0);
+        _par_f32(_pc_tok_num(2, 4), &px);
+        _par_f32(_pc_tok_num(2, 5), &py);
+        _pc_put_b(out, r.contains_point(SlVec2_new(px, py)));
+    }
+    elif (_pc_fn_is("Rect::intersects") == 1) {
+        var o = _par_rect(4);
+        _pc_put_b(out, r.intersects(&o));
+    }
+    elif (_pc_fn_is("Rect::to_json") == 1) {
+        var sb = str_builder_new();
+        r.to_json(sb);
+        _pc_put_sstr(out, str_builder_build(sb));
+    }
+    else { return _pc_record(PC_PENDING, "no dispatcher"); }
+    return _pc_check(str_builder_build(out));
+}
+
+# ---------------------------------------------------------------- core
+
+# The colour from i tokens i..i+3 of the inputs.
+fn _par_color(i): SlColor {
+    return SlColor_new(_pc_tok_num(2, i), _pc_tok_num(2, i + 1), _pc_tok_num(2, i + 2), _pc_tok_num(2, i + 3));
+}
+
+fn _par_put_color(sb, c: SlColor): i64 {
+    _pc_put_i(sb, c.r);
+    _pc_sp(sb);
+    _pc_put_i(sb, c.g);
+    _pc_sp(sb);
+    _pc_put_i(sb, c.b);
+    _pc_sp(sb);
+    _pc_put_i(sb, c.a);
+    return 0;
+}
+
+# The redaction target from the e: token (and s: label) at the inputs' start.
+fn _par_target(): SlRedactionTarget {
+    var names: i64[5];
+    names[0] = "e:RedactionTarget.Email";
+    names[1] = "e:RedactionTarget.Phone";
+    names[2] = "e:RedactionTarget.CreditCard";
+    names[3] = "e:RedactionTarget.IpAddress";
+    names[4] = "e:RedactionTarget.Custom";
+    var k = 0;
+    while (k < 5) {
+        if (_par_tok_is(2, 0, names[k]) == 1) { break; }
+        k = k + 1;
+    }
+    var label = 0;
+    if (k == SL_TARGET_CUSTOM) {
+        var n = 0;
+        var p = _pc_tok_s(2, 1, &n);
+        label = str_new(p, n);
+    }
+    return SlRedactionTarget_new(k, label);
+}
+
+fn _par_put_target(sb, t: SlRedactionTarget): i64 {
+    if (t.kind == SL_TARGET_EMAIL) { _pc_put_raw(sb, "e:RedactionTarget.Email"); }
+    elif (t.kind == SL_TARGET_PHONE) { _pc_put_raw(sb, "e:RedactionTarget.Phone"); }
+    elif (t.kind == SL_TARGET_CREDIT_CARD) { _pc_put_raw(sb, "e:RedactionTarget.CreditCard"); }
+    elif (t.kind == SL_TARGET_IP_ADDRESS) { _pc_put_raw(sb, "e:RedactionTarget.IpAddress"); }
+    else {
+        _pc_put_raw(sb, "e:RedactionTarget.Custom ");
+        _pc_put_sstr(sb, t.custom);
+    }
+    return 0;
+}
+
+fn _par_put_annotation(sb, a: *SlAnnotation): i64 {
+    _pc_put_h(sb, _sl_addr(a), 16);
+    _pc_sp(sb);
+    _pc_put_raw(sb, "e:AnnotationKind.");
+    _pc_put_raw(sb, _sl_kind_serde_name(a.kind));
+    _pc_sp(sb);
+    _par_put_layout(sb, a.position);
+    _pc_sp(sb);
+    _par_put_color(sb, a.color);
+    _pc_sp(sb);
+    if (a.text == 0) { _pc_put_raw(sb, "N"); } else { _pc_put_sstr(sb, a.text); }
+    return 0;
+}
+
+fn _par_core_row(): i64 {
+    var out = str_builder_new();
+    var sb = str_builder_new();
+    var n = 0;
+    if (_pc_fn_is("AnnotationKind::fmt") == 1) {
+        selah_annotation_kind_fmt(sb, _par_enum(0, "e:AnnotationKind.", &_par_kind_name, SL_KIND_FREEFORM));
+        _pc_put_sstr(out, str_builder_build(sb));
+    } elif (_pc_fn_is("AnnotationKind::to_json") == 1) {
+        selah_annotation_kind_to_json(sb, _par_enum(0, "e:AnnotationKind.", &_par_kind_name, SL_KIND_FREEFORM));
+        _pc_put_sstr(out, str_builder_build(sb));
+    } elif (_pc_fn_is("AnnotationKind::from_str") == 1) {
+        var s = _pc_tok_s(2, 0, &n);
+        var detail = 0;
+        var t, k = selah_annotation_kind_parse(s, n, &detail);
+        if (is_err_result(t) == 1) { _par_put_err(out, k, detail); }
+        else { _pc_put_raw(out, "e:AnnotationKind."); _pc_put_raw(out, _sl_kind_serde_name(k)); }
+    } elif (_pc_fn_is("AnnotationKind::from_json") == 1) {
+        var s2 = _pc_tok_s(2, 0, &n);
+        var t2, k2 = selah_annotation_kind_from_json(s2, n);
+        if (is_err_result(t2) == 1) { _pc_put_raw(out, "E:serde"); }
+        else { _pc_put_raw(out, "e:AnnotationKind."); _pc_put_raw(out, _sl_kind_serde_name(k2)); }
+    } elif (_pc_fn_is("ImageFormat::extension") == 1) {
+        var f = _par_enum(0, "e:ImageFormat.", &_par_format_name, SL_FMT_WEBP);
+        var e = selah_image_format_extension(f);
+        _pc_put_s(out, e, strlen(e));
+    } elif (_pc_fn_is("ImageFormat::mime_type") == 1) {
+        var f2 = _par_enum(0, "e:ImageFormat.", &_par_format_name, SL_FMT_WEBP);
+        var mt = selah_image_format_mime_type(f2);
+        _pc_put_s(out, mt, strlen(mt));
+    } elif (_pc_fn_is("ImageFormat::fmt") == 1) {
+        selah_image_format_fmt(sb, _par_enum(0, "e:ImageFormat.", &_par_format_name, SL_FMT_WEBP));
+        _pc_put_sstr(out, str_builder_build(sb));
+    } elif (_pc_fn_is("ImageFormat::to_json") == 1) {
+        selah_image_format_to_json(sb, _par_enum(0, "e:ImageFormat.", &_par_format_name, SL_FMT_WEBP));
+        _pc_put_sstr(out, str_builder_build(sb));
+    } elif (_pc_fn_is("ImageFormat::from_str") == 1) {
+        var s3 = _pc_tok_s(2, 0, &n);
+        var d3 = 0;
+        var t3, f3 = selah_image_format_parse(s3, n, &d3);
+        if (is_err_result(t3) == 1) { _par_put_err(out, f3, d3); }
+        else { _pc_put_raw(out, "e:ImageFormat."); _pc_put_raw(out, _sl_format_serde_name(f3)); }
+    } elif (_pc_fn_is("ImageFormat::from_path") == 1) {
+        var s4 = _pc_tok_s(2, 0, &n);
+        var t4, f4 = selah_image_format_from_path(s4, n);
+        if (is_none(t4) == 1) { _pc_put_raw(out, "N"); }
+        else { _pc_put_raw(out, "e:ImageFormat."); _pc_put_raw(out, _sl_format_serde_name(f4)); }
+    } elif (_pc_fn_is("ImageFormat::from_json") == 1) {
+        var s5 = _pc_tok_s(2, 0, &n);
+        var t5, f5 = selah_image_format_from_json(s5, n);
+        if (is_err_result(t5) == 1) { _pc_put_raw(out, "E:serde"); }
+        else { _pc_put_raw(out, "e:ImageFormat."); _pc_put_raw(out, _sl_format_serde_name(f5)); }
+    } elif (_pc_fn_is("xml_escape") == 1) {
+        var s6 = _pc_tok_s(2, 0, &n);
+        _pc_put_sstr(out, selah_xml_escape(s6, n));
+    } elif (_pc_fn_is("derive_output_path") == 1) {
+        var s7 = _pc_tok_s(2, 0, &n);
+        var sn = 0;
+        var suf = _pc_tok_s(2, 1, &sn);
+        _pc_put_sstr(out, selah_derive_output_path(s7, n, suf, sn));
+    } elif (_pc_fn_is("Color::fmt") == 1) {
+        var c = _par_color(0);
+        c.fmt(sb);
+        _pc_put_sstr(out, str_builder_build(sb));
+    } elif (_pc_fn_is("Color::to_css") == 1) {
+        var c2 = _par_color(0);
+        _pc_put_sstr(out, c2.to_css());
+    } elif (_pc_fn_is("Color::to_json") == 1) {
+        var c3 = _par_color(0);
+        c3.to_json(sb);
+        _pc_put_sstr(out, str_builder_build(sb));
+    } elif (_pc_fn_is("Color::from_json") == 1) {
+        var s8 = _pc_tok_s(2, 0, &n);
+        var col: SlColor = SlColor_default();
+        var t8, v8 = SlColor_from_json(s8, n, &col);
+        if (is_err_result(t8) == 1) { _pc_put_raw(out, "E:serde"); } else { _par_put_color(out, col); }
+    } elif (_pc_fn_is("RedactionTarget::fmt") == 1) {
+        var tg = _par_target();
+        tg.fmt(sb);
+        _pc_put_sstr(out, str_builder_build(sb));
+    } elif (_pc_fn_is("RedactionTarget::key") == 1) {
+        var tg2 = _par_target();
+        var ky = tg2.key();
+        _pc_put_s(out, ky, strlen(ky));
+    } elif (_pc_fn_is("RedactionTarget::to_json") == 1) {
+        var tg3 = _par_target();
+        tg3.to_json(sb);
+        _pc_put_sstr(out, str_builder_build(sb));
+    } elif (_pc_fn_is("RedactionTarget::from_json") == 1) {
+        var s9 = _pc_tok_s(2, 0, &n);
+        var tgt: SlRedactionTarget = SlRedactionTarget_new(0, 0);
+        var t9, v9 = SlRedactionTarget_from_json(s9, n, &tgt);
+        if (is_err_result(t9) == 1) { _pc_put_raw(out, "E:serde"); } else { _par_put_target(out, tgt); }
+    } elif (_pc_fn_is("CaptureSource::fmt") == 1) {
+        var src: SlCaptureSource;
+        src.kind = SL_SOURCE_FULL_SCREEN;
+        src.window = 0;
+        src.region = SlRect_default();
+        if (_par_tok_is(2, 0, "e:CaptureSource.Window") == 1) {
+            src.kind = SL_SOURCE_WINDOW;
+            var wp = _pc_tok_s(2, 1, &n);
+            src.window = str_new(wp, n);
+        } elif (_par_tok_is(2, 0, "e:CaptureSource.Region") == 1) {
+            src.kind = SL_SOURCE_REGION;
+            src.region = _par_rect(1);
+        }
+        src.fmt(sb);
+        _pc_put_sstr(out, str_builder_build(sb));
+    } elif (_pc_fn_is("Annotation::to_json") == 1) {
+        var a: *SlAnnotation = _sl_as_annotation(alloc(sizeof(SlAnnotation)));
+        var hp = 0;
+        var hn = 0;
+        _pc_tok(2, 0, &hp, &hn);
+        var hi = 0;
+        while (hi < 16) {
+            store8(_sl_addr(a) + hi, _pc_hex(hp + 2 + hi * 2, 2));
+            hi = hi + 1;
+        }
+        a.kind = _par_enum(1, "e:AnnotationKind.", &_par_kind_name, SL_KIND_FREEFORM);
+        var lay: SlRect = SlRect_default();
+        store32(_sl_addr(&lay), _pc_tok_num(2, 2));
+        store32(_sl_addr(&lay) + 4, _pc_tok_num(2, 3));
+        store32(_sl_addr(&lay) + 8, _pc_tok_num(2, 4));
+        store32(_sl_addr(&lay) + 12, _pc_tok_num(2, 5));
+        a.position = lay;
+        a.color = _par_color(6);
+        a.text = 0;
+        if (_par_tok_is(2, 10, "N") == 0) {
+            var tp = _pc_tok_s(2, 10, &n);
+            a.text = str_new(tp, n);
+        }
+        SlAnnotation_to_json(a, sb);
+        _pc_put_sstr(out, str_builder_build(sb));
+    } elif (_pc_fn_is("Annotation::from_json") == 1) {
+        var s10 = _pc_tok_s(2, 0, &n);
+        var t10, a10 = SlAnnotation_from_json(s10, n);
+        if (is_err_result(t10) == 1) { _pc_put_raw(out, "E:serde"); } else { _par_put_annotation(out, a10); }
+    } else {
+        return _pc_record(PC_PENDING, "no dispatcher");
+    }
+    return _pc_check(str_builder_build(out));
+}
+
+# ---------------------------------------------------------------- uuid, rfc3339
+
+fn _par_uuid_row(): i64 {
+    var out = str_builder_new();
+    var sb = str_builder_new();
+    var n = 0;
+    if (_pc_fn_is("Uuid::from_json") == 1) {
+        var doc = _pc_tok_s(2, 0, &n);
+        var s = _sl_json_as_str(_sl_json_parse(doc, n));
+        var b: u8[16];
+        if (s == 0 || _sl_uuid_parse(str_data(s), str_len(s), &b) == 0) { _pc_put_raw(out, "E:serde"); }
+        else { _pc_put_h(out, &b, 16); }
+        return _pc_check(str_builder_build(out));
+    }
+    var hp = 0;
+    var hn = 0;
+    _pc_tok(2, 0, &hp, &hn);
+    var id: u8[16];
+    var i = 0;
+    while (i < 16) {
+        store8(&id + i, _pc_hex(hp + 2 + i * 2, 2));
+        i = i + 1;
+    }
+    if (_pc_fn_is("Uuid::fmt") == 1) { _sl_uuid_fmt(sb, &id, 1); }
+    elif (_pc_fn_is("Uuid::simple") == 1) { _sl_uuid_fmt(sb, &id, 0); }
+    elif (_pc_fn_is("Uuid::to_json") == 1) {
+        str_builder_putc(sb, 34);
+        _sl_uuid_fmt(sb, &id, 1);
+        str_builder_putc(sb, 34);
+    } else {
+        return _pc_record(PC_PENDING, "no dispatcher");
+    }
+    _pc_put_sstr(out, str_builder_build(sb));
+    return _pc_check(str_builder_build(out));
+}
+
+fn _par_rfc3339_row(): i64 {
+    var out = str_builder_new();
+    if (_pc_fn_is("DateTime::to_json") == 1) {
+        var sb = str_builder_new();
+        str_builder_putc(sb, 34);
+        _sl_rfc3339_fmt(sb, _pc_tok_num(2, 0), _pc_tok_num(2, 1));
+        str_builder_putc(sb, 34);
+        _pc_put_sstr(out, str_builder_build(sb));
+    } elif (_pc_fn_is("DateTime::from_json") == 1) {
+        var n = 0;
+        var doc = _pc_tok_s(2, 0, &n);
+        var s = _sl_json_as_str(_sl_json_parse(doc, n));
+        var secs = 0;
+        var nanos = 0;
+        if (s == 0 || _sl_rfc3339_parse(str_data(s), str_len(s), &secs, &nanos) == 0) { _pc_put_raw(out, "E:serde"); }
+        else {
+            _pc_put_i(out, secs);
+            _pc_sp(out);
+            _pc_put_i(out, nanos);
+        }
+    } else {
+        return _pc_record(PC_PENDING, "no dispatcher");
+    }
+    return _pc_check(str_builder_build(out));
+}
+
 # ---------------------------------------------------------------- driver
 
 # Replay one module's .tsv. Returns 1 when the module failed.
@@ -193,19 +634,29 @@ fn _par_module(name, n): i64 {
         _pc_s("] FAILED: the golden file is missing\n");
         return 1;
     }
-    var is_decode = 0;
-    if (n == 6 && memeq(name, "decode", 6) == 1) { is_decode = 1; _pc_print_limit = 1000; }
+    var which = 0;
+    if (n == 6 && memeq(name, "decode", 6) == 1) { which = 1; _pc_print_limit = 1000; }
+    elif (n == 5 && memeq(name, "error", 5) == 1) { which = 2; }
+    elif (n == 4 && memeq(name, "fmtf", 4) == 1) { which = 3; }
+    elif (n == 8 && memeq(name, "geometry", 8) == 1) { which = 4; }
+    elif (n == 4 && memeq(name, "core", 4) == 1) { which = 5; }
+    elif (n == 4 && memeq(name, "uuid", 4) == 1) { which = 6; }
+    elif (n == 7 && memeq(name, "rfc3339", 7) == 1) { which = 7; }
+    if (which != 1) { _pc_print_limit = 10; }
     var pos = 0;
     while (pos < len) {
         var e = _pc_find(tsv, pos, len, 10);
         var ln = e - pos;
         if (ln > 0 && load8(tsv + pos) != 35) {
             _pc_split(tsv + pos, ln);
-            if (is_decode == 1 && _pc_f[1] == 6 && memeq(_pc_f[0], "decode", 6) == 1) {
-                _par_decode_row();
-            } else {
-                _pc_record(PC_PENDING, "no dispatcher");
-            }
+            if (which == 1 && _pc_fn_is("decode") == 1) { _par_decode_row(); }
+            elif (which == 2) { _par_error_row(); }
+            elif (which == 3) { _par_fmtf_row(); }
+            elif (which == 4) { _par_geometry_row(); }
+            elif (which == 5) { _par_core_row(); }
+            elif (which == 6) { _par_uuid_row(); }
+            elif (which == 7) { _par_rfc3339_row(); }
+            else { _pc_record(PC_PENDING, "no dispatcher"); }
         }
         pos = e + 1;
     }

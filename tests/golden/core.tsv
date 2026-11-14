@@ -1,0 +1,1336 @@
+# format 1 · module core
+# oracle: selah 0.30.0 (rust-old/, tag 0.30.0), image 0.25.10, png 0.18.1, zune-jpeg 0.5.15, image-webp 0.2.4
+# regenerate: cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml
+# columns: fn<TAB>class<TAB>inputs<TAB>outputs<TAB>note · enum values as e:<Enum>.<Variant>; a refusal as E:<variant> s:<message>; N is None
+# rows: 1331
+AnnotationKind::fmt	A	e:AnnotationKind.Arrow	s:arrow	
+AnnotationKind::to_json	A	e:AnnotationKind.Arrow	s:"Arrow"	
+AnnotationKind::fmt	A	e:AnnotationKind.Rectangle	s:rectangle	
+AnnotationKind::to_json	A	e:AnnotationKind.Rectangle	s:"Rectangle"	
+AnnotationKind::fmt	A	e:AnnotationKind.Circle	s:circle	
+AnnotationKind::to_json	A	e:AnnotationKind.Circle	s:"Circle"	
+AnnotationKind::fmt	A	e:AnnotationKind.Text	s:text	
+AnnotationKind::to_json	A	e:AnnotationKind.Text	s:"Text"	
+AnnotationKind::fmt	A	e:AnnotationKind.Highlight	s:highlight	
+AnnotationKind::to_json	A	e:AnnotationKind.Highlight	s:"Highlight"	
+AnnotationKind::fmt	A	e:AnnotationKind.Redaction	s:redaction	
+AnnotationKind::to_json	A	e:AnnotationKind.Redaction	s:"Redaction"	
+AnnotationKind::fmt	A	e:AnnotationKind.FreeForm	s:freeform	
+AnnotationKind::to_json	A	e:AnnotationKind.FreeForm	s:"FreeForm"	
+AnnotationKind::from_str	A	s:arrow	e:AnnotationKind.Arrow	
+AnnotationKind::from_str	A	s:rectangle	e:AnnotationKind.Rectangle	
+AnnotationKind::from_str	A	s:rect	e:AnnotationKind.Rectangle	
+AnnotationKind::from_str	A	s:circle	e:AnnotationKind.Circle	
+AnnotationKind::from_str	A	s:ellipse	e:AnnotationKind.Circle	
+AnnotationKind::from_str	A	s:text	e:AnnotationKind.Text	
+AnnotationKind::from_str	A	s:highlight	e:AnnotationKind.Highlight	
+AnnotationKind::from_str	A	s:redaction	e:AnnotationKind.Redaction	
+AnnotationKind::from_str	A	s:redact	e:AnnotationKind.Redaction	
+AnnotationKind::from_str	A	s:freeform	e:AnnotationKind.FreeForm	
+AnnotationKind::from_str	A	s:free_form	e:AnnotationKind.FreeForm	
+AnnotationKind::from_str	A	s:free-form	e:AnnotationKind.FreeForm	
+AnnotationKind::from_str	A	s:ARROW	e:AnnotationKind.Arrow	
+AnnotationKind::from_str	A	s:ReCt	e:AnnotationKind.Rectangle	
+AnnotationKind::from_str	A	s:FreeForm	e:AnnotationKind.FreeForm	
+AnnotationKind::from_str	A	s:FREE-FORM	e:AnnotationKind.FreeForm	
+AnnotationKind::from_str	A	s:Ellipse	e:AnnotationKind.Circle	
+AnnotationKind::from_str	A	s:	E:AnnotationError s:unknown\sannotation\skind\s""\s(use\sarrow,\srectangle,\scircle,\stext,\shighlight,\sredaction,\sor\sfreeform)	
+AnnotationKind::from_str	A	s:\sarrow	E:AnnotationError s:unknown\sannotation\skind\s"\sarrow"\s(use\sarrow,\srectangle,\scircle,\stext,\shighlight,\sredaction,\sor\sfreeform)	
+AnnotationKind::from_str	A	s:arrow\s	E:AnnotationError s:unknown\sannotation\skind\s"arrow\s"\s(use\sarrow,\srectangle,\scircle,\stext,\shighlight,\sredaction,\sor\sfreeform)	
+AnnotationKind::from_str	A	s:free\sform	E:AnnotationError s:unknown\sannotation\skind\s"free\sform"\s(use\sarrow,\srectangle,\scircle,\stext,\shighlight,\sredaction,\sor\sfreeform)	
+AnnotationKind::from_str	A	s:line	E:AnnotationError s:unknown\sannotation\skind\s"line"\s(use\sarrow,\srectangle,\scircle,\stext,\shighlight,\sredaction,\sor\sfreeform)	
+AnnotationKind::from_str	A	s:squiggle"q	E:AnnotationError s:unknown\sannotation\skind\s"squiggle\\"q"\s(use\sarrow,\srectangle,\scircle,\stext,\shighlight,\sredaction,\sor\sfreeform)	
+AnnotationKind::from_str	A	s:tab\there	E:AnnotationError s:unknown\sannotation\skind\s"tab\\there"\s(use\sarrow,\srectangle,\scircle,\stext,\shighlight,\sredaction,\sor\sfreeform)	
+AnnotationKind::from_str	A	s:nl\nx	E:AnnotationError s:unknown\sannotation\skind\s"nl\\nx"\s(use\sarrow,\srectangle,\scircle,\stext,\shighlight,\sredaction,\sor\sfreeform)	
+AnnotationKind::from_str	A	s:back\\slash	E:AnnotationError s:unknown\sannotation\skind\s"back\\\\slash"\s(use\sarrow,\srectangle,\scircle,\stext,\shighlight,\sredaction,\sor\sfreeform)	
+AnnotationKind::from_str	A	s:nul\x00x	E:AnnotationError s:unknown\sannotation\skind\s"nul\\0x"\s(use\sarrow,\srectangle,\scircle,\stext,\shighlight,\sredaction,\sor\sfreeform)	
+AnnotationKind::from_str	A	s:esc\x1Bx	E:AnnotationError s:unknown\sannotation\skind\s"esc\\u{1b}x"\s(use\sarrow,\srectangle,\scircle,\stext,\shighlight,\sredaction,\sor\sfreeform)	
+AnnotationKind::from_str	A	s:del\x7Fx	E:AnnotationError s:unknown\sannotation\skind\s"del\\u{7f}x"\s(use\sarrow,\srectangle,\scircle,\stext,\shighlight,\sredaction,\sor\sfreeform)	
+AnnotationKind::from_str	A	s:über	E:AnnotationError s:unknown\sannotation\skind\s"über"\s(use\sarrow,\srectangle,\scircle,\stext,\shighlight,\sredaction,\sor\sfreeform)	
+AnnotationKind::from_str	A	s:ARROWß	E:AnnotationError s:unknown\sannotation\skind\s"arrowß"\s(use\sarrow,\srectangle,\scircle,\stext,\shighlight,\sredaction,\sor\sfreeform)	
+AnnotationKind::from_str	A	s:émoji😀	E:AnnotationError s:unknown\sannotation\skind\s"émoji😀"\s(use\sarrow,\srectangle,\scircle,\stext,\shighlight,\sredaction,\sor\sfreeform)	
+AnnotationKind::from_json	A	s:"Arrow"	e:AnnotationKind.Arrow	
+AnnotationKind::from_json	A	s:"FreeForm"	e:AnnotationKind.FreeForm	
+AnnotationKind::from_json	A	s:"arrow"	E:serde s:unknown\svariant\s`arrow`,\sexpected\sone\sof\s`Arrow`,\s`Rectangle`,\s`Circle`,\s`Text`,\s`Highlight`,\s`Redaction`,\s`FreeForm`\sat\sline\s1\scolumn\s7	
+AnnotationKind::from_json	A	s:"Rect"	E:serde s:unknown\svariant\s`Rect`,\sexpected\sone\sof\s`Arrow`,\s`Rectangle`,\s`Circle`,\s`Text`,\s`Highlight`,\s`Redaction`,\s`FreeForm`\sat\sline\s1\scolumn\s6	
+AnnotationKind::from_json	A	s:3	E:serde s:expected\svalue\sat\sline\s1\scolumn\s1	
+AnnotationKind::from_json	A	s:null	E:serde s:expected\svalue\sat\sline\s1\scolumn\s1	
+AnnotationKind::from_json	A	s:{"Arrow":null}	e:AnnotationKind.Arrow	
+ImageFormat::extension	A	e:ImageFormat.Png	s:png	
+ImageFormat::mime_type	A	e:ImageFormat.Png	s:image/png	
+ImageFormat::fmt	A	e:ImageFormat.Png	s:png	
+ImageFormat::to_json	A	e:ImageFormat.Png	s:"Png"	
+ImageFormat::extension	A	e:ImageFormat.Jpeg	s:jpg	
+ImageFormat::mime_type	A	e:ImageFormat.Jpeg	s:image/jpeg	
+ImageFormat::fmt	A	e:ImageFormat.Jpeg	s:jpg	
+ImageFormat::to_json	A	e:ImageFormat.Jpeg	s:"Jpeg"	
+ImageFormat::extension	A	e:ImageFormat.Bmp	s:bmp	
+ImageFormat::mime_type	A	e:ImageFormat.Bmp	s:image/bmp	
+ImageFormat::fmt	A	e:ImageFormat.Bmp	s:bmp	
+ImageFormat::to_json	A	e:ImageFormat.Bmp	s:"Bmp"	
+ImageFormat::extension	A	e:ImageFormat.WebP	s:webp	
+ImageFormat::mime_type	A	e:ImageFormat.WebP	s:image/webp	
+ImageFormat::fmt	A	e:ImageFormat.WebP	s:webp	
+ImageFormat::to_json	A	e:ImageFormat.WebP	s:"WebP"	
+ImageFormat::from_str	A	s:png	e:ImageFormat.Png	
+ImageFormat::from_str	A	s:PNG	e:ImageFormat.Png	
+ImageFormat::from_str	A	s:Png	e:ImageFormat.Png	
+ImageFormat::from_str	A	s:jpg	e:ImageFormat.Jpeg	
+ImageFormat::from_str	A	s:JPG	e:ImageFormat.Jpeg	
+ImageFormat::from_str	A	s:jpeg	e:ImageFormat.Jpeg	
+ImageFormat::from_str	A	s:JPEG	e:ImageFormat.Jpeg	
+ImageFormat::from_str	A	s:Jpeg	e:ImageFormat.Jpeg	
+ImageFormat::from_str	A	s:bmp	e:ImageFormat.Bmp	
+ImageFormat::from_str	A	s:BMP	e:ImageFormat.Bmp	
+ImageFormat::from_str	A	s:webp	e:ImageFormat.WebP	
+ImageFormat::from_str	A	s:WEBP	e:ImageFormat.WebP	
+ImageFormat::from_str	A	s:WebP	e:ImageFormat.WebP	
+ImageFormat::from_str	A	s:gif	E:UnsupportedFormat s:gif\s(use\spng,\sjpg,\sbmp,\sor\swebp)	
+ImageFormat::from_str	A	s:	E:UnsupportedFormat s:\s(use\spng,\sjpg,\sbmp,\sor\swebp)	
+ImageFormat::from_str	A	s:tiff	E:UnsupportedFormat s:tiff\s(use\spng,\sjpg,\sbmp,\sor\swebp)	
+ImageFormat::from_str	A	s:\spng	E:UnsupportedFormat s:\spng\s(use\spng,\sjpg,\sbmp,\sor\swebp)	
+ImageFormat::from_str	A	s:png\s	E:UnsupportedFormat s:png\s\s(use\spng,\sjpg,\sbmp,\sor\swebp)	
+ImageFormat::from_str	A	s:pn	E:UnsupportedFormat s:pn\s(use\spng,\sjpg,\sbmp,\sor\swebp)	
+ImageFormat::from_str	A	s:jpe	E:UnsupportedFormat s:jpe\s(use\spng,\sjpg,\sbmp,\sor\swebp)	
+ImageFormat::from_path	A	s:a.png	e:ImageFormat.Png	
+ImageFormat::from_path	A	s:a.PNG	e:ImageFormat.Png	
+ImageFormat::from_path	A	s:shot.jpeg	e:ImageFormat.Jpeg	
+ImageFormat::from_path	A	s:shot.jpg	e:ImageFormat.Jpeg	
+ImageFormat::from_path	A	s:s.Jpg	e:ImageFormat.Jpeg	
+ImageFormat::from_path	A	s:b.bmp	e:ImageFormat.Bmp	
+ImageFormat::from_path	A	s:w.webp	e:ImageFormat.WebP	
+ImageFormat::from_path	A	s:w.WEBP	e:ImageFormat.WebP	
+ImageFormat::from_path	A	s:a.gif	N	
+ImageFormat::from_path	A	s:a	N	
+ImageFormat::from_path	A	s:a.tar.png	e:ImageFormat.Png	
+ImageFormat::from_path	A	s:.png	N	
+ImageFormat::from_path	A	s:..png	e:ImageFormat.Png	
+ImageFormat::from_path	A	s:dir.png/file	N	
+ImageFormat::from_path	A	s:a.png/	e:ImageFormat.Png	
+ImageFormat::from_path	A	s:	N	
+ImageFormat::from_path	A	s:/	N	
+ImageFormat::from_path	A	s:a.	N	
+ImageFormat::from_path	A	s:dir/a.bmp	e:ImageFormat.Bmp	
+ImageFormat::from_path	A	s:/abs/x/y.jpeg	e:ImageFormat.Jpeg	
+ImageFormat::from_path	A	s:./rel.png	e:ImageFormat.Png	
+ImageFormat::from_path	A	s:a.png.	N	
+ImageFormat::from_path	A	s:a\s.png	e:ImageFormat.Png	
+ImageFormat::from_path	A	s:über.png	e:ImageFormat.Png	
+ImageFormat::from_path	A	s:a\\b.png	e:ImageFormat.Png	
+ImageFormat::from_json	A	s:"Png"	e:ImageFormat.Png	
+ImageFormat::from_json	A	s:"WebP"	e:ImageFormat.WebP	
+ImageFormat::from_json	A	s:"png"	E:serde s:unknown\svariant\s`png`,\sexpected\sone\sof\s`Png`,\s`Jpeg`,\s`Bmp`,\s`WebP`\sat\sline\s1\scolumn\s5	
+ImageFormat::from_json	A	s:"Webp"	E:serde s:unknown\svariant\s`Webp`,\sexpected\sone\sof\s`Png`,\s`Jpeg`,\s`Bmp`,\s`WebP`\sat\sline\s1\scolumn\s6	
+ImageFormat::from_json	A	s:0	E:serde s:expected\svalue\sat\sline\s1\scolumn\s1	
+xml_escape	A	s:\x00	s:	
+xml_escape	A	s:\x01	s:	
+xml_escape	A	s:\x02	s:	
+xml_escape	A	s:\x03	s:	
+xml_escape	A	s:\x04	s:	
+xml_escape	A	s:\x05	s:	
+xml_escape	A	s:\x06	s:	
+xml_escape	A	s:\x07	s:	
+xml_escape	A	s:\x08	s:	
+xml_escape	A	s:\t	s:\t	
+xml_escape	A	s:\n	s:\n	
+xml_escape	A	s:\x0B	s:	
+xml_escape	A	s:\x0C	s:	
+xml_escape	A	s:\r	s:\r	
+xml_escape	A	s:\x0E	s:	
+xml_escape	A	s:\x0F	s:	
+xml_escape	A	s:\x10	s:	
+xml_escape	A	s:\x11	s:	
+xml_escape	A	s:\x12	s:	
+xml_escape	A	s:\x13	s:	
+xml_escape	A	s:\x14	s:	
+xml_escape	A	s:\x15	s:	
+xml_escape	A	s:\x16	s:	
+xml_escape	A	s:\x17	s:	
+xml_escape	A	s:\x18	s:	
+xml_escape	A	s:\x19	s:	
+xml_escape	A	s:\x1A	s:	
+xml_escape	A	s:\x1B	s:	
+xml_escape	A	s:\x1C	s:	
+xml_escape	A	s:\x1D	s:	
+xml_escape	A	s:\x1E	s:	
+xml_escape	A	s:\x1F	s:	
+xml_escape	A	s:\s	s:\s	
+xml_escape	A	s:!	s:!	
+xml_escape	A	s:"	s:&quot;	
+xml_escape	A	s:#	s:#	
+xml_escape	A	s:$	s:$	
+xml_escape	A	s:%	s:%	
+xml_escape	A	s:&	s:&amp;	
+xml_escape	A	s:'	s:&#x27;	
+xml_escape	A	s:(	s:(	
+xml_escape	A	s:)	s:)	
+xml_escape	A	s:*	s:*	
+xml_escape	A	s:+	s:+	
+xml_escape	A	s:,	s:,	
+xml_escape	A	s:-	s:-	
+xml_escape	A	s:.	s:.	
+xml_escape	A	s:/	s:/	
+xml_escape	A	s:0	s:0	
+xml_escape	A	s:1	s:1	
+xml_escape	A	s:2	s:2	
+xml_escape	A	s:3	s:3	
+xml_escape	A	s:4	s:4	
+xml_escape	A	s:5	s:5	
+xml_escape	A	s:6	s:6	
+xml_escape	A	s:7	s:7	
+xml_escape	A	s:8	s:8	
+xml_escape	A	s:9	s:9	
+xml_escape	A	s::	s::	
+xml_escape	A	s:;	s:;	
+xml_escape	A	s:<	s:&lt;	
+xml_escape	A	s:=	s:=	
+xml_escape	A	s:>	s:&gt;	
+xml_escape	A	s:?	s:?	
+xml_escape	A	s:@	s:@	
+xml_escape	A	s:A	s:A	
+xml_escape	A	s:B	s:B	
+xml_escape	A	s:C	s:C	
+xml_escape	A	s:D	s:D	
+xml_escape	A	s:E	s:E	
+xml_escape	A	s:F	s:F	
+xml_escape	A	s:G	s:G	
+xml_escape	A	s:H	s:H	
+xml_escape	A	s:I	s:I	
+xml_escape	A	s:J	s:J	
+xml_escape	A	s:K	s:K	
+xml_escape	A	s:L	s:L	
+xml_escape	A	s:M	s:M	
+xml_escape	A	s:N	s:N	
+xml_escape	A	s:O	s:O	
+xml_escape	A	s:P	s:P	
+xml_escape	A	s:Q	s:Q	
+xml_escape	A	s:R	s:R	
+xml_escape	A	s:S	s:S	
+xml_escape	A	s:T	s:T	
+xml_escape	A	s:U	s:U	
+xml_escape	A	s:V	s:V	
+xml_escape	A	s:W	s:W	
+xml_escape	A	s:X	s:X	
+xml_escape	A	s:Y	s:Y	
+xml_escape	A	s:Z	s:Z	
+xml_escape	A	s:[	s:[	
+xml_escape	A	s:\\	s:\\	
+xml_escape	A	s:]	s:]	
+xml_escape	A	s:^	s:^	
+xml_escape	A	s:_	s:_	
+xml_escape	A	s:`	s:`	
+xml_escape	A	s:a	s:a	
+xml_escape	A	s:b	s:b	
+xml_escape	A	s:c	s:c	
+xml_escape	A	s:d	s:d	
+xml_escape	A	s:e	s:e	
+xml_escape	A	s:f	s:f	
+xml_escape	A	s:g	s:g	
+xml_escape	A	s:h	s:h	
+xml_escape	A	s:i	s:i	
+xml_escape	A	s:j	s:j	
+xml_escape	A	s:k	s:k	
+xml_escape	A	s:l	s:l	
+xml_escape	A	s:m	s:m	
+xml_escape	A	s:n	s:n	
+xml_escape	A	s:o	s:o	
+xml_escape	A	s:p	s:p	
+xml_escape	A	s:q	s:q	
+xml_escape	A	s:r	s:r	
+xml_escape	A	s:s	s:s	
+xml_escape	A	s:t	s:t	
+xml_escape	A	s:u	s:u	
+xml_escape	A	s:v	s:v	
+xml_escape	A	s:w	s:w	
+xml_escape	A	s:x	s:x	
+xml_escape	A	s:y	s:y	
+xml_escape	A	s:z	s:z	
+xml_escape	A	s:{	s:{	
+xml_escape	A	s:|	s:|	
+xml_escape	A	s:}	s:}	
+xml_escape	A	s:~	s:~	
+xml_escape	A	s:\x7F	s:\x7F	
+xml_escape	A	s:	s:	
+xml_escape	A	s:plain\stext	s:plain\stext	
+xml_escape	A	s:a\s&\sb\s<\sc\s>\sd\s"e"\s'f'	s:a\s&amp;\sb\s&lt;\sc\s&gt;\sd\s&quot;e&quot;\s&#x27;f&#x27;	
+xml_escape	A	s:<script>alert('x')</script>	s:&lt;script&gt;alert(&#x27;x&#x27;)&lt;/script&gt;	
+xml_escape	A	s:tab\tnl\ncr\r	s:tab\tnl\ncr\r	
+xml_escape	A	s:￾	s:	
+xml_escape	A	s:￿	s:	
+xml_escape	A	s:�	s:�	
+xml_escape	A	s:﻿bom	s:﻿bom	
+xml_escape	A	s:ﬁligature	s:ﬁligature	
+xml_escape	A	s:	s:	
+xml_escape	A	s:	s:	
+xml_escape	A	s:x￾y￿z	s:xyz	
+xml_escape	A	s:é中😀	s:é中😀	
+xml_escape	A	s:&amp;	s:&amp;amp;	
+xml_escape	A	s:&#x27;	s:&amp;#x27;	
+xml_escape	A	s:\x00\x01\x1F\x7F	s:\x7F	
+xml_escape	A	s:ends\swith\s&	s:ends\swith\s&amp;	
+xml_escape	A	s:<<>>	s:&lt;&lt;&gt;&gt;	
+xml_escape	A	s:mix\x01ed￿<é>﻿	s:mixed&lt;é&gt;﻿	
+xml_escape	A	s:long\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\slong\s&\stext\s	s:long\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\slong\s&amp;\stext\s	
+derive_output_path	A	s:a.png s:annotated	s:a_annotated.png	
+derive_output_path	A	s:a.png s:redacted	s:a_redacted.png	
+derive_output_path	A	s:a.png s:	s:a_.png	
+derive_output_path	A	s:dir/a.png s:annotated	s:a_annotated.png	
+derive_output_path	A	s:dir/a.png s:redacted	s:a_redacted.png	
+derive_output_path	A	s:dir/a.png s:	s:a_.png	
+derive_output_path	A	s:/abs/dir/file.tar.gz s:annotated	s:file.tar_annotated.gz	
+derive_output_path	A	s:/abs/dir/file.tar.gz s:redacted	s:file.tar_redacted.gz	
+derive_output_path	A	s:/abs/dir/file.tar.gz s:	s:file.tar_.gz	
+derive_output_path	A	s:noext s:annotated	s:noext_annotated	
+derive_output_path	A	s:noext s:redacted	s:noext_redacted	
+derive_output_path	A	s:noext s:	s:noext_	
+derive_output_path	A	s:.hidden s:annotated	s:.hidden_annotated	
+derive_output_path	A	s:.hidden s:redacted	s:.hidden_redacted	
+derive_output_path	A	s:.hidden s:	s:.hidden_	
+derive_output_path	A	s:dir/.hidden s:annotated	s:.hidden_annotated	
+derive_output_path	A	s:dir/.hidden s:redacted	s:.hidden_redacted	
+derive_output_path	A	s:dir/.hidden s:	s:.hidden_	
+derive_output_path	A	s:a. s:annotated	s:a_annotated	
+derive_output_path	A	s:a. s:redacted	s:a_redacted	
+derive_output_path	A	s:a. s:	s:a_	
+derive_output_path	A	s:dir/ s:annotated	s:dir_annotated	
+derive_output_path	A	s:dir/ s:redacted	s:dir_redacted	
+derive_output_path	A	s:dir/ s:	s:dir_	
+derive_output_path	A	s: s:annotated	s:_annotated	
+derive_output_path	A	s: s:redacted	s:_redacted	
+derive_output_path	A	s: s:	s:_	
+derive_output_path	A	s:a/b/ s:annotated	s:b_annotated	
+derive_output_path	A	s:a/b/ s:redacted	s:b_redacted	
+derive_output_path	A	s:a/b/ s:	s:b_	
+derive_output_path	A	s:.. s:annotated	s:_annotated	
+derive_output_path	A	s:.. s:redacted	s:_redacted	
+derive_output_path	A	s:.. s:	s:_	
+derive_output_path	A	s:. s:annotated	s:_annotated	
+derive_output_path	A	s:. s:redacted	s:_redacted	
+derive_output_path	A	s:. s:	s:_	
+derive_output_path	A	s:a..b s:annotated	s:a._annotated.b	
+derive_output_path	A	s:a..b s:redacted	s:a._redacted.b	
+derive_output_path	A	s:a..b s:	s:a._.b	
+derive_output_path	A	s:x.PNG s:annotated	s:x_annotated.PNG	
+derive_output_path	A	s:x.PNG s:redacted	s:x_redacted.PNG	
+derive_output_path	A	s:x.PNG s:	s:x_.PNG	
+derive_output_path	A	s:über/naïve.jpeg s:annotated	s:naïve_annotated.jpeg	
+derive_output_path	A	s:über/naïve.jpeg s:redacted	s:naïve_redacted.jpeg	
+derive_output_path	A	s:über/naïve.jpeg s:	s:naïve_.jpeg	
+derive_output_path	A	s:/ s:annotated	s:_annotated	
+derive_output_path	A	s:/ s:redacted	s:_redacted	
+derive_output_path	A	s:/ s:	s:_	
+derive_output_path	A	s:a.png/ s:annotated	s:a_annotated.png	
+derive_output_path	A	s:a.png/ s:redacted	s:a_redacted.png	
+derive_output_path	A	s:a.png/ s:	s:a_.png	
+derive_output_path	A	s:./b.bmp s:annotated	s:b_annotated.bmp	
+derive_output_path	A	s:./b.bmp s:redacted	s:b_redacted.bmp	
+derive_output_path	A	s:./b.bmp s:	s:b_.bmp	
+derive_output_path	A	s:c:\\win\\d.png s:annotated	s:c:\\win\\d_annotated.png	
+derive_output_path	A	s:c:\\win\\d.png s:redacted	s:c:\\win\\d_redacted.png	
+derive_output_path	A	s:c:\\win\\d.png s:	s:c:\\win\\d_.png	
+Color::fmt	A	i:255 i:0 i:0 i:255	s:#ff0000ff	
+Color::to_css	A	i:255 i:0 i:0 i:255	s:rgba(255,0,0,1.00)	
+Color::to_json	A	i:255 i:0 i:0 i:255	s:{"r":255,"g":0,"b":0,"a":255}	
+Color::fmt	A	i:0 i:255 i:0 i:255	s:#00ff00ff	
+Color::to_css	A	i:0 i:255 i:0 i:255	s:rgba(0,255,0,1.00)	
+Color::to_json	A	i:0 i:255 i:0 i:255	s:{"r":0,"g":255,"b":0,"a":255}	
+Color::fmt	A	i:0 i:0 i:255 i:255	s:#0000ffff	
+Color::to_css	A	i:0 i:0 i:255 i:255	s:rgba(0,0,255,1.00)	
+Color::to_json	A	i:0 i:0 i:255 i:255	s:{"r":0,"g":0,"b":255,"a":255}	
+Color::fmt	A	i:0 i:0 i:0 i:255	s:#000000ff	
+Color::to_css	A	i:0 i:0 i:0 i:255	s:rgba(0,0,0,1.00)	
+Color::to_json	A	i:0 i:0 i:0 i:255	s:{"r":0,"g":0,"b":0,"a":255}	
+Color::fmt	A	i:255 i:255 i:255 i:255	s:#ffffffff	
+Color::to_css	A	i:255 i:255 i:255 i:255	s:rgba(255,255,255,1.00)	
+Color::to_json	A	i:255 i:255 i:255 i:255	s:{"r":255,"g":255,"b":255,"a":255}	
+Color::fmt	A	i:255 i:255 i:0 i:128	s:#ffff0080	
+Color::to_css	A	i:255 i:255 i:0 i:128	s:rgba(255,255,0,0.50)	
+Color::to_json	A	i:255 i:255 i:0 i:128	s:{"r":255,"g":255,"b":0,"a":128}	
+Color::fmt	A	i:0 i:0 i:0 i:0	s:#00000000	
+Color::to_css	A	i:0 i:0 i:0 i:0	s:rgba(0,0,0,0.00)	
+Color::to_json	A	i:0 i:0 i:0 i:0	s:{"r":0,"g":0,"b":0,"a":0}	
+Color::fmt	A	i:21 i:45 i:225 i:104	s:#152de168	
+Color::to_css	A	i:21 i:45 i:225 i:104	s:rgba(21,45,225,0.41)	
+Color::to_json	A	i:21 i:45 i:225 i:104	s:{"r":21,"g":45,"b":225,"a":104}	
+Color::fmt	A	i:15 i:10 i:199 i:125	s:#0f0ac77d	
+Color::to_css	A	i:15 i:10 i:199 i:125	s:rgba(15,10,199,0.49)	
+Color::to_json	A	i:15 i:10 i:199 i:125	s:{"r":15,"g":10,"b":199,"a":125}	
+Color::fmt	A	i:219 i:231 i:9 i:192	s:#dbe709c0	
+Color::to_css	A	i:219 i:231 i:9 i:192	s:rgba(219,231,9,0.75)	
+Color::to_json	A	i:219 i:231 i:9 i:192	s:{"r":219,"g":231,"b":9,"a":192}	
+Color::fmt	A	i:212 i:98 i:163 i:8	s:#d462a308	
+Color::to_css	A	i:212 i:98 i:163 i:8	s:rgba(212,98,163,0.03)	
+Color::to_json	A	i:212 i:98 i:163 i:8	s:{"r":212,"g":98,"b":163,"a":8}	
+Color::fmt	A	i:17 i:17 i:18 i:50	s:#11111232	
+Color::to_css	A	i:17 i:17 i:18 i:50	s:rgba(17,17,18,0.20)	
+Color::to_json	A	i:17 i:17 i:18 i:50	s:{"r":17,"g":17,"b":18,"a":50}	
+Color::fmt	A	i:115 i:81 i:54 i:116	s:#73513674	
+Color::to_css	A	i:115 i:81 i:54 i:116	s:rgba(115,81,54,0.45)	
+Color::to_json	A	i:115 i:81 i:54 i:116	s:{"r":115,"g":81,"b":54,"a":116}	
+Color::fmt	A	i:17 i:1 i:70 i:47	s:#1101462f	
+Color::to_css	A	i:17 i:1 i:70 i:47	s:rgba(17,1,70,0.18)	
+Color::to_json	A	i:17 i:1 i:70 i:47	s:{"r":17,"g":1,"b":70,"a":47}	
+Color::fmt	A	i:83 i:233 i:28 i:130	s:#53e91c82	
+Color::to_css	A	i:83 i:233 i:28 i:130	s:rgba(83,233,28,0.51)	
+Color::to_json	A	i:83 i:233 i:28 i:130	s:{"r":83,"g":233,"b":28,"a":130}	
+Color::fmt	A	i:65 i:228 i:138 i:51	s:#41e48a33	
+Color::to_css	A	i:65 i:228 i:138 i:51	s:rgba(65,228,138,0.20)	
+Color::to_json	A	i:65 i:228 i:138 i:51	s:{"r":65,"g":228,"b":138,"a":51}	
+Color::fmt	A	i:201 i:193 i:78 i:44	s:#c9c14e2c	
+Color::to_css	A	i:201 i:193 i:78 i:44	s:rgba(201,193,78,0.17)	
+Color::to_json	A	i:201 i:193 i:78 i:44	s:{"r":201,"g":193,"b":78,"a":44}	
+Color::fmt	A	i:10 i:14 i:139 i:249	s:#0a0e8bf9	
+Color::to_css	A	i:10 i:14 i:139 i:249	s:rgba(10,14,139,0.98)	
+Color::to_json	A	i:10 i:14 i:139 i:249	s:{"r":10,"g":14,"b":139,"a":249}	
+Color::fmt	A	i:150 i:218 i:86 i:156	s:#96da569c	
+Color::to_css	A	i:150 i:218 i:86 i:156	s:rgba(150,218,86,0.61)	
+Color::to_json	A	i:150 i:218 i:86 i:156	s:{"r":150,"g":218,"b":86,"a":156}	
+Color::fmt	A	i:163 i:18 i:204 i:206	s:#a312ccce	
+Color::to_css	A	i:163 i:18 i:204 i:206	s:rgba(163,18,204,0.81)	
+Color::to_json	A	i:163 i:18 i:204 i:206	s:{"r":163,"g":18,"b":204,"a":206}	
+Color::fmt	A	i:70 i:66 i:141 i:76	s:#46428d4c	
+Color::to_css	A	i:70 i:66 i:141 i:76	s:rgba(70,66,141,0.30)	
+Color::to_json	A	i:70 i:66 i:141 i:76	s:{"r":70,"g":66,"b":141,"a":76}	
+Color::fmt	A	i:66 i:9 i:136 i:3	s:#42098803	
+Color::to_css	A	i:66 i:9 i:136 i:3	s:rgba(66,9,136,0.01)	
+Color::to_json	A	i:66 i:9 i:136 i:3	s:{"r":66,"g":9,"b":136,"a":3}	
+Color::fmt	A	i:208 i:9 i:5 i:161	s:#d00905a1	
+Color::to_css	A	i:208 i:9 i:5 i:161	s:rgba(208,9,5,0.63)	
+Color::to_json	A	i:208 i:9 i:5 i:161	s:{"r":208,"g":9,"b":5,"a":161}	
+Color::fmt	A	i:195 i:119 i:185 i:121	s:#c377b979	
+Color::to_css	A	i:195 i:119 i:185 i:121	s:rgba(195,119,185,0.47)	
+Color::to_json	A	i:195 i:119 i:185 i:121	s:{"r":195,"g":119,"b":185,"a":121}	
+Color::fmt	A	i:236 i:149 i:55 i:170	s:#ec9537aa	
+Color::to_css	A	i:236 i:149 i:55 i:170	s:rgba(236,149,55,0.67)	
+Color::to_json	A	i:236 i:149 i:55 i:170	s:{"r":236,"g":149,"b":55,"a":170}	
+Color::fmt	A	i:199 i:1 i:181 i:39	s:#c701b527	
+Color::to_css	A	i:199 i:1 i:181 i:39	s:rgba(199,1,181,0.15)	
+Color::to_json	A	i:199 i:1 i:181 i:39	s:{"r":199,"g":1,"b":181,"a":39}	
+Color::fmt	A	i:4 i:250 i:138 i:156	s:#04fa8a9c	
+Color::to_css	A	i:4 i:250 i:138 i:156	s:rgba(4,250,138,0.61)	
+Color::to_json	A	i:4 i:250 i:138 i:156	s:{"r":4,"g":250,"b":138,"a":156}	
+Color::fmt	A	i:240 i:238 i:173 i:55	s:#f0eead37	
+Color::to_css	A	i:240 i:238 i:173 i:55	s:rgba(240,238,173,0.22)	
+Color::to_json	A	i:240 i:238 i:173 i:55	s:{"r":240,"g":238,"b":173,"a":55}	
+Color::fmt	A	i:45 i:9 i:61 i:1	s:#2d093d01	
+Color::to_css	A	i:45 i:9 i:61 i:1	s:rgba(45,9,61,0.00)	
+Color::to_json	A	i:45 i:9 i:61 i:1	s:{"r":45,"g":9,"b":61,"a":1}	
+Color::fmt	A	i:127 i:152 i:166 i:155	s:#7f98a69b	
+Color::to_css	A	i:127 i:152 i:166 i:155	s:rgba(127,152,166,0.61)	
+Color::to_json	A	i:127 i:152 i:166 i:155	s:{"r":127,"g":152,"b":166,"a":155}	
+Color::fmt	A	i:143 i:42 i:38 i:33	s:#8f2a2621	
+Color::to_css	A	i:143 i:42 i:38 i:33	s:rgba(143,42,38,0.13)	
+Color::to_json	A	i:143 i:42 i:38 i:33	s:{"r":143,"g":42,"b":38,"a":33}	
+Color::fmt	A	i:26 i:37 i:139 i:189	s:#1a258bbd	
+Color::to_css	A	i:26 i:37 i:139 i:189	s:rgba(26,37,139,0.74)	
+Color::to_json	A	i:26 i:37 i:139 i:189	s:{"r":26,"g":37,"b":139,"a":189}	
+Color::fmt	A	i:208 i:53 i:58 i:173	s:#d0353aad	
+Color::to_css	A	i:208 i:53 i:58 i:173	s:rgba(208,53,58,0.68)	
+Color::to_json	A	i:208 i:53 i:58 i:173	s:{"r":208,"g":53,"b":58,"a":173}	
+Color::fmt	A	i:187 i:53 i:33 i:167	s:#bb3521a7	
+Color::to_css	A	i:187 i:53 i:33 i:167	s:rgba(187,53,33,0.65)	
+Color::to_json	A	i:187 i:53 i:33 i:167	s:{"r":187,"g":53,"b":33,"a":167}	
+Color::fmt	A	i:16 i:121 i:181 i:64	s:#1079b540	
+Color::to_css	A	i:16 i:121 i:181 i:64	s:rgba(16,121,181,0.25)	
+Color::to_json	A	i:16 i:121 i:181 i:64	s:{"r":16,"g":121,"b":181,"a":64}	
+Color::fmt	A	i:226 i:87 i:140 i:151	s:#e2578c97	
+Color::to_css	A	i:226 i:87 i:140 i:151	s:rgba(226,87,140,0.59)	
+Color::to_json	A	i:226 i:87 i:140 i:151	s:{"r":226,"g":87,"b":140,"a":151}	
+Color::fmt	A	i:205 i:247 i:208 i:188	s:#cdf7d0bc	
+Color::to_css	A	i:205 i:247 i:208 i:188	s:rgba(205,247,208,0.74)	
+Color::to_json	A	i:205 i:247 i:208 i:188	s:{"r":205,"g":247,"b":208,"a":188}	
+Color::fmt	A	i:98 i:5 i:169 i:3	s:#6205a903	
+Color::to_css	A	i:98 i:5 i:169 i:3	s:rgba(98,5,169,0.01)	
+Color::to_json	A	i:98 i:5 i:169 i:3	s:{"r":98,"g":5,"b":169,"a":3}	
+Color::fmt	A	i:232 i:79 i:147 i:170	s:#e84f93aa	
+Color::to_css	A	i:232 i:79 i:147 i:170	s:rgba(232,79,147,0.67)	
+Color::to_json	A	i:232 i:79 i:147 i:170	s:{"r":232,"g":79,"b":147,"a":170}	
+Color::fmt	A	i:119 i:147 i:6 i:66	s:#77930642	
+Color::to_css	A	i:119 i:147 i:6 i:66	s:rgba(119,147,6,0.26)	
+Color::to_json	A	i:119 i:147 i:6 i:66	s:{"r":119,"g":147,"b":6,"a":66}	
+Color::fmt	A	i:145 i:163 i:106 i:28	s:#91a36a1c	
+Color::to_css	A	i:145 i:163 i:106 i:28	s:rgba(145,163,106,0.11)	
+Color::to_json	A	i:145 i:163 i:106 i:28	s:{"r":145,"g":163,"b":106,"a":28}	
+Color::fmt	A	i:150 i:178 i:164 i:115	s:#96b2a473	
+Color::to_css	A	i:150 i:178 i:164 i:115	s:rgba(150,178,164,0.45)	
+Color::to_json	A	i:150 i:178 i:164 i:115	s:{"r":150,"g":178,"b":164,"a":115}	
+Color::fmt	A	i:115 i:158 i:219 i:94	s:#739edb5e	
+Color::to_css	A	i:115 i:158 i:219 i:94	s:rgba(115,158,219,0.37)	
+Color::to_json	A	i:115 i:158 i:219 i:94	s:{"r":115,"g":158,"b":219,"a":94}	
+Color::fmt	A	i:143 i:213 i:81 i:136	s:#8fd55188	
+Color::to_css	A	i:143 i:213 i:81 i:136	s:rgba(143,213,81,0.53)	
+Color::to_json	A	i:143 i:213 i:81 i:136	s:{"r":143,"g":213,"b":81,"a":136}	
+Color::fmt	A	i:228 i:245 i:77 i:130	s:#e4f54d82	
+Color::to_css	A	i:228 i:245 i:77 i:130	s:rgba(228,245,77,0.51)	
+Color::to_json	A	i:228 i:245 i:77 i:130	s:{"r":228,"g":245,"b":77,"a":130}	
+Color::fmt	A	i:15 i:151 i:150 i:86	s:#0f979656	
+Color::to_css	A	i:15 i:151 i:150 i:86	s:rgba(15,151,150,0.34)	
+Color::to_json	A	i:15 i:151 i:150 i:86	s:{"r":15,"g":151,"b":150,"a":86}	
+Color::fmt	A	i:225 i:153 i:189 i:70	s:#e199bd46	
+Color::to_css	A	i:225 i:153 i:189 i:70	s:rgba(225,153,189,0.27)	
+Color::to_json	A	i:225 i:153 i:189 i:70	s:{"r":225,"g":153,"b":189,"a":70}	
+Color::fmt	A	i:12 i:34 i:56 i:0	s:#0c223800	
+Color::to_css	A	i:12 i:34 i:56 i:0	s:rgba(12,34,56,0.00)	
+Color::to_json	A	i:12 i:34 i:56 i:0	s:{"r":12,"g":34,"b":56,"a":0}	
+Color::fmt	A	i:12 i:34 i:56 i:1	s:#0c223801	
+Color::to_css	A	i:12 i:34 i:56 i:1	s:rgba(12,34,56,0.00)	
+Color::to_json	A	i:12 i:34 i:56 i:1	s:{"r":12,"g":34,"b":56,"a":1}	
+Color::fmt	A	i:12 i:34 i:56 i:2	s:#0c223802	
+Color::to_css	A	i:12 i:34 i:56 i:2	s:rgba(12,34,56,0.01)	
+Color::to_json	A	i:12 i:34 i:56 i:2	s:{"r":12,"g":34,"b":56,"a":2}	
+Color::fmt	A	i:12 i:34 i:56 i:3	s:#0c223803	
+Color::to_css	A	i:12 i:34 i:56 i:3	s:rgba(12,34,56,0.01)	
+Color::to_json	A	i:12 i:34 i:56 i:3	s:{"r":12,"g":34,"b":56,"a":3}	
+Color::fmt	A	i:12 i:34 i:56 i:4	s:#0c223804	
+Color::to_css	A	i:12 i:34 i:56 i:4	s:rgba(12,34,56,0.02)	
+Color::to_json	A	i:12 i:34 i:56 i:4	s:{"r":12,"g":34,"b":56,"a":4}	
+Color::fmt	A	i:12 i:34 i:56 i:5	s:#0c223805	
+Color::to_css	A	i:12 i:34 i:56 i:5	s:rgba(12,34,56,0.02)	
+Color::to_json	A	i:12 i:34 i:56 i:5	s:{"r":12,"g":34,"b":56,"a":5}	
+Color::fmt	A	i:12 i:34 i:56 i:6	s:#0c223806	
+Color::to_css	A	i:12 i:34 i:56 i:6	s:rgba(12,34,56,0.02)	
+Color::to_json	A	i:12 i:34 i:56 i:6	s:{"r":12,"g":34,"b":56,"a":6}	
+Color::fmt	A	i:12 i:34 i:56 i:7	s:#0c223807	
+Color::to_css	A	i:12 i:34 i:56 i:7	s:rgba(12,34,56,0.03)	
+Color::to_json	A	i:12 i:34 i:56 i:7	s:{"r":12,"g":34,"b":56,"a":7}	
+Color::fmt	A	i:12 i:34 i:56 i:8	s:#0c223808	
+Color::to_css	A	i:12 i:34 i:56 i:8	s:rgba(12,34,56,0.03)	
+Color::to_json	A	i:12 i:34 i:56 i:8	s:{"r":12,"g":34,"b":56,"a":8}	
+Color::fmt	A	i:12 i:34 i:56 i:9	s:#0c223809	
+Color::to_css	A	i:12 i:34 i:56 i:9	s:rgba(12,34,56,0.04)	
+Color::to_json	A	i:12 i:34 i:56 i:9	s:{"r":12,"g":34,"b":56,"a":9}	
+Color::fmt	A	i:12 i:34 i:56 i:10	s:#0c22380a	
+Color::to_css	A	i:12 i:34 i:56 i:10	s:rgba(12,34,56,0.04)	
+Color::to_json	A	i:12 i:34 i:56 i:10	s:{"r":12,"g":34,"b":56,"a":10}	
+Color::fmt	A	i:12 i:34 i:56 i:11	s:#0c22380b	
+Color::to_css	A	i:12 i:34 i:56 i:11	s:rgba(12,34,56,0.04)	
+Color::to_json	A	i:12 i:34 i:56 i:11	s:{"r":12,"g":34,"b":56,"a":11}	
+Color::fmt	A	i:12 i:34 i:56 i:12	s:#0c22380c	
+Color::to_css	A	i:12 i:34 i:56 i:12	s:rgba(12,34,56,0.05)	
+Color::to_json	A	i:12 i:34 i:56 i:12	s:{"r":12,"g":34,"b":56,"a":12}	
+Color::fmt	A	i:12 i:34 i:56 i:13	s:#0c22380d	
+Color::to_css	A	i:12 i:34 i:56 i:13	s:rgba(12,34,56,0.05)	
+Color::to_json	A	i:12 i:34 i:56 i:13	s:{"r":12,"g":34,"b":56,"a":13}	
+Color::fmt	A	i:12 i:34 i:56 i:14	s:#0c22380e	
+Color::to_css	A	i:12 i:34 i:56 i:14	s:rgba(12,34,56,0.05)	
+Color::to_json	A	i:12 i:34 i:56 i:14	s:{"r":12,"g":34,"b":56,"a":14}	
+Color::fmt	A	i:12 i:34 i:56 i:15	s:#0c22380f	
+Color::to_css	A	i:12 i:34 i:56 i:15	s:rgba(12,34,56,0.06)	
+Color::to_json	A	i:12 i:34 i:56 i:15	s:{"r":12,"g":34,"b":56,"a":15}	
+Color::fmt	A	i:12 i:34 i:56 i:16	s:#0c223810	
+Color::to_css	A	i:12 i:34 i:56 i:16	s:rgba(12,34,56,0.06)	
+Color::to_json	A	i:12 i:34 i:56 i:16	s:{"r":12,"g":34,"b":56,"a":16}	
+Color::fmt	A	i:12 i:34 i:56 i:17	s:#0c223811	
+Color::to_css	A	i:12 i:34 i:56 i:17	s:rgba(12,34,56,0.07)	
+Color::to_json	A	i:12 i:34 i:56 i:17	s:{"r":12,"g":34,"b":56,"a":17}	
+Color::fmt	A	i:12 i:34 i:56 i:18	s:#0c223812	
+Color::to_css	A	i:12 i:34 i:56 i:18	s:rgba(12,34,56,0.07)	
+Color::to_json	A	i:12 i:34 i:56 i:18	s:{"r":12,"g":34,"b":56,"a":18}	
+Color::fmt	A	i:12 i:34 i:56 i:19	s:#0c223813	
+Color::to_css	A	i:12 i:34 i:56 i:19	s:rgba(12,34,56,0.07)	
+Color::to_json	A	i:12 i:34 i:56 i:19	s:{"r":12,"g":34,"b":56,"a":19}	
+Color::fmt	A	i:12 i:34 i:56 i:20	s:#0c223814	
+Color::to_css	A	i:12 i:34 i:56 i:20	s:rgba(12,34,56,0.08)	
+Color::to_json	A	i:12 i:34 i:56 i:20	s:{"r":12,"g":34,"b":56,"a":20}	
+Color::fmt	A	i:12 i:34 i:56 i:21	s:#0c223815	
+Color::to_css	A	i:12 i:34 i:56 i:21	s:rgba(12,34,56,0.08)	
+Color::to_json	A	i:12 i:34 i:56 i:21	s:{"r":12,"g":34,"b":56,"a":21}	
+Color::fmt	A	i:12 i:34 i:56 i:22	s:#0c223816	
+Color::to_css	A	i:12 i:34 i:56 i:22	s:rgba(12,34,56,0.09)	
+Color::to_json	A	i:12 i:34 i:56 i:22	s:{"r":12,"g":34,"b":56,"a":22}	
+Color::fmt	A	i:12 i:34 i:56 i:23	s:#0c223817	
+Color::to_css	A	i:12 i:34 i:56 i:23	s:rgba(12,34,56,0.09)	
+Color::to_json	A	i:12 i:34 i:56 i:23	s:{"r":12,"g":34,"b":56,"a":23}	
+Color::fmt	A	i:12 i:34 i:56 i:24	s:#0c223818	
+Color::to_css	A	i:12 i:34 i:56 i:24	s:rgba(12,34,56,0.09)	
+Color::to_json	A	i:12 i:34 i:56 i:24	s:{"r":12,"g":34,"b":56,"a":24}	
+Color::fmt	A	i:12 i:34 i:56 i:25	s:#0c223819	
+Color::to_css	A	i:12 i:34 i:56 i:25	s:rgba(12,34,56,0.10)	
+Color::to_json	A	i:12 i:34 i:56 i:25	s:{"r":12,"g":34,"b":56,"a":25}	
+Color::fmt	A	i:12 i:34 i:56 i:26	s:#0c22381a	
+Color::to_css	A	i:12 i:34 i:56 i:26	s:rgba(12,34,56,0.10)	
+Color::to_json	A	i:12 i:34 i:56 i:26	s:{"r":12,"g":34,"b":56,"a":26}	
+Color::fmt	A	i:12 i:34 i:56 i:27	s:#0c22381b	
+Color::to_css	A	i:12 i:34 i:56 i:27	s:rgba(12,34,56,0.11)	
+Color::to_json	A	i:12 i:34 i:56 i:27	s:{"r":12,"g":34,"b":56,"a":27}	
+Color::fmt	A	i:12 i:34 i:56 i:28	s:#0c22381c	
+Color::to_css	A	i:12 i:34 i:56 i:28	s:rgba(12,34,56,0.11)	
+Color::to_json	A	i:12 i:34 i:56 i:28	s:{"r":12,"g":34,"b":56,"a":28}	
+Color::fmt	A	i:12 i:34 i:56 i:29	s:#0c22381d	
+Color::to_css	A	i:12 i:34 i:56 i:29	s:rgba(12,34,56,0.11)	
+Color::to_json	A	i:12 i:34 i:56 i:29	s:{"r":12,"g":34,"b":56,"a":29}	
+Color::fmt	A	i:12 i:34 i:56 i:30	s:#0c22381e	
+Color::to_css	A	i:12 i:34 i:56 i:30	s:rgba(12,34,56,0.12)	
+Color::to_json	A	i:12 i:34 i:56 i:30	s:{"r":12,"g":34,"b":56,"a":30}	
+Color::fmt	A	i:12 i:34 i:56 i:31	s:#0c22381f	
+Color::to_css	A	i:12 i:34 i:56 i:31	s:rgba(12,34,56,0.12)	
+Color::to_json	A	i:12 i:34 i:56 i:31	s:{"r":12,"g":34,"b":56,"a":31}	
+Color::fmt	A	i:12 i:34 i:56 i:32	s:#0c223820	
+Color::to_css	A	i:12 i:34 i:56 i:32	s:rgba(12,34,56,0.13)	
+Color::to_json	A	i:12 i:34 i:56 i:32	s:{"r":12,"g":34,"b":56,"a":32}	
+Color::fmt	A	i:12 i:34 i:56 i:33	s:#0c223821	
+Color::to_css	A	i:12 i:34 i:56 i:33	s:rgba(12,34,56,0.13)	
+Color::to_json	A	i:12 i:34 i:56 i:33	s:{"r":12,"g":34,"b":56,"a":33}	
+Color::fmt	A	i:12 i:34 i:56 i:34	s:#0c223822	
+Color::to_css	A	i:12 i:34 i:56 i:34	s:rgba(12,34,56,0.13)	
+Color::to_json	A	i:12 i:34 i:56 i:34	s:{"r":12,"g":34,"b":56,"a":34}	
+Color::fmt	A	i:12 i:34 i:56 i:35	s:#0c223823	
+Color::to_css	A	i:12 i:34 i:56 i:35	s:rgba(12,34,56,0.14)	
+Color::to_json	A	i:12 i:34 i:56 i:35	s:{"r":12,"g":34,"b":56,"a":35}	
+Color::fmt	A	i:12 i:34 i:56 i:36	s:#0c223824	
+Color::to_css	A	i:12 i:34 i:56 i:36	s:rgba(12,34,56,0.14)	
+Color::to_json	A	i:12 i:34 i:56 i:36	s:{"r":12,"g":34,"b":56,"a":36}	
+Color::fmt	A	i:12 i:34 i:56 i:37	s:#0c223825	
+Color::to_css	A	i:12 i:34 i:56 i:37	s:rgba(12,34,56,0.15)	
+Color::to_json	A	i:12 i:34 i:56 i:37	s:{"r":12,"g":34,"b":56,"a":37}	
+Color::fmt	A	i:12 i:34 i:56 i:38	s:#0c223826	
+Color::to_css	A	i:12 i:34 i:56 i:38	s:rgba(12,34,56,0.15)	
+Color::to_json	A	i:12 i:34 i:56 i:38	s:{"r":12,"g":34,"b":56,"a":38}	
+Color::fmt	A	i:12 i:34 i:56 i:39	s:#0c223827	
+Color::to_css	A	i:12 i:34 i:56 i:39	s:rgba(12,34,56,0.15)	
+Color::to_json	A	i:12 i:34 i:56 i:39	s:{"r":12,"g":34,"b":56,"a":39}	
+Color::fmt	A	i:12 i:34 i:56 i:40	s:#0c223828	
+Color::to_css	A	i:12 i:34 i:56 i:40	s:rgba(12,34,56,0.16)	
+Color::to_json	A	i:12 i:34 i:56 i:40	s:{"r":12,"g":34,"b":56,"a":40}	
+Color::fmt	A	i:12 i:34 i:56 i:41	s:#0c223829	
+Color::to_css	A	i:12 i:34 i:56 i:41	s:rgba(12,34,56,0.16)	
+Color::to_json	A	i:12 i:34 i:56 i:41	s:{"r":12,"g":34,"b":56,"a":41}	
+Color::fmt	A	i:12 i:34 i:56 i:42	s:#0c22382a	
+Color::to_css	A	i:12 i:34 i:56 i:42	s:rgba(12,34,56,0.16)	
+Color::to_json	A	i:12 i:34 i:56 i:42	s:{"r":12,"g":34,"b":56,"a":42}	
+Color::fmt	A	i:12 i:34 i:56 i:43	s:#0c22382b	
+Color::to_css	A	i:12 i:34 i:56 i:43	s:rgba(12,34,56,0.17)	
+Color::to_json	A	i:12 i:34 i:56 i:43	s:{"r":12,"g":34,"b":56,"a":43}	
+Color::fmt	A	i:12 i:34 i:56 i:44	s:#0c22382c	
+Color::to_css	A	i:12 i:34 i:56 i:44	s:rgba(12,34,56,0.17)	
+Color::to_json	A	i:12 i:34 i:56 i:44	s:{"r":12,"g":34,"b":56,"a":44}	
+Color::fmt	A	i:12 i:34 i:56 i:45	s:#0c22382d	
+Color::to_css	A	i:12 i:34 i:56 i:45	s:rgba(12,34,56,0.18)	
+Color::to_json	A	i:12 i:34 i:56 i:45	s:{"r":12,"g":34,"b":56,"a":45}	
+Color::fmt	A	i:12 i:34 i:56 i:46	s:#0c22382e	
+Color::to_css	A	i:12 i:34 i:56 i:46	s:rgba(12,34,56,0.18)	
+Color::to_json	A	i:12 i:34 i:56 i:46	s:{"r":12,"g":34,"b":56,"a":46}	
+Color::fmt	A	i:12 i:34 i:56 i:47	s:#0c22382f	
+Color::to_css	A	i:12 i:34 i:56 i:47	s:rgba(12,34,56,0.18)	
+Color::to_json	A	i:12 i:34 i:56 i:47	s:{"r":12,"g":34,"b":56,"a":47}	
+Color::fmt	A	i:12 i:34 i:56 i:48	s:#0c223830	
+Color::to_css	A	i:12 i:34 i:56 i:48	s:rgba(12,34,56,0.19)	
+Color::to_json	A	i:12 i:34 i:56 i:48	s:{"r":12,"g":34,"b":56,"a":48}	
+Color::fmt	A	i:12 i:34 i:56 i:49	s:#0c223831	
+Color::to_css	A	i:12 i:34 i:56 i:49	s:rgba(12,34,56,0.19)	
+Color::to_json	A	i:12 i:34 i:56 i:49	s:{"r":12,"g":34,"b":56,"a":49}	
+Color::fmt	A	i:12 i:34 i:56 i:50	s:#0c223832	
+Color::to_css	A	i:12 i:34 i:56 i:50	s:rgba(12,34,56,0.20)	
+Color::to_json	A	i:12 i:34 i:56 i:50	s:{"r":12,"g":34,"b":56,"a":50}	
+Color::fmt	A	i:12 i:34 i:56 i:51	s:#0c223833	
+Color::to_css	A	i:12 i:34 i:56 i:51	s:rgba(12,34,56,0.20)	
+Color::to_json	A	i:12 i:34 i:56 i:51	s:{"r":12,"g":34,"b":56,"a":51}	
+Color::fmt	A	i:12 i:34 i:56 i:52	s:#0c223834	
+Color::to_css	A	i:12 i:34 i:56 i:52	s:rgba(12,34,56,0.20)	
+Color::to_json	A	i:12 i:34 i:56 i:52	s:{"r":12,"g":34,"b":56,"a":52}	
+Color::fmt	A	i:12 i:34 i:56 i:53	s:#0c223835	
+Color::to_css	A	i:12 i:34 i:56 i:53	s:rgba(12,34,56,0.21)	
+Color::to_json	A	i:12 i:34 i:56 i:53	s:{"r":12,"g":34,"b":56,"a":53}	
+Color::fmt	A	i:12 i:34 i:56 i:54	s:#0c223836	
+Color::to_css	A	i:12 i:34 i:56 i:54	s:rgba(12,34,56,0.21)	
+Color::to_json	A	i:12 i:34 i:56 i:54	s:{"r":12,"g":34,"b":56,"a":54}	
+Color::fmt	A	i:12 i:34 i:56 i:55	s:#0c223837	
+Color::to_css	A	i:12 i:34 i:56 i:55	s:rgba(12,34,56,0.22)	
+Color::to_json	A	i:12 i:34 i:56 i:55	s:{"r":12,"g":34,"b":56,"a":55}	
+Color::fmt	A	i:12 i:34 i:56 i:56	s:#0c223838	
+Color::to_css	A	i:12 i:34 i:56 i:56	s:rgba(12,34,56,0.22)	
+Color::to_json	A	i:12 i:34 i:56 i:56	s:{"r":12,"g":34,"b":56,"a":56}	
+Color::fmt	A	i:12 i:34 i:56 i:57	s:#0c223839	
+Color::to_css	A	i:12 i:34 i:56 i:57	s:rgba(12,34,56,0.22)	
+Color::to_json	A	i:12 i:34 i:56 i:57	s:{"r":12,"g":34,"b":56,"a":57}	
+Color::fmt	A	i:12 i:34 i:56 i:58	s:#0c22383a	
+Color::to_css	A	i:12 i:34 i:56 i:58	s:rgba(12,34,56,0.23)	
+Color::to_json	A	i:12 i:34 i:56 i:58	s:{"r":12,"g":34,"b":56,"a":58}	
+Color::fmt	A	i:12 i:34 i:56 i:59	s:#0c22383b	
+Color::to_css	A	i:12 i:34 i:56 i:59	s:rgba(12,34,56,0.23)	
+Color::to_json	A	i:12 i:34 i:56 i:59	s:{"r":12,"g":34,"b":56,"a":59}	
+Color::fmt	A	i:12 i:34 i:56 i:60	s:#0c22383c	
+Color::to_css	A	i:12 i:34 i:56 i:60	s:rgba(12,34,56,0.24)	
+Color::to_json	A	i:12 i:34 i:56 i:60	s:{"r":12,"g":34,"b":56,"a":60}	
+Color::fmt	A	i:12 i:34 i:56 i:61	s:#0c22383d	
+Color::to_css	A	i:12 i:34 i:56 i:61	s:rgba(12,34,56,0.24)	
+Color::to_json	A	i:12 i:34 i:56 i:61	s:{"r":12,"g":34,"b":56,"a":61}	
+Color::fmt	A	i:12 i:34 i:56 i:62	s:#0c22383e	
+Color::to_css	A	i:12 i:34 i:56 i:62	s:rgba(12,34,56,0.24)	
+Color::to_json	A	i:12 i:34 i:56 i:62	s:{"r":12,"g":34,"b":56,"a":62}	
+Color::fmt	A	i:12 i:34 i:56 i:63	s:#0c22383f	
+Color::to_css	A	i:12 i:34 i:56 i:63	s:rgba(12,34,56,0.25)	
+Color::to_json	A	i:12 i:34 i:56 i:63	s:{"r":12,"g":34,"b":56,"a":63}	
+Color::fmt	A	i:12 i:34 i:56 i:64	s:#0c223840	
+Color::to_css	A	i:12 i:34 i:56 i:64	s:rgba(12,34,56,0.25)	
+Color::to_json	A	i:12 i:34 i:56 i:64	s:{"r":12,"g":34,"b":56,"a":64}	
+Color::fmt	A	i:12 i:34 i:56 i:65	s:#0c223841	
+Color::to_css	A	i:12 i:34 i:56 i:65	s:rgba(12,34,56,0.25)	
+Color::to_json	A	i:12 i:34 i:56 i:65	s:{"r":12,"g":34,"b":56,"a":65}	
+Color::fmt	A	i:12 i:34 i:56 i:66	s:#0c223842	
+Color::to_css	A	i:12 i:34 i:56 i:66	s:rgba(12,34,56,0.26)	
+Color::to_json	A	i:12 i:34 i:56 i:66	s:{"r":12,"g":34,"b":56,"a":66}	
+Color::fmt	A	i:12 i:34 i:56 i:67	s:#0c223843	
+Color::to_css	A	i:12 i:34 i:56 i:67	s:rgba(12,34,56,0.26)	
+Color::to_json	A	i:12 i:34 i:56 i:67	s:{"r":12,"g":34,"b":56,"a":67}	
+Color::fmt	A	i:12 i:34 i:56 i:68	s:#0c223844	
+Color::to_css	A	i:12 i:34 i:56 i:68	s:rgba(12,34,56,0.27)	
+Color::to_json	A	i:12 i:34 i:56 i:68	s:{"r":12,"g":34,"b":56,"a":68}	
+Color::fmt	A	i:12 i:34 i:56 i:69	s:#0c223845	
+Color::to_css	A	i:12 i:34 i:56 i:69	s:rgba(12,34,56,0.27)	
+Color::to_json	A	i:12 i:34 i:56 i:69	s:{"r":12,"g":34,"b":56,"a":69}	
+Color::fmt	A	i:12 i:34 i:56 i:70	s:#0c223846	
+Color::to_css	A	i:12 i:34 i:56 i:70	s:rgba(12,34,56,0.27)	
+Color::to_json	A	i:12 i:34 i:56 i:70	s:{"r":12,"g":34,"b":56,"a":70}	
+Color::fmt	A	i:12 i:34 i:56 i:71	s:#0c223847	
+Color::to_css	A	i:12 i:34 i:56 i:71	s:rgba(12,34,56,0.28)	
+Color::to_json	A	i:12 i:34 i:56 i:71	s:{"r":12,"g":34,"b":56,"a":71}	
+Color::fmt	A	i:12 i:34 i:56 i:72	s:#0c223848	
+Color::to_css	A	i:12 i:34 i:56 i:72	s:rgba(12,34,56,0.28)	
+Color::to_json	A	i:12 i:34 i:56 i:72	s:{"r":12,"g":34,"b":56,"a":72}	
+Color::fmt	A	i:12 i:34 i:56 i:73	s:#0c223849	
+Color::to_css	A	i:12 i:34 i:56 i:73	s:rgba(12,34,56,0.29)	
+Color::to_json	A	i:12 i:34 i:56 i:73	s:{"r":12,"g":34,"b":56,"a":73}	
+Color::fmt	A	i:12 i:34 i:56 i:74	s:#0c22384a	
+Color::to_css	A	i:12 i:34 i:56 i:74	s:rgba(12,34,56,0.29)	
+Color::to_json	A	i:12 i:34 i:56 i:74	s:{"r":12,"g":34,"b":56,"a":74}	
+Color::fmt	A	i:12 i:34 i:56 i:75	s:#0c22384b	
+Color::to_css	A	i:12 i:34 i:56 i:75	s:rgba(12,34,56,0.29)	
+Color::to_json	A	i:12 i:34 i:56 i:75	s:{"r":12,"g":34,"b":56,"a":75}	
+Color::fmt	A	i:12 i:34 i:56 i:76	s:#0c22384c	
+Color::to_css	A	i:12 i:34 i:56 i:76	s:rgba(12,34,56,0.30)	
+Color::to_json	A	i:12 i:34 i:56 i:76	s:{"r":12,"g":34,"b":56,"a":76}	
+Color::fmt	A	i:12 i:34 i:56 i:77	s:#0c22384d	
+Color::to_css	A	i:12 i:34 i:56 i:77	s:rgba(12,34,56,0.30)	
+Color::to_json	A	i:12 i:34 i:56 i:77	s:{"r":12,"g":34,"b":56,"a":77}	
+Color::fmt	A	i:12 i:34 i:56 i:78	s:#0c22384e	
+Color::to_css	A	i:12 i:34 i:56 i:78	s:rgba(12,34,56,0.31)	
+Color::to_json	A	i:12 i:34 i:56 i:78	s:{"r":12,"g":34,"b":56,"a":78}	
+Color::fmt	A	i:12 i:34 i:56 i:79	s:#0c22384f	
+Color::to_css	A	i:12 i:34 i:56 i:79	s:rgba(12,34,56,0.31)	
+Color::to_json	A	i:12 i:34 i:56 i:79	s:{"r":12,"g":34,"b":56,"a":79}	
+Color::fmt	A	i:12 i:34 i:56 i:80	s:#0c223850	
+Color::to_css	A	i:12 i:34 i:56 i:80	s:rgba(12,34,56,0.31)	
+Color::to_json	A	i:12 i:34 i:56 i:80	s:{"r":12,"g":34,"b":56,"a":80}	
+Color::fmt	A	i:12 i:34 i:56 i:81	s:#0c223851	
+Color::to_css	A	i:12 i:34 i:56 i:81	s:rgba(12,34,56,0.32)	
+Color::to_json	A	i:12 i:34 i:56 i:81	s:{"r":12,"g":34,"b":56,"a":81}	
+Color::fmt	A	i:12 i:34 i:56 i:82	s:#0c223852	
+Color::to_css	A	i:12 i:34 i:56 i:82	s:rgba(12,34,56,0.32)	
+Color::to_json	A	i:12 i:34 i:56 i:82	s:{"r":12,"g":34,"b":56,"a":82}	
+Color::fmt	A	i:12 i:34 i:56 i:83	s:#0c223853	
+Color::to_css	A	i:12 i:34 i:56 i:83	s:rgba(12,34,56,0.33)	
+Color::to_json	A	i:12 i:34 i:56 i:83	s:{"r":12,"g":34,"b":56,"a":83}	
+Color::fmt	A	i:12 i:34 i:56 i:84	s:#0c223854	
+Color::to_css	A	i:12 i:34 i:56 i:84	s:rgba(12,34,56,0.33)	
+Color::to_json	A	i:12 i:34 i:56 i:84	s:{"r":12,"g":34,"b":56,"a":84}	
+Color::fmt	A	i:12 i:34 i:56 i:85	s:#0c223855	
+Color::to_css	A	i:12 i:34 i:56 i:85	s:rgba(12,34,56,0.33)	
+Color::to_json	A	i:12 i:34 i:56 i:85	s:{"r":12,"g":34,"b":56,"a":85}	
+Color::fmt	A	i:12 i:34 i:56 i:86	s:#0c223856	
+Color::to_css	A	i:12 i:34 i:56 i:86	s:rgba(12,34,56,0.34)	
+Color::to_json	A	i:12 i:34 i:56 i:86	s:{"r":12,"g":34,"b":56,"a":86}	
+Color::fmt	A	i:12 i:34 i:56 i:87	s:#0c223857	
+Color::to_css	A	i:12 i:34 i:56 i:87	s:rgba(12,34,56,0.34)	
+Color::to_json	A	i:12 i:34 i:56 i:87	s:{"r":12,"g":34,"b":56,"a":87}	
+Color::fmt	A	i:12 i:34 i:56 i:88	s:#0c223858	
+Color::to_css	A	i:12 i:34 i:56 i:88	s:rgba(12,34,56,0.35)	
+Color::to_json	A	i:12 i:34 i:56 i:88	s:{"r":12,"g":34,"b":56,"a":88}	
+Color::fmt	A	i:12 i:34 i:56 i:89	s:#0c223859	
+Color::to_css	A	i:12 i:34 i:56 i:89	s:rgba(12,34,56,0.35)	
+Color::to_json	A	i:12 i:34 i:56 i:89	s:{"r":12,"g":34,"b":56,"a":89}	
+Color::fmt	A	i:12 i:34 i:56 i:90	s:#0c22385a	
+Color::to_css	A	i:12 i:34 i:56 i:90	s:rgba(12,34,56,0.35)	
+Color::to_json	A	i:12 i:34 i:56 i:90	s:{"r":12,"g":34,"b":56,"a":90}	
+Color::fmt	A	i:12 i:34 i:56 i:91	s:#0c22385b	
+Color::to_css	A	i:12 i:34 i:56 i:91	s:rgba(12,34,56,0.36)	
+Color::to_json	A	i:12 i:34 i:56 i:91	s:{"r":12,"g":34,"b":56,"a":91}	
+Color::fmt	A	i:12 i:34 i:56 i:92	s:#0c22385c	
+Color::to_css	A	i:12 i:34 i:56 i:92	s:rgba(12,34,56,0.36)	
+Color::to_json	A	i:12 i:34 i:56 i:92	s:{"r":12,"g":34,"b":56,"a":92}	
+Color::fmt	A	i:12 i:34 i:56 i:93	s:#0c22385d	
+Color::to_css	A	i:12 i:34 i:56 i:93	s:rgba(12,34,56,0.36)	
+Color::to_json	A	i:12 i:34 i:56 i:93	s:{"r":12,"g":34,"b":56,"a":93}	
+Color::fmt	A	i:12 i:34 i:56 i:94	s:#0c22385e	
+Color::to_css	A	i:12 i:34 i:56 i:94	s:rgba(12,34,56,0.37)	
+Color::to_json	A	i:12 i:34 i:56 i:94	s:{"r":12,"g":34,"b":56,"a":94}	
+Color::fmt	A	i:12 i:34 i:56 i:95	s:#0c22385f	
+Color::to_css	A	i:12 i:34 i:56 i:95	s:rgba(12,34,56,0.37)	
+Color::to_json	A	i:12 i:34 i:56 i:95	s:{"r":12,"g":34,"b":56,"a":95}	
+Color::fmt	A	i:12 i:34 i:56 i:96	s:#0c223860	
+Color::to_css	A	i:12 i:34 i:56 i:96	s:rgba(12,34,56,0.38)	
+Color::to_json	A	i:12 i:34 i:56 i:96	s:{"r":12,"g":34,"b":56,"a":96}	
+Color::fmt	A	i:12 i:34 i:56 i:97	s:#0c223861	
+Color::to_css	A	i:12 i:34 i:56 i:97	s:rgba(12,34,56,0.38)	
+Color::to_json	A	i:12 i:34 i:56 i:97	s:{"r":12,"g":34,"b":56,"a":97}	
+Color::fmt	A	i:12 i:34 i:56 i:98	s:#0c223862	
+Color::to_css	A	i:12 i:34 i:56 i:98	s:rgba(12,34,56,0.38)	
+Color::to_json	A	i:12 i:34 i:56 i:98	s:{"r":12,"g":34,"b":56,"a":98}	
+Color::fmt	A	i:12 i:34 i:56 i:99	s:#0c223863	
+Color::to_css	A	i:12 i:34 i:56 i:99	s:rgba(12,34,56,0.39)	
+Color::to_json	A	i:12 i:34 i:56 i:99	s:{"r":12,"g":34,"b":56,"a":99}	
+Color::fmt	A	i:12 i:34 i:56 i:100	s:#0c223864	
+Color::to_css	A	i:12 i:34 i:56 i:100	s:rgba(12,34,56,0.39)	
+Color::to_json	A	i:12 i:34 i:56 i:100	s:{"r":12,"g":34,"b":56,"a":100}	
+Color::fmt	A	i:12 i:34 i:56 i:101	s:#0c223865	
+Color::to_css	A	i:12 i:34 i:56 i:101	s:rgba(12,34,56,0.40)	
+Color::to_json	A	i:12 i:34 i:56 i:101	s:{"r":12,"g":34,"b":56,"a":101}	
+Color::fmt	A	i:12 i:34 i:56 i:102	s:#0c223866	
+Color::to_css	A	i:12 i:34 i:56 i:102	s:rgba(12,34,56,0.40)	
+Color::to_json	A	i:12 i:34 i:56 i:102	s:{"r":12,"g":34,"b":56,"a":102}	
+Color::fmt	A	i:12 i:34 i:56 i:103	s:#0c223867	
+Color::to_css	A	i:12 i:34 i:56 i:103	s:rgba(12,34,56,0.40)	
+Color::to_json	A	i:12 i:34 i:56 i:103	s:{"r":12,"g":34,"b":56,"a":103}	
+Color::fmt	A	i:12 i:34 i:56 i:104	s:#0c223868	
+Color::to_css	A	i:12 i:34 i:56 i:104	s:rgba(12,34,56,0.41)	
+Color::to_json	A	i:12 i:34 i:56 i:104	s:{"r":12,"g":34,"b":56,"a":104}	
+Color::fmt	A	i:12 i:34 i:56 i:105	s:#0c223869	
+Color::to_css	A	i:12 i:34 i:56 i:105	s:rgba(12,34,56,0.41)	
+Color::to_json	A	i:12 i:34 i:56 i:105	s:{"r":12,"g":34,"b":56,"a":105}	
+Color::fmt	A	i:12 i:34 i:56 i:106	s:#0c22386a	
+Color::to_css	A	i:12 i:34 i:56 i:106	s:rgba(12,34,56,0.42)	
+Color::to_json	A	i:12 i:34 i:56 i:106	s:{"r":12,"g":34,"b":56,"a":106}	
+Color::fmt	A	i:12 i:34 i:56 i:107	s:#0c22386b	
+Color::to_css	A	i:12 i:34 i:56 i:107	s:rgba(12,34,56,0.42)	
+Color::to_json	A	i:12 i:34 i:56 i:107	s:{"r":12,"g":34,"b":56,"a":107}	
+Color::fmt	A	i:12 i:34 i:56 i:108	s:#0c22386c	
+Color::to_css	A	i:12 i:34 i:56 i:108	s:rgba(12,34,56,0.42)	
+Color::to_json	A	i:12 i:34 i:56 i:108	s:{"r":12,"g":34,"b":56,"a":108}	
+Color::fmt	A	i:12 i:34 i:56 i:109	s:#0c22386d	
+Color::to_css	A	i:12 i:34 i:56 i:109	s:rgba(12,34,56,0.43)	
+Color::to_json	A	i:12 i:34 i:56 i:109	s:{"r":12,"g":34,"b":56,"a":109}	
+Color::fmt	A	i:12 i:34 i:56 i:110	s:#0c22386e	
+Color::to_css	A	i:12 i:34 i:56 i:110	s:rgba(12,34,56,0.43)	
+Color::to_json	A	i:12 i:34 i:56 i:110	s:{"r":12,"g":34,"b":56,"a":110}	
+Color::fmt	A	i:12 i:34 i:56 i:111	s:#0c22386f	
+Color::to_css	A	i:12 i:34 i:56 i:111	s:rgba(12,34,56,0.44)	
+Color::to_json	A	i:12 i:34 i:56 i:111	s:{"r":12,"g":34,"b":56,"a":111}	
+Color::fmt	A	i:12 i:34 i:56 i:112	s:#0c223870	
+Color::to_css	A	i:12 i:34 i:56 i:112	s:rgba(12,34,56,0.44)	
+Color::to_json	A	i:12 i:34 i:56 i:112	s:{"r":12,"g":34,"b":56,"a":112}	
+Color::fmt	A	i:12 i:34 i:56 i:113	s:#0c223871	
+Color::to_css	A	i:12 i:34 i:56 i:113	s:rgba(12,34,56,0.44)	
+Color::to_json	A	i:12 i:34 i:56 i:113	s:{"r":12,"g":34,"b":56,"a":113}	
+Color::fmt	A	i:12 i:34 i:56 i:114	s:#0c223872	
+Color::to_css	A	i:12 i:34 i:56 i:114	s:rgba(12,34,56,0.45)	
+Color::to_json	A	i:12 i:34 i:56 i:114	s:{"r":12,"g":34,"b":56,"a":114}	
+Color::fmt	A	i:12 i:34 i:56 i:115	s:#0c223873	
+Color::to_css	A	i:12 i:34 i:56 i:115	s:rgba(12,34,56,0.45)	
+Color::to_json	A	i:12 i:34 i:56 i:115	s:{"r":12,"g":34,"b":56,"a":115}	
+Color::fmt	A	i:12 i:34 i:56 i:116	s:#0c223874	
+Color::to_css	A	i:12 i:34 i:56 i:116	s:rgba(12,34,56,0.45)	
+Color::to_json	A	i:12 i:34 i:56 i:116	s:{"r":12,"g":34,"b":56,"a":116}	
+Color::fmt	A	i:12 i:34 i:56 i:117	s:#0c223875	
+Color::to_css	A	i:12 i:34 i:56 i:117	s:rgba(12,34,56,0.46)	
+Color::to_json	A	i:12 i:34 i:56 i:117	s:{"r":12,"g":34,"b":56,"a":117}	
+Color::fmt	A	i:12 i:34 i:56 i:118	s:#0c223876	
+Color::to_css	A	i:12 i:34 i:56 i:118	s:rgba(12,34,56,0.46)	
+Color::to_json	A	i:12 i:34 i:56 i:118	s:{"r":12,"g":34,"b":56,"a":118}	
+Color::fmt	A	i:12 i:34 i:56 i:119	s:#0c223877	
+Color::to_css	A	i:12 i:34 i:56 i:119	s:rgba(12,34,56,0.47)	
+Color::to_json	A	i:12 i:34 i:56 i:119	s:{"r":12,"g":34,"b":56,"a":119}	
+Color::fmt	A	i:12 i:34 i:56 i:120	s:#0c223878	
+Color::to_css	A	i:12 i:34 i:56 i:120	s:rgba(12,34,56,0.47)	
+Color::to_json	A	i:12 i:34 i:56 i:120	s:{"r":12,"g":34,"b":56,"a":120}	
+Color::fmt	A	i:12 i:34 i:56 i:121	s:#0c223879	
+Color::to_css	A	i:12 i:34 i:56 i:121	s:rgba(12,34,56,0.47)	
+Color::to_json	A	i:12 i:34 i:56 i:121	s:{"r":12,"g":34,"b":56,"a":121}	
+Color::fmt	A	i:12 i:34 i:56 i:122	s:#0c22387a	
+Color::to_css	A	i:12 i:34 i:56 i:122	s:rgba(12,34,56,0.48)	
+Color::to_json	A	i:12 i:34 i:56 i:122	s:{"r":12,"g":34,"b":56,"a":122}	
+Color::fmt	A	i:12 i:34 i:56 i:123	s:#0c22387b	
+Color::to_css	A	i:12 i:34 i:56 i:123	s:rgba(12,34,56,0.48)	
+Color::to_json	A	i:12 i:34 i:56 i:123	s:{"r":12,"g":34,"b":56,"a":123}	
+Color::fmt	A	i:12 i:34 i:56 i:124	s:#0c22387c	
+Color::to_css	A	i:12 i:34 i:56 i:124	s:rgba(12,34,56,0.49)	
+Color::to_json	A	i:12 i:34 i:56 i:124	s:{"r":12,"g":34,"b":56,"a":124}	
+Color::fmt	A	i:12 i:34 i:56 i:125	s:#0c22387d	
+Color::to_css	A	i:12 i:34 i:56 i:125	s:rgba(12,34,56,0.49)	
+Color::to_json	A	i:12 i:34 i:56 i:125	s:{"r":12,"g":34,"b":56,"a":125}	
+Color::fmt	A	i:12 i:34 i:56 i:126	s:#0c22387e	
+Color::to_css	A	i:12 i:34 i:56 i:126	s:rgba(12,34,56,0.49)	
+Color::to_json	A	i:12 i:34 i:56 i:126	s:{"r":12,"g":34,"b":56,"a":126}	
+Color::fmt	A	i:12 i:34 i:56 i:127	s:#0c22387f	
+Color::to_css	A	i:12 i:34 i:56 i:127	s:rgba(12,34,56,0.50)	
+Color::to_json	A	i:12 i:34 i:56 i:127	s:{"r":12,"g":34,"b":56,"a":127}	
+Color::fmt	A	i:12 i:34 i:56 i:128	s:#0c223880	
+Color::to_css	A	i:12 i:34 i:56 i:128	s:rgba(12,34,56,0.50)	
+Color::to_json	A	i:12 i:34 i:56 i:128	s:{"r":12,"g":34,"b":56,"a":128}	
+Color::fmt	A	i:12 i:34 i:56 i:129	s:#0c223881	
+Color::to_css	A	i:12 i:34 i:56 i:129	s:rgba(12,34,56,0.51)	
+Color::to_json	A	i:12 i:34 i:56 i:129	s:{"r":12,"g":34,"b":56,"a":129}	
+Color::fmt	A	i:12 i:34 i:56 i:130	s:#0c223882	
+Color::to_css	A	i:12 i:34 i:56 i:130	s:rgba(12,34,56,0.51)	
+Color::to_json	A	i:12 i:34 i:56 i:130	s:{"r":12,"g":34,"b":56,"a":130}	
+Color::fmt	A	i:12 i:34 i:56 i:131	s:#0c223883	
+Color::to_css	A	i:12 i:34 i:56 i:131	s:rgba(12,34,56,0.51)	
+Color::to_json	A	i:12 i:34 i:56 i:131	s:{"r":12,"g":34,"b":56,"a":131}	
+Color::fmt	A	i:12 i:34 i:56 i:132	s:#0c223884	
+Color::to_css	A	i:12 i:34 i:56 i:132	s:rgba(12,34,56,0.52)	
+Color::to_json	A	i:12 i:34 i:56 i:132	s:{"r":12,"g":34,"b":56,"a":132}	
+Color::fmt	A	i:12 i:34 i:56 i:133	s:#0c223885	
+Color::to_css	A	i:12 i:34 i:56 i:133	s:rgba(12,34,56,0.52)	
+Color::to_json	A	i:12 i:34 i:56 i:133	s:{"r":12,"g":34,"b":56,"a":133}	
+Color::fmt	A	i:12 i:34 i:56 i:134	s:#0c223886	
+Color::to_css	A	i:12 i:34 i:56 i:134	s:rgba(12,34,56,0.53)	
+Color::to_json	A	i:12 i:34 i:56 i:134	s:{"r":12,"g":34,"b":56,"a":134}	
+Color::fmt	A	i:12 i:34 i:56 i:135	s:#0c223887	
+Color::to_css	A	i:12 i:34 i:56 i:135	s:rgba(12,34,56,0.53)	
+Color::to_json	A	i:12 i:34 i:56 i:135	s:{"r":12,"g":34,"b":56,"a":135}	
+Color::fmt	A	i:12 i:34 i:56 i:136	s:#0c223888	
+Color::to_css	A	i:12 i:34 i:56 i:136	s:rgba(12,34,56,0.53)	
+Color::to_json	A	i:12 i:34 i:56 i:136	s:{"r":12,"g":34,"b":56,"a":136}	
+Color::fmt	A	i:12 i:34 i:56 i:137	s:#0c223889	
+Color::to_css	A	i:12 i:34 i:56 i:137	s:rgba(12,34,56,0.54)	
+Color::to_json	A	i:12 i:34 i:56 i:137	s:{"r":12,"g":34,"b":56,"a":137}	
+Color::fmt	A	i:12 i:34 i:56 i:138	s:#0c22388a	
+Color::to_css	A	i:12 i:34 i:56 i:138	s:rgba(12,34,56,0.54)	
+Color::to_json	A	i:12 i:34 i:56 i:138	s:{"r":12,"g":34,"b":56,"a":138}	
+Color::fmt	A	i:12 i:34 i:56 i:139	s:#0c22388b	
+Color::to_css	A	i:12 i:34 i:56 i:139	s:rgba(12,34,56,0.55)	
+Color::to_json	A	i:12 i:34 i:56 i:139	s:{"r":12,"g":34,"b":56,"a":139}	
+Color::fmt	A	i:12 i:34 i:56 i:140	s:#0c22388c	
+Color::to_css	A	i:12 i:34 i:56 i:140	s:rgba(12,34,56,0.55)	
+Color::to_json	A	i:12 i:34 i:56 i:140	s:{"r":12,"g":34,"b":56,"a":140}	
+Color::fmt	A	i:12 i:34 i:56 i:141	s:#0c22388d	
+Color::to_css	A	i:12 i:34 i:56 i:141	s:rgba(12,34,56,0.55)	
+Color::to_json	A	i:12 i:34 i:56 i:141	s:{"r":12,"g":34,"b":56,"a":141}	
+Color::fmt	A	i:12 i:34 i:56 i:142	s:#0c22388e	
+Color::to_css	A	i:12 i:34 i:56 i:142	s:rgba(12,34,56,0.56)	
+Color::to_json	A	i:12 i:34 i:56 i:142	s:{"r":12,"g":34,"b":56,"a":142}	
+Color::fmt	A	i:12 i:34 i:56 i:143	s:#0c22388f	
+Color::to_css	A	i:12 i:34 i:56 i:143	s:rgba(12,34,56,0.56)	
+Color::to_json	A	i:12 i:34 i:56 i:143	s:{"r":12,"g":34,"b":56,"a":143}	
+Color::fmt	A	i:12 i:34 i:56 i:144	s:#0c223890	
+Color::to_css	A	i:12 i:34 i:56 i:144	s:rgba(12,34,56,0.56)	
+Color::to_json	A	i:12 i:34 i:56 i:144	s:{"r":12,"g":34,"b":56,"a":144}	
+Color::fmt	A	i:12 i:34 i:56 i:145	s:#0c223891	
+Color::to_css	A	i:12 i:34 i:56 i:145	s:rgba(12,34,56,0.57)	
+Color::to_json	A	i:12 i:34 i:56 i:145	s:{"r":12,"g":34,"b":56,"a":145}	
+Color::fmt	A	i:12 i:34 i:56 i:146	s:#0c223892	
+Color::to_css	A	i:12 i:34 i:56 i:146	s:rgba(12,34,56,0.57)	
+Color::to_json	A	i:12 i:34 i:56 i:146	s:{"r":12,"g":34,"b":56,"a":146}	
+Color::fmt	A	i:12 i:34 i:56 i:147	s:#0c223893	
+Color::to_css	A	i:12 i:34 i:56 i:147	s:rgba(12,34,56,0.58)	
+Color::to_json	A	i:12 i:34 i:56 i:147	s:{"r":12,"g":34,"b":56,"a":147}	
+Color::fmt	A	i:12 i:34 i:56 i:148	s:#0c223894	
+Color::to_css	A	i:12 i:34 i:56 i:148	s:rgba(12,34,56,0.58)	
+Color::to_json	A	i:12 i:34 i:56 i:148	s:{"r":12,"g":34,"b":56,"a":148}	
+Color::fmt	A	i:12 i:34 i:56 i:149	s:#0c223895	
+Color::to_css	A	i:12 i:34 i:56 i:149	s:rgba(12,34,56,0.58)	
+Color::to_json	A	i:12 i:34 i:56 i:149	s:{"r":12,"g":34,"b":56,"a":149}	
+Color::fmt	A	i:12 i:34 i:56 i:150	s:#0c223896	
+Color::to_css	A	i:12 i:34 i:56 i:150	s:rgba(12,34,56,0.59)	
+Color::to_json	A	i:12 i:34 i:56 i:150	s:{"r":12,"g":34,"b":56,"a":150}	
+Color::fmt	A	i:12 i:34 i:56 i:151	s:#0c223897	
+Color::to_css	A	i:12 i:34 i:56 i:151	s:rgba(12,34,56,0.59)	
+Color::to_json	A	i:12 i:34 i:56 i:151	s:{"r":12,"g":34,"b":56,"a":151}	
+Color::fmt	A	i:12 i:34 i:56 i:152	s:#0c223898	
+Color::to_css	A	i:12 i:34 i:56 i:152	s:rgba(12,34,56,0.60)	
+Color::to_json	A	i:12 i:34 i:56 i:152	s:{"r":12,"g":34,"b":56,"a":152}	
+Color::fmt	A	i:12 i:34 i:56 i:153	s:#0c223899	
+Color::to_css	A	i:12 i:34 i:56 i:153	s:rgba(12,34,56,0.60)	
+Color::to_json	A	i:12 i:34 i:56 i:153	s:{"r":12,"g":34,"b":56,"a":153}	
+Color::fmt	A	i:12 i:34 i:56 i:154	s:#0c22389a	
+Color::to_css	A	i:12 i:34 i:56 i:154	s:rgba(12,34,56,0.60)	
+Color::to_json	A	i:12 i:34 i:56 i:154	s:{"r":12,"g":34,"b":56,"a":154}	
+Color::fmt	A	i:12 i:34 i:56 i:155	s:#0c22389b	
+Color::to_css	A	i:12 i:34 i:56 i:155	s:rgba(12,34,56,0.61)	
+Color::to_json	A	i:12 i:34 i:56 i:155	s:{"r":12,"g":34,"b":56,"a":155}	
+Color::fmt	A	i:12 i:34 i:56 i:156	s:#0c22389c	
+Color::to_css	A	i:12 i:34 i:56 i:156	s:rgba(12,34,56,0.61)	
+Color::to_json	A	i:12 i:34 i:56 i:156	s:{"r":12,"g":34,"b":56,"a":156}	
+Color::fmt	A	i:12 i:34 i:56 i:157	s:#0c22389d	
+Color::to_css	A	i:12 i:34 i:56 i:157	s:rgba(12,34,56,0.62)	
+Color::to_json	A	i:12 i:34 i:56 i:157	s:{"r":12,"g":34,"b":56,"a":157}	
+Color::fmt	A	i:12 i:34 i:56 i:158	s:#0c22389e	
+Color::to_css	A	i:12 i:34 i:56 i:158	s:rgba(12,34,56,0.62)	
+Color::to_json	A	i:12 i:34 i:56 i:158	s:{"r":12,"g":34,"b":56,"a":158}	
+Color::fmt	A	i:12 i:34 i:56 i:159	s:#0c22389f	
+Color::to_css	A	i:12 i:34 i:56 i:159	s:rgba(12,34,56,0.62)	
+Color::to_json	A	i:12 i:34 i:56 i:159	s:{"r":12,"g":34,"b":56,"a":159}	
+Color::fmt	A	i:12 i:34 i:56 i:160	s:#0c2238a0	
+Color::to_css	A	i:12 i:34 i:56 i:160	s:rgba(12,34,56,0.63)	
+Color::to_json	A	i:12 i:34 i:56 i:160	s:{"r":12,"g":34,"b":56,"a":160}	
+Color::fmt	A	i:12 i:34 i:56 i:161	s:#0c2238a1	
+Color::to_css	A	i:12 i:34 i:56 i:161	s:rgba(12,34,56,0.63)	
+Color::to_json	A	i:12 i:34 i:56 i:161	s:{"r":12,"g":34,"b":56,"a":161}	
+Color::fmt	A	i:12 i:34 i:56 i:162	s:#0c2238a2	
+Color::to_css	A	i:12 i:34 i:56 i:162	s:rgba(12,34,56,0.64)	
+Color::to_json	A	i:12 i:34 i:56 i:162	s:{"r":12,"g":34,"b":56,"a":162}	
+Color::fmt	A	i:12 i:34 i:56 i:163	s:#0c2238a3	
+Color::to_css	A	i:12 i:34 i:56 i:163	s:rgba(12,34,56,0.64)	
+Color::to_json	A	i:12 i:34 i:56 i:163	s:{"r":12,"g":34,"b":56,"a":163}	
+Color::fmt	A	i:12 i:34 i:56 i:164	s:#0c2238a4	
+Color::to_css	A	i:12 i:34 i:56 i:164	s:rgba(12,34,56,0.64)	
+Color::to_json	A	i:12 i:34 i:56 i:164	s:{"r":12,"g":34,"b":56,"a":164}	
+Color::fmt	A	i:12 i:34 i:56 i:165	s:#0c2238a5	
+Color::to_css	A	i:12 i:34 i:56 i:165	s:rgba(12,34,56,0.65)	
+Color::to_json	A	i:12 i:34 i:56 i:165	s:{"r":12,"g":34,"b":56,"a":165}	
+Color::fmt	A	i:12 i:34 i:56 i:166	s:#0c2238a6	
+Color::to_css	A	i:12 i:34 i:56 i:166	s:rgba(12,34,56,0.65)	
+Color::to_json	A	i:12 i:34 i:56 i:166	s:{"r":12,"g":34,"b":56,"a":166}	
+Color::fmt	A	i:12 i:34 i:56 i:167	s:#0c2238a7	
+Color::to_css	A	i:12 i:34 i:56 i:167	s:rgba(12,34,56,0.65)	
+Color::to_json	A	i:12 i:34 i:56 i:167	s:{"r":12,"g":34,"b":56,"a":167}	
+Color::fmt	A	i:12 i:34 i:56 i:168	s:#0c2238a8	
+Color::to_css	A	i:12 i:34 i:56 i:168	s:rgba(12,34,56,0.66)	
+Color::to_json	A	i:12 i:34 i:56 i:168	s:{"r":12,"g":34,"b":56,"a":168}	
+Color::fmt	A	i:12 i:34 i:56 i:169	s:#0c2238a9	
+Color::to_css	A	i:12 i:34 i:56 i:169	s:rgba(12,34,56,0.66)	
+Color::to_json	A	i:12 i:34 i:56 i:169	s:{"r":12,"g":34,"b":56,"a":169}	
+Color::fmt	A	i:12 i:34 i:56 i:170	s:#0c2238aa	
+Color::to_css	A	i:12 i:34 i:56 i:170	s:rgba(12,34,56,0.67)	
+Color::to_json	A	i:12 i:34 i:56 i:170	s:{"r":12,"g":34,"b":56,"a":170}	
+Color::fmt	A	i:12 i:34 i:56 i:171	s:#0c2238ab	
+Color::to_css	A	i:12 i:34 i:56 i:171	s:rgba(12,34,56,0.67)	
+Color::to_json	A	i:12 i:34 i:56 i:171	s:{"r":12,"g":34,"b":56,"a":171}	
+Color::fmt	A	i:12 i:34 i:56 i:172	s:#0c2238ac	
+Color::to_css	A	i:12 i:34 i:56 i:172	s:rgba(12,34,56,0.67)	
+Color::to_json	A	i:12 i:34 i:56 i:172	s:{"r":12,"g":34,"b":56,"a":172}	
+Color::fmt	A	i:12 i:34 i:56 i:173	s:#0c2238ad	
+Color::to_css	A	i:12 i:34 i:56 i:173	s:rgba(12,34,56,0.68)	
+Color::to_json	A	i:12 i:34 i:56 i:173	s:{"r":12,"g":34,"b":56,"a":173}	
+Color::fmt	A	i:12 i:34 i:56 i:174	s:#0c2238ae	
+Color::to_css	A	i:12 i:34 i:56 i:174	s:rgba(12,34,56,0.68)	
+Color::to_json	A	i:12 i:34 i:56 i:174	s:{"r":12,"g":34,"b":56,"a":174}	
+Color::fmt	A	i:12 i:34 i:56 i:175	s:#0c2238af	
+Color::to_css	A	i:12 i:34 i:56 i:175	s:rgba(12,34,56,0.69)	
+Color::to_json	A	i:12 i:34 i:56 i:175	s:{"r":12,"g":34,"b":56,"a":175}	
+Color::fmt	A	i:12 i:34 i:56 i:176	s:#0c2238b0	
+Color::to_css	A	i:12 i:34 i:56 i:176	s:rgba(12,34,56,0.69)	
+Color::to_json	A	i:12 i:34 i:56 i:176	s:{"r":12,"g":34,"b":56,"a":176}	
+Color::fmt	A	i:12 i:34 i:56 i:177	s:#0c2238b1	
+Color::to_css	A	i:12 i:34 i:56 i:177	s:rgba(12,34,56,0.69)	
+Color::to_json	A	i:12 i:34 i:56 i:177	s:{"r":12,"g":34,"b":56,"a":177}	
+Color::fmt	A	i:12 i:34 i:56 i:178	s:#0c2238b2	
+Color::to_css	A	i:12 i:34 i:56 i:178	s:rgba(12,34,56,0.70)	
+Color::to_json	A	i:12 i:34 i:56 i:178	s:{"r":12,"g":34,"b":56,"a":178}	
+Color::fmt	A	i:12 i:34 i:56 i:179	s:#0c2238b3	
+Color::to_css	A	i:12 i:34 i:56 i:179	s:rgba(12,34,56,0.70)	
+Color::to_json	A	i:12 i:34 i:56 i:179	s:{"r":12,"g":34,"b":56,"a":179}	
+Color::fmt	A	i:12 i:34 i:56 i:180	s:#0c2238b4	
+Color::to_css	A	i:12 i:34 i:56 i:180	s:rgba(12,34,56,0.71)	
+Color::to_json	A	i:12 i:34 i:56 i:180	s:{"r":12,"g":34,"b":56,"a":180}	
+Color::fmt	A	i:12 i:34 i:56 i:181	s:#0c2238b5	
+Color::to_css	A	i:12 i:34 i:56 i:181	s:rgba(12,34,56,0.71)	
+Color::to_json	A	i:12 i:34 i:56 i:181	s:{"r":12,"g":34,"b":56,"a":181}	
+Color::fmt	A	i:12 i:34 i:56 i:182	s:#0c2238b6	
+Color::to_css	A	i:12 i:34 i:56 i:182	s:rgba(12,34,56,0.71)	
+Color::to_json	A	i:12 i:34 i:56 i:182	s:{"r":12,"g":34,"b":56,"a":182}	
+Color::fmt	A	i:12 i:34 i:56 i:183	s:#0c2238b7	
+Color::to_css	A	i:12 i:34 i:56 i:183	s:rgba(12,34,56,0.72)	
+Color::to_json	A	i:12 i:34 i:56 i:183	s:{"r":12,"g":34,"b":56,"a":183}	
+Color::fmt	A	i:12 i:34 i:56 i:184	s:#0c2238b8	
+Color::to_css	A	i:12 i:34 i:56 i:184	s:rgba(12,34,56,0.72)	
+Color::to_json	A	i:12 i:34 i:56 i:184	s:{"r":12,"g":34,"b":56,"a":184}	
+Color::fmt	A	i:12 i:34 i:56 i:185	s:#0c2238b9	
+Color::to_css	A	i:12 i:34 i:56 i:185	s:rgba(12,34,56,0.73)	
+Color::to_json	A	i:12 i:34 i:56 i:185	s:{"r":12,"g":34,"b":56,"a":185}	
+Color::fmt	A	i:12 i:34 i:56 i:186	s:#0c2238ba	
+Color::to_css	A	i:12 i:34 i:56 i:186	s:rgba(12,34,56,0.73)	
+Color::to_json	A	i:12 i:34 i:56 i:186	s:{"r":12,"g":34,"b":56,"a":186}	
+Color::fmt	A	i:12 i:34 i:56 i:187	s:#0c2238bb	
+Color::to_css	A	i:12 i:34 i:56 i:187	s:rgba(12,34,56,0.73)	
+Color::to_json	A	i:12 i:34 i:56 i:187	s:{"r":12,"g":34,"b":56,"a":187}	
+Color::fmt	A	i:12 i:34 i:56 i:188	s:#0c2238bc	
+Color::to_css	A	i:12 i:34 i:56 i:188	s:rgba(12,34,56,0.74)	
+Color::to_json	A	i:12 i:34 i:56 i:188	s:{"r":12,"g":34,"b":56,"a":188}	
+Color::fmt	A	i:12 i:34 i:56 i:189	s:#0c2238bd	
+Color::to_css	A	i:12 i:34 i:56 i:189	s:rgba(12,34,56,0.74)	
+Color::to_json	A	i:12 i:34 i:56 i:189	s:{"r":12,"g":34,"b":56,"a":189}	
+Color::fmt	A	i:12 i:34 i:56 i:190	s:#0c2238be	
+Color::to_css	A	i:12 i:34 i:56 i:190	s:rgba(12,34,56,0.75)	
+Color::to_json	A	i:12 i:34 i:56 i:190	s:{"r":12,"g":34,"b":56,"a":190}	
+Color::fmt	A	i:12 i:34 i:56 i:191	s:#0c2238bf	
+Color::to_css	A	i:12 i:34 i:56 i:191	s:rgba(12,34,56,0.75)	
+Color::to_json	A	i:12 i:34 i:56 i:191	s:{"r":12,"g":34,"b":56,"a":191}	
+Color::fmt	A	i:12 i:34 i:56 i:192	s:#0c2238c0	
+Color::to_css	A	i:12 i:34 i:56 i:192	s:rgba(12,34,56,0.75)	
+Color::to_json	A	i:12 i:34 i:56 i:192	s:{"r":12,"g":34,"b":56,"a":192}	
+Color::fmt	A	i:12 i:34 i:56 i:193	s:#0c2238c1	
+Color::to_css	A	i:12 i:34 i:56 i:193	s:rgba(12,34,56,0.76)	
+Color::to_json	A	i:12 i:34 i:56 i:193	s:{"r":12,"g":34,"b":56,"a":193}	
+Color::fmt	A	i:12 i:34 i:56 i:194	s:#0c2238c2	
+Color::to_css	A	i:12 i:34 i:56 i:194	s:rgba(12,34,56,0.76)	
+Color::to_json	A	i:12 i:34 i:56 i:194	s:{"r":12,"g":34,"b":56,"a":194}	
+Color::fmt	A	i:12 i:34 i:56 i:195	s:#0c2238c3	
+Color::to_css	A	i:12 i:34 i:56 i:195	s:rgba(12,34,56,0.76)	
+Color::to_json	A	i:12 i:34 i:56 i:195	s:{"r":12,"g":34,"b":56,"a":195}	
+Color::fmt	A	i:12 i:34 i:56 i:196	s:#0c2238c4	
+Color::to_css	A	i:12 i:34 i:56 i:196	s:rgba(12,34,56,0.77)	
+Color::to_json	A	i:12 i:34 i:56 i:196	s:{"r":12,"g":34,"b":56,"a":196}	
+Color::fmt	A	i:12 i:34 i:56 i:197	s:#0c2238c5	
+Color::to_css	A	i:12 i:34 i:56 i:197	s:rgba(12,34,56,0.77)	
+Color::to_json	A	i:12 i:34 i:56 i:197	s:{"r":12,"g":34,"b":56,"a":197}	
+Color::fmt	A	i:12 i:34 i:56 i:198	s:#0c2238c6	
+Color::to_css	A	i:12 i:34 i:56 i:198	s:rgba(12,34,56,0.78)	
+Color::to_json	A	i:12 i:34 i:56 i:198	s:{"r":12,"g":34,"b":56,"a":198}	
+Color::fmt	A	i:12 i:34 i:56 i:199	s:#0c2238c7	
+Color::to_css	A	i:12 i:34 i:56 i:199	s:rgba(12,34,56,0.78)	
+Color::to_json	A	i:12 i:34 i:56 i:199	s:{"r":12,"g":34,"b":56,"a":199}	
+Color::fmt	A	i:12 i:34 i:56 i:200	s:#0c2238c8	
+Color::to_css	A	i:12 i:34 i:56 i:200	s:rgba(12,34,56,0.78)	
+Color::to_json	A	i:12 i:34 i:56 i:200	s:{"r":12,"g":34,"b":56,"a":200}	
+Color::fmt	A	i:12 i:34 i:56 i:201	s:#0c2238c9	
+Color::to_css	A	i:12 i:34 i:56 i:201	s:rgba(12,34,56,0.79)	
+Color::to_json	A	i:12 i:34 i:56 i:201	s:{"r":12,"g":34,"b":56,"a":201}	
+Color::fmt	A	i:12 i:34 i:56 i:202	s:#0c2238ca	
+Color::to_css	A	i:12 i:34 i:56 i:202	s:rgba(12,34,56,0.79)	
+Color::to_json	A	i:12 i:34 i:56 i:202	s:{"r":12,"g":34,"b":56,"a":202}	
+Color::fmt	A	i:12 i:34 i:56 i:203	s:#0c2238cb	
+Color::to_css	A	i:12 i:34 i:56 i:203	s:rgba(12,34,56,0.80)	
+Color::to_json	A	i:12 i:34 i:56 i:203	s:{"r":12,"g":34,"b":56,"a":203}	
+Color::fmt	A	i:12 i:34 i:56 i:204	s:#0c2238cc	
+Color::to_css	A	i:12 i:34 i:56 i:204	s:rgba(12,34,56,0.80)	
+Color::to_json	A	i:12 i:34 i:56 i:204	s:{"r":12,"g":34,"b":56,"a":204}	
+Color::fmt	A	i:12 i:34 i:56 i:205	s:#0c2238cd	
+Color::to_css	A	i:12 i:34 i:56 i:205	s:rgba(12,34,56,0.80)	
+Color::to_json	A	i:12 i:34 i:56 i:205	s:{"r":12,"g":34,"b":56,"a":205}	
+Color::fmt	A	i:12 i:34 i:56 i:206	s:#0c2238ce	
+Color::to_css	A	i:12 i:34 i:56 i:206	s:rgba(12,34,56,0.81)	
+Color::to_json	A	i:12 i:34 i:56 i:206	s:{"r":12,"g":34,"b":56,"a":206}	
+Color::fmt	A	i:12 i:34 i:56 i:207	s:#0c2238cf	
+Color::to_css	A	i:12 i:34 i:56 i:207	s:rgba(12,34,56,0.81)	
+Color::to_json	A	i:12 i:34 i:56 i:207	s:{"r":12,"g":34,"b":56,"a":207}	
+Color::fmt	A	i:12 i:34 i:56 i:208	s:#0c2238d0	
+Color::to_css	A	i:12 i:34 i:56 i:208	s:rgba(12,34,56,0.82)	
+Color::to_json	A	i:12 i:34 i:56 i:208	s:{"r":12,"g":34,"b":56,"a":208}	
+Color::fmt	A	i:12 i:34 i:56 i:209	s:#0c2238d1	
+Color::to_css	A	i:12 i:34 i:56 i:209	s:rgba(12,34,56,0.82)	
+Color::to_json	A	i:12 i:34 i:56 i:209	s:{"r":12,"g":34,"b":56,"a":209}	
+Color::fmt	A	i:12 i:34 i:56 i:210	s:#0c2238d2	
+Color::to_css	A	i:12 i:34 i:56 i:210	s:rgba(12,34,56,0.82)	
+Color::to_json	A	i:12 i:34 i:56 i:210	s:{"r":12,"g":34,"b":56,"a":210}	
+Color::fmt	A	i:12 i:34 i:56 i:211	s:#0c2238d3	
+Color::to_css	A	i:12 i:34 i:56 i:211	s:rgba(12,34,56,0.83)	
+Color::to_json	A	i:12 i:34 i:56 i:211	s:{"r":12,"g":34,"b":56,"a":211}	
+Color::fmt	A	i:12 i:34 i:56 i:212	s:#0c2238d4	
+Color::to_css	A	i:12 i:34 i:56 i:212	s:rgba(12,34,56,0.83)	
+Color::to_json	A	i:12 i:34 i:56 i:212	s:{"r":12,"g":34,"b":56,"a":212}	
+Color::fmt	A	i:12 i:34 i:56 i:213	s:#0c2238d5	
+Color::to_css	A	i:12 i:34 i:56 i:213	s:rgba(12,34,56,0.84)	
+Color::to_json	A	i:12 i:34 i:56 i:213	s:{"r":12,"g":34,"b":56,"a":213}	
+Color::fmt	A	i:12 i:34 i:56 i:214	s:#0c2238d6	
+Color::to_css	A	i:12 i:34 i:56 i:214	s:rgba(12,34,56,0.84)	
+Color::to_json	A	i:12 i:34 i:56 i:214	s:{"r":12,"g":34,"b":56,"a":214}	
+Color::fmt	A	i:12 i:34 i:56 i:215	s:#0c2238d7	
+Color::to_css	A	i:12 i:34 i:56 i:215	s:rgba(12,34,56,0.84)	
+Color::to_json	A	i:12 i:34 i:56 i:215	s:{"r":12,"g":34,"b":56,"a":215}	
+Color::fmt	A	i:12 i:34 i:56 i:216	s:#0c2238d8	
+Color::to_css	A	i:12 i:34 i:56 i:216	s:rgba(12,34,56,0.85)	
+Color::to_json	A	i:12 i:34 i:56 i:216	s:{"r":12,"g":34,"b":56,"a":216}	
+Color::fmt	A	i:12 i:34 i:56 i:217	s:#0c2238d9	
+Color::to_css	A	i:12 i:34 i:56 i:217	s:rgba(12,34,56,0.85)	
+Color::to_json	A	i:12 i:34 i:56 i:217	s:{"r":12,"g":34,"b":56,"a":217}	
+Color::fmt	A	i:12 i:34 i:56 i:218	s:#0c2238da	
+Color::to_css	A	i:12 i:34 i:56 i:218	s:rgba(12,34,56,0.85)	
+Color::to_json	A	i:12 i:34 i:56 i:218	s:{"r":12,"g":34,"b":56,"a":218}	
+Color::fmt	A	i:12 i:34 i:56 i:219	s:#0c2238db	
+Color::to_css	A	i:12 i:34 i:56 i:219	s:rgba(12,34,56,0.86)	
+Color::to_json	A	i:12 i:34 i:56 i:219	s:{"r":12,"g":34,"b":56,"a":219}	
+Color::fmt	A	i:12 i:34 i:56 i:220	s:#0c2238dc	
+Color::to_css	A	i:12 i:34 i:56 i:220	s:rgba(12,34,56,0.86)	
+Color::to_json	A	i:12 i:34 i:56 i:220	s:{"r":12,"g":34,"b":56,"a":220}	
+Color::fmt	A	i:12 i:34 i:56 i:221	s:#0c2238dd	
+Color::to_css	A	i:12 i:34 i:56 i:221	s:rgba(12,34,56,0.87)	
+Color::to_json	A	i:12 i:34 i:56 i:221	s:{"r":12,"g":34,"b":56,"a":221}	
+Color::fmt	A	i:12 i:34 i:56 i:222	s:#0c2238de	
+Color::to_css	A	i:12 i:34 i:56 i:222	s:rgba(12,34,56,0.87)	
+Color::to_json	A	i:12 i:34 i:56 i:222	s:{"r":12,"g":34,"b":56,"a":222}	
+Color::fmt	A	i:12 i:34 i:56 i:223	s:#0c2238df	
+Color::to_css	A	i:12 i:34 i:56 i:223	s:rgba(12,34,56,0.87)	
+Color::to_json	A	i:12 i:34 i:56 i:223	s:{"r":12,"g":34,"b":56,"a":223}	
+Color::fmt	A	i:12 i:34 i:56 i:224	s:#0c2238e0	
+Color::to_css	A	i:12 i:34 i:56 i:224	s:rgba(12,34,56,0.88)	
+Color::to_json	A	i:12 i:34 i:56 i:224	s:{"r":12,"g":34,"b":56,"a":224}	
+Color::fmt	A	i:12 i:34 i:56 i:225	s:#0c2238e1	
+Color::to_css	A	i:12 i:34 i:56 i:225	s:rgba(12,34,56,0.88)	
+Color::to_json	A	i:12 i:34 i:56 i:225	s:{"r":12,"g":34,"b":56,"a":225}	
+Color::fmt	A	i:12 i:34 i:56 i:226	s:#0c2238e2	
+Color::to_css	A	i:12 i:34 i:56 i:226	s:rgba(12,34,56,0.89)	
+Color::to_json	A	i:12 i:34 i:56 i:226	s:{"r":12,"g":34,"b":56,"a":226}	
+Color::fmt	A	i:12 i:34 i:56 i:227	s:#0c2238e3	
+Color::to_css	A	i:12 i:34 i:56 i:227	s:rgba(12,34,56,0.89)	
+Color::to_json	A	i:12 i:34 i:56 i:227	s:{"r":12,"g":34,"b":56,"a":227}	
+Color::fmt	A	i:12 i:34 i:56 i:228	s:#0c2238e4	
+Color::to_css	A	i:12 i:34 i:56 i:228	s:rgba(12,34,56,0.89)	
+Color::to_json	A	i:12 i:34 i:56 i:228	s:{"r":12,"g":34,"b":56,"a":228}	
+Color::fmt	A	i:12 i:34 i:56 i:229	s:#0c2238e5	
+Color::to_css	A	i:12 i:34 i:56 i:229	s:rgba(12,34,56,0.90)	
+Color::to_json	A	i:12 i:34 i:56 i:229	s:{"r":12,"g":34,"b":56,"a":229}	
+Color::fmt	A	i:12 i:34 i:56 i:230	s:#0c2238e6	
+Color::to_css	A	i:12 i:34 i:56 i:230	s:rgba(12,34,56,0.90)	
+Color::to_json	A	i:12 i:34 i:56 i:230	s:{"r":12,"g":34,"b":56,"a":230}	
+Color::fmt	A	i:12 i:34 i:56 i:231	s:#0c2238e7	
+Color::to_css	A	i:12 i:34 i:56 i:231	s:rgba(12,34,56,0.91)	
+Color::to_json	A	i:12 i:34 i:56 i:231	s:{"r":12,"g":34,"b":56,"a":231}	
+Color::fmt	A	i:12 i:34 i:56 i:232	s:#0c2238e8	
+Color::to_css	A	i:12 i:34 i:56 i:232	s:rgba(12,34,56,0.91)	
+Color::to_json	A	i:12 i:34 i:56 i:232	s:{"r":12,"g":34,"b":56,"a":232}	
+Color::fmt	A	i:12 i:34 i:56 i:233	s:#0c2238e9	
+Color::to_css	A	i:12 i:34 i:56 i:233	s:rgba(12,34,56,0.91)	
+Color::to_json	A	i:12 i:34 i:56 i:233	s:{"r":12,"g":34,"b":56,"a":233}	
+Color::fmt	A	i:12 i:34 i:56 i:234	s:#0c2238ea	
+Color::to_css	A	i:12 i:34 i:56 i:234	s:rgba(12,34,56,0.92)	
+Color::to_json	A	i:12 i:34 i:56 i:234	s:{"r":12,"g":34,"b":56,"a":234}	
+Color::fmt	A	i:12 i:34 i:56 i:235	s:#0c2238eb	
+Color::to_css	A	i:12 i:34 i:56 i:235	s:rgba(12,34,56,0.92)	
+Color::to_json	A	i:12 i:34 i:56 i:235	s:{"r":12,"g":34,"b":56,"a":235}	
+Color::fmt	A	i:12 i:34 i:56 i:236	s:#0c2238ec	
+Color::to_css	A	i:12 i:34 i:56 i:236	s:rgba(12,34,56,0.93)	
+Color::to_json	A	i:12 i:34 i:56 i:236	s:{"r":12,"g":34,"b":56,"a":236}	
+Color::fmt	A	i:12 i:34 i:56 i:237	s:#0c2238ed	
+Color::to_css	A	i:12 i:34 i:56 i:237	s:rgba(12,34,56,0.93)	
+Color::to_json	A	i:12 i:34 i:56 i:237	s:{"r":12,"g":34,"b":56,"a":237}	
+Color::fmt	A	i:12 i:34 i:56 i:238	s:#0c2238ee	
+Color::to_css	A	i:12 i:34 i:56 i:238	s:rgba(12,34,56,0.93)	
+Color::to_json	A	i:12 i:34 i:56 i:238	s:{"r":12,"g":34,"b":56,"a":238}	
+Color::fmt	A	i:12 i:34 i:56 i:239	s:#0c2238ef	
+Color::to_css	A	i:12 i:34 i:56 i:239	s:rgba(12,34,56,0.94)	
+Color::to_json	A	i:12 i:34 i:56 i:239	s:{"r":12,"g":34,"b":56,"a":239}	
+Color::fmt	A	i:12 i:34 i:56 i:240	s:#0c2238f0	
+Color::to_css	A	i:12 i:34 i:56 i:240	s:rgba(12,34,56,0.94)	
+Color::to_json	A	i:12 i:34 i:56 i:240	s:{"r":12,"g":34,"b":56,"a":240}	
+Color::fmt	A	i:12 i:34 i:56 i:241	s:#0c2238f1	
+Color::to_css	A	i:12 i:34 i:56 i:241	s:rgba(12,34,56,0.95)	
+Color::to_json	A	i:12 i:34 i:56 i:241	s:{"r":12,"g":34,"b":56,"a":241}	
+Color::fmt	A	i:12 i:34 i:56 i:242	s:#0c2238f2	
+Color::to_css	A	i:12 i:34 i:56 i:242	s:rgba(12,34,56,0.95)	
+Color::to_json	A	i:12 i:34 i:56 i:242	s:{"r":12,"g":34,"b":56,"a":242}	
+Color::fmt	A	i:12 i:34 i:56 i:243	s:#0c2238f3	
+Color::to_css	A	i:12 i:34 i:56 i:243	s:rgba(12,34,56,0.95)	
+Color::to_json	A	i:12 i:34 i:56 i:243	s:{"r":12,"g":34,"b":56,"a":243}	
+Color::fmt	A	i:12 i:34 i:56 i:244	s:#0c2238f4	
+Color::to_css	A	i:12 i:34 i:56 i:244	s:rgba(12,34,56,0.96)	
+Color::to_json	A	i:12 i:34 i:56 i:244	s:{"r":12,"g":34,"b":56,"a":244}	
+Color::fmt	A	i:12 i:34 i:56 i:245	s:#0c2238f5	
+Color::to_css	A	i:12 i:34 i:56 i:245	s:rgba(12,34,56,0.96)	
+Color::to_json	A	i:12 i:34 i:56 i:245	s:{"r":12,"g":34,"b":56,"a":245}	
+Color::fmt	A	i:12 i:34 i:56 i:246	s:#0c2238f6	
+Color::to_css	A	i:12 i:34 i:56 i:246	s:rgba(12,34,56,0.96)	
+Color::to_json	A	i:12 i:34 i:56 i:246	s:{"r":12,"g":34,"b":56,"a":246}	
+Color::fmt	A	i:12 i:34 i:56 i:247	s:#0c2238f7	
+Color::to_css	A	i:12 i:34 i:56 i:247	s:rgba(12,34,56,0.97)	
+Color::to_json	A	i:12 i:34 i:56 i:247	s:{"r":12,"g":34,"b":56,"a":247}	
+Color::fmt	A	i:12 i:34 i:56 i:248	s:#0c2238f8	
+Color::to_css	A	i:12 i:34 i:56 i:248	s:rgba(12,34,56,0.97)	
+Color::to_json	A	i:12 i:34 i:56 i:248	s:{"r":12,"g":34,"b":56,"a":248}	
+Color::fmt	A	i:12 i:34 i:56 i:249	s:#0c2238f9	
+Color::to_css	A	i:12 i:34 i:56 i:249	s:rgba(12,34,56,0.98)	
+Color::to_json	A	i:12 i:34 i:56 i:249	s:{"r":12,"g":34,"b":56,"a":249}	
+Color::fmt	A	i:12 i:34 i:56 i:250	s:#0c2238fa	
+Color::to_css	A	i:12 i:34 i:56 i:250	s:rgba(12,34,56,0.98)	
+Color::to_json	A	i:12 i:34 i:56 i:250	s:{"r":12,"g":34,"b":56,"a":250}	
+Color::fmt	A	i:12 i:34 i:56 i:251	s:#0c2238fb	
+Color::to_css	A	i:12 i:34 i:56 i:251	s:rgba(12,34,56,0.98)	
+Color::to_json	A	i:12 i:34 i:56 i:251	s:{"r":12,"g":34,"b":56,"a":251}	
+Color::fmt	A	i:12 i:34 i:56 i:252	s:#0c2238fc	
+Color::to_css	A	i:12 i:34 i:56 i:252	s:rgba(12,34,56,0.99)	
+Color::to_json	A	i:12 i:34 i:56 i:252	s:{"r":12,"g":34,"b":56,"a":252}	
+Color::fmt	A	i:12 i:34 i:56 i:253	s:#0c2238fd	
+Color::to_css	A	i:12 i:34 i:56 i:253	s:rgba(12,34,56,0.99)	
+Color::to_json	A	i:12 i:34 i:56 i:253	s:{"r":12,"g":34,"b":56,"a":253}	
+Color::fmt	A	i:12 i:34 i:56 i:254	s:#0c2238fe	
+Color::to_css	A	i:12 i:34 i:56 i:254	s:rgba(12,34,56,1.00)	
+Color::to_json	A	i:12 i:34 i:56 i:254	s:{"r":12,"g":34,"b":56,"a":254}	
+Color::fmt	A	i:12 i:34 i:56 i:255	s:#0c2238ff	
+Color::to_css	A	i:12 i:34 i:56 i:255	s:rgba(12,34,56,1.00)	
+Color::to_json	A	i:12 i:34 i:56 i:255	s:{"r":12,"g":34,"b":56,"a":255}	
+Color::from_json	A	s:{"r":255,"g":0,"b":0,"a":255}	i:255 i:0 i:0 i:255	
+Color::from_json	A	s:{"a":1,"b":2,"g":3,"r":4}	i:4 i:3 i:2 i:1	
+Color::from_json	A	s:{"r":256,"g":0,"b":0,"a":255}	E:serde s:invalid\svalue:\sinteger\s`256`,\sexpected\su8\sat\sline\s1\scolumn\s8	
+Color::from_json	A	s:{"r":-1,"g":0,"b":0,"a":255}	E:serde s:invalid\svalue:\sinteger\s`-1`,\sexpected\su8\sat\sline\s1\scolumn\s7	
+Color::from_json	A	s:{"r":1.0,"g":0,"b":0,"a":255}	E:serde s:invalid\stype:\sfloating\spoint\s`1.0`,\sexpected\su8\sat\sline\s1\scolumn\s8	
+Color::from_json	A	s:{"r":1e2,"g":0,"b":0,"a":255}	E:serde s:invalid\stype:\sfloating\spoint\s`100.0`,\sexpected\su8\sat\sline\s1\scolumn\s8	
+Color::from_json	A	s:{"r":1,"g":0,"b":0}	E:serde s:missing\sfield\s`a`\sat\sline\s1\scolumn\s19	
+Color::from_json	A	s:{"r":1,"g":0,"b":0,"a":255,"z":9}	i:1 i:0 i:0 i:255	
+Color::from_json	A	s:{"r":"1","g":0,"b":0,"a":255}	E:serde s:invalid\stype:\sstring\s"1",\sexpected\su8\sat\sline\s1\scolumn\s8	
+Color::from_json	A	s:[1,2,3,4]	i:1 i:2 i:3 i:4	
+RedactionTarget::fmt	A	e:RedactionTarget.Email	s:email	
+RedactionTarget::key	A	e:RedactionTarget.Email	s:email	
+RedactionTarget::to_json	A	e:RedactionTarget.Email	s:"Email"	
+RedactionTarget::fmt	A	e:RedactionTarget.Phone	s:phone	
+RedactionTarget::key	A	e:RedactionTarget.Phone	s:phone	
+RedactionTarget::to_json	A	e:RedactionTarget.Phone	s:"Phone"	
+RedactionTarget::fmt	A	e:RedactionTarget.CreditCard	s:credit\scard	
+RedactionTarget::key	A	e:RedactionTarget.CreditCard	s:credit_card	
+RedactionTarget::to_json	A	e:RedactionTarget.CreditCard	s:"CreditCard"	
+RedactionTarget::fmt	A	e:RedactionTarget.IpAddress	s:IP\saddress	
+RedactionTarget::key	A	e:RedactionTarget.IpAddress	s:ip_address	
+RedactionTarget::to_json	A	e:RedactionTarget.IpAddress	s:"IpAddress"	
+RedactionTarget::fmt	A	e:RedactionTarget.Custom s:ssn	s:custom:\sssn	
+RedactionTarget::key	A	e:RedactionTarget.Custom s:ssn	s:custom	
+RedactionTarget::to_json	A	e:RedactionTarget.Custom s:ssn	s:{"Custom":"ssn"}	
+RedactionTarget::fmt	A	e:RedactionTarget.Custom s:	s:custom:\s	
+RedactionTarget::key	A	e:RedactionTarget.Custom s:	s:custom	
+RedactionTarget::to_json	A	e:RedactionTarget.Custom s:	s:{"Custom":""}	
+RedactionTarget::fmt	A	e:RedactionTarget.Custom s:a\s"quoted"\sé\n	s:custom:\sa\s"quoted"\sé\n	
+RedactionTarget::key	A	e:RedactionTarget.Custom s:a\s"quoted"\sé\n	s:custom	
+RedactionTarget::to_json	A	e:RedactionTarget.Custom s:a\s"quoted"\sé\n	s:{"Custom":"a\s\\"quoted\\"\sé\\n"}	
+RedactionTarget::from_json	A	s:"Email"	e:RedactionTarget.Email	
+RedactionTarget::from_json	A	s:"CreditCard"	e:RedactionTarget.CreditCard	
+RedactionTarget::from_json	A	s:{"Custom":"x"}	e:RedactionTarget.Custom s:x	
+RedactionTarget::from_json	A	s:"email"	E:serde s:unknown\svariant\s`email`,\sexpected\sone\sof\s`Email`,\s`Phone`,\s`CreditCard`,\s`IpAddress`,\s`Custom`\sat\sline\s1\scolumn\s7	
+RedactionTarget::from_json	A	s:"Custom"	E:serde s:invalid\stype:\sunit\svariant,\sexpected\snewtype\svariant	
+RedactionTarget::from_json	A	s:{"Custom":5}	E:serde s:invalid\stype:\sinteger\s`5`,\sexpected\sa\sstring\sat\sline\s1\scolumn\s11	
+RedactionTarget::from_json	A	s:{"Email":null}	e:RedactionTarget.Email	
+CaptureSource::fmt	A	e:CaptureSource.FullScreen	s:full\sscreen	
+CaptureSource::fmt	A	e:CaptureSource.Window s:0x1a2b	s:window\s0x1a2b	
+CaptureSource::fmt	A	e:CaptureSource.Window s:	s:window\s	
+CaptureSource::fmt	A	e:CaptureSource.Window s:win\sdow	s:window\swin\sdow	
+CaptureSource::fmt	A	e:CaptureSource.Region g:00000000 g:00000000 g:44f00000 g:44870000	s:region\s(1920x1080\sat\s0,0)	
+CaptureSource::fmt	A	e:CaptureSource.Region g:41280000 g:c0500000 g:3dcccccd g:3e4ccccd	s:region\s(0.10000038x0.20000005\sat\s10.5,-3.25)	
+CaptureSource::fmt	A	e:CaptureSource.Region g:42c80000 g:42480000 g:c2200000 g:c1f00000	s:region\s(-40x-30\sat\s100,50)	
+CaptureSource::fmt	A	e:CaptureSource.Region g:7f7fffff g:00000000 g:3f800000 g:00800000	s:region\s(0x0.000000000000000000000000000000000000011754944\sat\s340282350000000000000000000000000000000,0)	
+CaptureSource::fmt	A	e:CaptureSource.Region g:7fc00000 g:7f800000 g:80000000 g:00000001	s:region\s(NaNxNaN\sat\sNaN,inf)	
+CaptureSource::fmt	A	e:CaptureSource.Region g:4b800000 g:00000000 g:3f800000 g:40400000	s:region\s(0x3\sat\s16777216,0)	
+Annotation::to_json	A	h:123456789abc4def8123456789abcdef e:AnnotationKind.Arrow g:41280000 g:c0000000 g:422f5555 g:c0000000 i:255 i:0 i:0 i:255 N	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Arrow","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":255,"g":0,"b":0,"a":255},"text":null}	
+Annotation::to_json	A	h:00000000000000000000000000000000 e:AnnotationKind.Arrow g:41280000 g:c0000000 g:422f5555 g:c0000000 i:0 i:255 i:0 i:255 s:	s:{"id":"00000000-0000-0000-0000-000000000000","kind":"Arrow","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":0,"g":255,"b":0,"a":255},"text":""}	
+Annotation::to_json	A	h:ffffffffffffffffffffffffffffffff e:AnnotationKind.Arrow g:41280000 g:c0000000 g:422f5555 g:c0000000 i:0 i:0 i:255 i:255 s:hello	s:{"id":"ffffffff-ffff-ffff-ffff-ffffffffffff","kind":"Arrow","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":0,"g":0,"b":255,"a":255},"text":"hello"}	
+Annotation::to_json	A	h:123456789abc4def8123456789abcdef e:AnnotationKind.Arrow g:41280000 g:c0000000 g:422f5555 g:c0000000 i:0 i:0 i:0 i:255 s:q"b\\s/\s\n\t\r\x01\x1F\x7F\sé😀	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Arrow","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":0,"g":0,"b":0,"a":255},"text":"q\\"b\\\\s/\s\\n\\t\\r\\u0001\\u001f\x7F\sé😀"}	
+Annotation::to_json	A	h:00000000000000000000000000000000 e:AnnotationKind.Arrow g:41280000 g:c0000000 g:422f5555 g:c0000000 i:255 i:255 i:255 i:255 s:</script>	s:{"id":"00000000-0000-0000-0000-000000000000","kind":"Arrow","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":255,"g":255,"b":255,"a":255},"text":"</script>"}	
+Annotation::to_json	A	h:ffffffffffffffffffffffffffffffff e:AnnotationKind.Rectangle g:41280000 g:c0000000 g:422f5555 g:c0000000 i:255 i:255 i:0 i:128 N	s:{"id":"ffffffff-ffff-ffff-ffff-ffffffffffff","kind":"Rectangle","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":255,"g":255,"b":0,"a":128},"text":null}	
+Annotation::to_json	A	h:123456789abc4def8123456789abcdef e:AnnotationKind.Rectangle g:41280000 g:c0000000 g:422f5555 g:c0000000 i:0 i:0 i:0 i:0 s:	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Rectangle","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":0,"g":0,"b":0,"a":0},"text":""}	
+Annotation::to_json	A	h:00000000000000000000000000000000 e:AnnotationKind.Rectangle g:41280000 g:c0000000 g:422f5555 g:c0000000 i:21 i:45 i:225 i:104 s:hello	s:{"id":"00000000-0000-0000-0000-000000000000","kind":"Rectangle","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":21,"g":45,"b":225,"a":104},"text":"hello"}	
+Annotation::to_json	A	h:ffffffffffffffffffffffffffffffff e:AnnotationKind.Rectangle g:41280000 g:c0000000 g:422f5555 g:c0000000 i:15 i:10 i:199 i:125 s:q"b\\s/\s\n\t\r\x01\x1F\x7F\sé😀	s:{"id":"ffffffff-ffff-ffff-ffff-ffffffffffff","kind":"Rectangle","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":15,"g":10,"b":199,"a":125},"text":"q\\"b\\\\s/\s\\n\\t\\r\\u0001\\u001f\x7F\sé😀"}	
+Annotation::to_json	A	h:123456789abc4def8123456789abcdef e:AnnotationKind.Rectangle g:41280000 g:c0000000 g:422f5555 g:c0000000 i:219 i:231 i:9 i:192 s:</script>	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Rectangle","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":219,"g":231,"b":9,"a":192},"text":"</script>"}	
+Annotation::to_json	A	h:00000000000000000000000000000000 e:AnnotationKind.Circle g:41280000 g:c0000000 g:422f5555 g:c0000000 i:212 i:98 i:163 i:8 N	s:{"id":"00000000-0000-0000-0000-000000000000","kind":"Circle","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":212,"g":98,"b":163,"a":8},"text":null}	
+Annotation::to_json	A	h:ffffffffffffffffffffffffffffffff e:AnnotationKind.Circle g:41280000 g:c0000000 g:422f5555 g:c0000000 i:17 i:17 i:18 i:50 s:	s:{"id":"ffffffff-ffff-ffff-ffff-ffffffffffff","kind":"Circle","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":17,"g":17,"b":18,"a":50},"text":""}	
+Annotation::to_json	A	h:123456789abc4def8123456789abcdef e:AnnotationKind.Circle g:41280000 g:c0000000 g:422f5555 g:c0000000 i:115 i:81 i:54 i:116 s:hello	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Circle","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":115,"g":81,"b":54,"a":116},"text":"hello"}	
+Annotation::to_json	A	h:00000000000000000000000000000000 e:AnnotationKind.Circle g:41280000 g:c0000000 g:422f5555 g:c0000000 i:17 i:1 i:70 i:47 s:q"b\\s/\s\n\t\r\x01\x1F\x7F\sé😀	s:{"id":"00000000-0000-0000-0000-000000000000","kind":"Circle","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":17,"g":1,"b":70,"a":47},"text":"q\\"b\\\\s/\s\\n\\t\\r\\u0001\\u001f\x7F\sé😀"}	
+Annotation::to_json	A	h:ffffffffffffffffffffffffffffffff e:AnnotationKind.Circle g:41280000 g:c0000000 g:422f5555 g:c0000000 i:83 i:233 i:28 i:130 s:</script>	s:{"id":"ffffffff-ffff-ffff-ffff-ffffffffffff","kind":"Circle","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":83,"g":233,"b":28,"a":130},"text":"</script>"}	
+Annotation::to_json	A	h:123456789abc4def8123456789abcdef e:AnnotationKind.Text g:41280000 g:c0000000 g:422f5555 g:c0000000 i:65 i:228 i:138 i:51 N	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Text","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":65,"g":228,"b":138,"a":51},"text":null}	
+Annotation::to_json	A	h:00000000000000000000000000000000 e:AnnotationKind.Text g:41280000 g:c0000000 g:422f5555 g:c0000000 i:201 i:193 i:78 i:44 s:	s:{"id":"00000000-0000-0000-0000-000000000000","kind":"Text","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":201,"g":193,"b":78,"a":44},"text":""}	
+Annotation::to_json	A	h:ffffffffffffffffffffffffffffffff e:AnnotationKind.Text g:41280000 g:c0000000 g:422f5555 g:c0000000 i:10 i:14 i:139 i:249 s:hello	s:{"id":"ffffffff-ffff-ffff-ffff-ffffffffffff","kind":"Text","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":10,"g":14,"b":139,"a":249},"text":"hello"}	
+Annotation::to_json	A	h:123456789abc4def8123456789abcdef e:AnnotationKind.Text g:41280000 g:c0000000 g:422f5555 g:c0000000 i:150 i:218 i:86 i:156 s:q"b\\s/\s\n\t\r\x01\x1F\x7F\sé😀	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Text","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":150,"g":218,"b":86,"a":156},"text":"q\\"b\\\\s/\s\\n\\t\\r\\u0001\\u001f\x7F\sé😀"}	
+Annotation::to_json	A	h:00000000000000000000000000000000 e:AnnotationKind.Text g:41280000 g:c0000000 g:422f5555 g:c0000000 i:163 i:18 i:204 i:206 s:</script>	s:{"id":"00000000-0000-0000-0000-000000000000","kind":"Text","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":163,"g":18,"b":204,"a":206},"text":"</script>"}	
+Annotation::to_json	A	h:ffffffffffffffffffffffffffffffff e:AnnotationKind.Highlight g:41280000 g:c0000000 g:422f5555 g:c0000000 i:70 i:66 i:141 i:76 N	s:{"id":"ffffffff-ffff-ffff-ffff-ffffffffffff","kind":"Highlight","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":70,"g":66,"b":141,"a":76},"text":null}	
+Annotation::to_json	A	h:123456789abc4def8123456789abcdef e:AnnotationKind.Highlight g:41280000 g:c0000000 g:422f5555 g:c0000000 i:66 i:9 i:136 i:3 s:	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Highlight","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":66,"g":9,"b":136,"a":3},"text":""}	
+Annotation::to_json	A	h:00000000000000000000000000000000 e:AnnotationKind.Highlight g:41280000 g:c0000000 g:422f5555 g:c0000000 i:208 i:9 i:5 i:161 s:hello	s:{"id":"00000000-0000-0000-0000-000000000000","kind":"Highlight","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":208,"g":9,"b":5,"a":161},"text":"hello"}	
+Annotation::to_json	A	h:ffffffffffffffffffffffffffffffff e:AnnotationKind.Highlight g:41280000 g:c0000000 g:422f5555 g:c0000000 i:195 i:119 i:185 i:121 s:q"b\\s/\s\n\t\r\x01\x1F\x7F\sé😀	s:{"id":"ffffffff-ffff-ffff-ffff-ffffffffffff","kind":"Highlight","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":195,"g":119,"b":185,"a":121},"text":"q\\"b\\\\s/\s\\n\\t\\r\\u0001\\u001f\x7F\sé😀"}	
+Annotation::to_json	A	h:123456789abc4def8123456789abcdef e:AnnotationKind.Highlight g:41280000 g:c0000000 g:422f5555 g:c0000000 i:236 i:149 i:55 i:170 s:</script>	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Highlight","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":236,"g":149,"b":55,"a":170},"text":"</script>"}	
+Annotation::to_json	A	h:00000000000000000000000000000000 e:AnnotationKind.Redaction g:41280000 g:c0000000 g:422f5555 g:c0000000 i:199 i:1 i:181 i:39 N	s:{"id":"00000000-0000-0000-0000-000000000000","kind":"Redaction","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":199,"g":1,"b":181,"a":39},"text":null}	
+Annotation::to_json	A	h:ffffffffffffffffffffffffffffffff e:AnnotationKind.Redaction g:41280000 g:c0000000 g:422f5555 g:c0000000 i:4 i:250 i:138 i:156 s:	s:{"id":"ffffffff-ffff-ffff-ffff-ffffffffffff","kind":"Redaction","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":4,"g":250,"b":138,"a":156},"text":""}	
+Annotation::to_json	A	h:123456789abc4def8123456789abcdef e:AnnotationKind.Redaction g:41280000 g:c0000000 g:422f5555 g:c0000000 i:240 i:238 i:173 i:55 s:hello	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Redaction","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":240,"g":238,"b":173,"a":55},"text":"hello"}	
+Annotation::to_json	A	h:00000000000000000000000000000000 e:AnnotationKind.Redaction g:41280000 g:c0000000 g:422f5555 g:c0000000 i:45 i:9 i:61 i:1 s:q"b\\s/\s\n\t\r\x01\x1F\x7F\sé😀	s:{"id":"00000000-0000-0000-0000-000000000000","kind":"Redaction","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":45,"g":9,"b":61,"a":1},"text":"q\\"b\\\\s/\s\\n\\t\\r\\u0001\\u001f\x7F\sé😀"}	
+Annotation::to_json	A	h:ffffffffffffffffffffffffffffffff e:AnnotationKind.Redaction g:41280000 g:c0000000 g:422f5555 g:c0000000 i:127 i:152 i:166 i:155 s:</script>	s:{"id":"ffffffff-ffff-ffff-ffff-ffffffffffff","kind":"Redaction","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":127,"g":152,"b":166,"a":155},"text":"</script>"}	
+Annotation::to_json	A	h:123456789abc4def8123456789abcdef e:AnnotationKind.FreeForm g:41280000 g:c0000000 g:422f5555 g:c0000000 i:143 i:42 i:38 i:33 N	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"FreeForm","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":143,"g":42,"b":38,"a":33},"text":null}	
+Annotation::to_json	A	h:00000000000000000000000000000000 e:AnnotationKind.FreeForm g:41280000 g:c0000000 g:422f5555 g:c0000000 i:26 i:37 i:139 i:189 s:	s:{"id":"00000000-0000-0000-0000-000000000000","kind":"FreeForm","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":26,"g":37,"b":139,"a":189},"text":""}	
+Annotation::to_json	A	h:ffffffffffffffffffffffffffffffff e:AnnotationKind.FreeForm g:41280000 g:c0000000 g:422f5555 g:c0000000 i:208 i:53 i:58 i:173 s:hello	s:{"id":"ffffffff-ffff-ffff-ffff-ffffffffffff","kind":"FreeForm","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":208,"g":53,"b":58,"a":173},"text":"hello"}	
+Annotation::to_json	A	h:123456789abc4def8123456789abcdef e:AnnotationKind.FreeForm g:41280000 g:c0000000 g:422f5555 g:c0000000 i:187 i:53 i:33 i:167 s:q"b\\s/\s\n\t\r\x01\x1F\x7F\sé😀	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"FreeForm","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":187,"g":53,"b":33,"a":167},"text":"q\\"b\\\\s/\s\\n\\t\\r\\u0001\\u001f\x7F\sé😀"}	
+Annotation::to_json	A	h:00000000000000000000000000000000 e:AnnotationKind.FreeForm g:41280000 g:c0000000 g:422f5555 g:c0000000 i:16 i:121 i:181 i:64 s:</script>	s:{"id":"00000000-0000-0000-0000-000000000000","kind":"FreeForm","position":{"x":10.5,"y":-2.0,"width":33.333332,"height":0.0},"color":{"r":16,"g":121,"b":181,"a":64},"text":"</script>"}	
+Annotation::from_json	A	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Rectangle","position":{"x":1,"y":2,"width":3,"height":4},"color":{"r":1,"g":2,"b":3,"a":4},"text":null}	h:123456789abc4def8123456789abcdef e:AnnotationKind.Rectangle g:3f800000 g:40000000 g:40800000 g:40c00000 i:1 i:2 i:3 i:4 N	
+Annotation::from_json	A	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Text","position":{"x":1,"y":2,"width":3,"height":4},"color":{"r":1,"g":2,"b":3,"a":4},"text":"hi\s\\u00e9\s\\ud83d\\ude00\s\\"q\\"\s\\\\\s\\/\s\\n"}	h:123456789abc4def8123456789abcdef e:AnnotationKind.Text g:3f800000 g:40000000 g:40800000 g:40c00000 i:1 i:2 i:3 i:4 s:hi\sé\s😀\s"q"\s\\\s/\s\n	
+Annotation::from_json	A	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Arrow","position":{"x":1,"y":2,"width":3,"height":4},"color":{"r":1,"g":2,"b":3,"a":4}}	h:123456789abc4def8123456789abcdef e:AnnotationKind.Arrow g:3f800000 g:40000000 g:40800000 g:40c00000 i:1 i:2 i:3 i:4 N	
+Annotation::from_json	A	s:{"id":"123456789ABC4DEF8123456789ABCDEF","kind":"Arrow","position":{"x":1,"y":2,"width":3,"height":4},"color":{"r":1,"g":2,"b":3,"a":4},"text":null}	h:123456789abc4def8123456789abcdef e:AnnotationKind.Arrow g:3f800000 g:40000000 g:40800000 g:40c00000 i:1 i:2 i:3 i:4 N	
+Annotation::from_json	A	s:{"id":"{12345678-9abc-4def-8123-456789abcdef}","kind":"Arrow","position":{"x":1,"y":2,"width":3,"height":4},"color":{"r":1,"g":2,"b":3,"a":4},"text":null}	h:123456789abc4def8123456789abcdef e:AnnotationKind.Arrow g:3f800000 g:40000000 g:40800000 g:40c00000 i:1 i:2 i:3 i:4 N	
+Annotation::from_json	A	s:{"id":"urn:uuid:12345678-9abc-4def-8123-456789abcdef","kind":"Arrow","position":{"x":1,"y":2,"width":3,"height":4},"color":{"r":1,"g":2,"b":3,"a":4},"text":null}	h:123456789abc4def8123456789abcdef e:AnnotationKind.Arrow g:3f800000 g:40000000 g:40800000 g:40c00000 i:1 i:2 i:3 i:4 N	
+Annotation::from_json	A	s:{"id":"not-a-uuid","kind":"Arrow","position":{"x":1,"y":2,"width":3,"height":4},"color":{"r":1,"g":2,"b":3,"a":4},"text":null}	E:serde s:UUID\sparsing\sfailed:\sinvalid\scharacter:\sfound\s`n`\sat\s0\sat\sline\s1\scolumn\s18	
+Annotation::from_json	A	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"arrow","position":{"x":1,"y":2,"width":3,"height":4},"color":{"r":1,"g":2,"b":3,"a":4},"text":null}	E:serde s:unknown\svariant\s`arrow`,\sexpected\sone\sof\s`Arrow`,\s`Rectangle`,\s`Circle`,\s`Text`,\s`Highlight`,\s`Redaction`,\s`FreeForm`\sat\sline\s1\scolumn\s59	
+Annotation::from_json	A	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Arrow","position":{"x":1e39,"y":2,"width":3,"height":4},"color":{"r":1,"g":2,"b":3,"a":4},"text":null}	E:serde s:rect\scoordinates\smust\sbe\sfinite\sand\swithin\sf32\srange\sat\sline\s1\scolumn\s108	
+Annotation::from_json	A	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Arrow","position":{"x":1,"y":2,"width":3,"height":4},"color":{"r":1,"g":2,"b":3,"a":400},"text":null}	E:serde s:invalid\svalue:\sinteger\s`400`,\sexpected\su8\sat\sline\s1\scolumn\s140	
+Annotation::from_json	A	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Arrow","position":{"x":1,"y":2,"width":3,"height":4},"color":{"r":1,"g":2,"b":3,"a":4},"text":7}	E:serde s:invalid\stype:\sinteger\s`7`,\sexpected\sa\sstring\sat\sline\s1\scolumn\s148	
+Annotation::from_json	A	s:{"kind":"Arrow","position":{"x":1,"y":2,"width":3,"height":4},"color":{"r":1,"g":2,"b":3,"a":4},"text":null}	E:serde s:missing\sfield\s`id`\sat\sline\s1\scolumn\s108	
+Annotation::from_json	A	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Arrow","position":{"x":1,"y":2,"width":3,"height":4},"color":{"r":1,"g":2,"b":3,"a":4},"text":null,"extra":[1,2]}	h:123456789abc4def8123456789abcdef e:AnnotationKind.Arrow g:3f800000 g:40000000 g:40800000 g:40c00000 i:1 i:2 i:3 i:4 N	
+Annotation::from_json	A	s:{"id":"12345678-9abc-4def-8123-456789abcdef","kind":"Arrow","position":{"x":1,"y":2,"width":3,"height":4},"color":{"r":1,"g":2,"b":3,"a":4},"text":"\\ud800"}	E:serde s:unexpected\send\sof\shex\sescape\sat\sline\s1\scolumn\s155	

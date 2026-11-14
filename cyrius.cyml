@@ -56,5 +56,17 @@ mcp = ["bote"]
 [test]
 stdlib = ["assert", "bench"]
 
-# [lib] arrives at M1 with its first module (src/error.cyr): `[lib] modules = []` is invalid.
-# Its order will be the port plan's §2 step 3 list; [lib.mcp] repeats it and adds src/mcp.cyr.
+# The bundle consumers include (dist/selah.cyr), in dependency order: Cyrius is single-pass and no src/ file includes
+# another, so a module comes after everything it calls. tests/selah_src.cyr lists the same order for the test units.
+# [lib.mcp] (M6) repeats this list and adds src/mcp.cyr.
+[lib]
+modules = [
+    "src/error.cyr",
+    "src/log.cyr",
+    "src/fmtf.cyr",
+    "src/json.cyr",
+    "src/uuid.cyr",
+    "src/rfc3339.cyr",
+    "src/geometry.cyr",
+    "src/core.cyr",
+]

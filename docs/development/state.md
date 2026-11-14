@@ -19,18 +19,25 @@ oracle. The Cyrius port is in progress and ships as **1.0.0** at M7. Plan of rec
 | Milestone | State |
 |---|---|
 | M0 Initialize | ✅ done 2026-11-14 |
-| M1–M7 | not started |
+| M1 Foundation | ✅ done 2026-11-14 |
+| M2–M7 | not started |
 
 ## Source
 
 - Rust oracle: `rust-old/` (7,160 lines in `src/`, 289 tests), frozen; green from its new location (2026-11-14).
-- Cyrius: `src/main.cyr`, the scaffold stub. `[lib]` arrives at M1.
+- Cyrius: `src/` holds error, log, fmtf, json, uuid, rfc3339, geometry and core (about 2,200 lines), bundled as
+  `dist/selah.cyr` (`[lib]`); `src/main.cyr` is the build-smoke stub.
+- Surface parity: 34/34 for the ported modules (`scripts/surface_parity.py`); ai, annotate, lib, fsutil, http,
+  history, capture, daimon and mcp are pending their milestones.
 
 ## Tests
 
-- `cyrius test`: the scaffold smoke test, and `tests/parity.tcyr` replaying the golden corpus.
-- Golden corpus: `decode`, 63 fixtures. Baseline (not gated until M3): 47 ok, 14 measured, 2 accepted, 0 failed,
-  identical on x86_64 ELF, aarch64 (qemu) and x86_64 PE (wine). Findings F1–F5 in [`port-parity.md`](port-parity.md).
+- `cyrius test`: `tests/parity.tcyr` (the golden corpus), the ported Rust tests (`error.tcyr`, `geometry.tcyr`,
+  `core.tcyr`: 64 Rust tests and 7 doctests, 186 assertions), and `selah.tcyr` (the bundle, as a consumer sees it).
+- Golden corpus: 34,926 rows. M1's 34,863 are all class A and all pass, identical on x86_64 ELF, aarch64 (qemu)
+  and x86_64 PE (wine). `decode` (63, not gated until M3): 47 ok, 14 measured, 2 accepted; findings F1–F5 in
+  [`port-parity.md`](port-parity.md).
+- Benches: 6 of 13 ported, recorded against Rust in [`../benchmarks-rust-v-cyrius.md`](../benchmarks-rust-v-cyrius.md).
 
 ## Dependencies
 
@@ -54,8 +61,8 @@ taswir, aethersafta, kiran (planned): none is in Cyrius yet. Rust consumers stay
 - hoosh: image parts for non-OpenAI providers, the 1 MiB cap
   (`hoosh/docs/development/issues/2026-11-14-selah-vision-image-parts-reach-only-openai-shaped-providers.md`)
 - sandhi: `total_ms` and a blocked read (`sandhi/docs/development/issues/2026-11-11-total-ms-does-not-bound-a-blocked-first-read.md`)
+- cyrius: RFC 3339 with fractions and offsets in `lib/chrono.cyr` (`cyrius/docs/development/issues/2026-11-14-chrono-rfc3339-has-no-fraction-or-offset.md`)
 
 ## Next
 
-M1 Foundation (error, log, fmtf, json, geometry, core, uuid, rfc3339). M3 starts by settling port-parity.md §2
-F1–F5.
+M2 PII and smart crop (`ai`). M3 starts by settling port-parity.md §2 F1–F5.

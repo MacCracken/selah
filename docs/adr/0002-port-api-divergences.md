@@ -32,6 +32,8 @@ The Cyrius 1.0.0 API differs from Rust 0.30.0 in exactly these places:
 | 11 (D9) | free functions in modules (`selah::annotate_image`, `core::xml_escape`) | `selah_<rust name>`; types `Sl<Name>` with `impl` methods; constants and enum members `SL_*` | surface parity strips the prefix before diffing |
 | 12 (D4) | `pub use hisab::Vec2` | `SlVec2`, local (hisab 3.4.1 has no 2D f32 rect or vector) | class A |
 | 13 (D13) | the reserved no-op feature `ai` | not carried; there are no Cyrius consumers to keep building | none |
+| 14 *(M1, 2026-11-14)* | a refused JSON document is a `serde_json::Error` whose message names the field and the line and column | the readers (`SlRect_from_json`, `SlColor_from_json`, `SlAnnotation_from_json`, the enums' `from_json`) refuse exactly what serde refuses, as `SL_ERR_SERDE`, with the port's own message | `E:serde` rows compare the verdict only; every accept, and every value read, is class A |
+| 15 *(M1, 2026-11-14)* | `Rect::x`, `y`, `width`, `height` and `area` return `f32` | they return an `f64` holding the f32's exact value: Cyrius has no f32 return type. `f32_from` of it gives the f32 back unchanged, and the arithmetic stays f32 in Rust's order | class A on the f32 bits (`f32_from` of the result) |
 
 ## Consequences
 

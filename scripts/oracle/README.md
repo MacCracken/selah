@@ -29,6 +29,12 @@ cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --chec
 | Module | Milestone | Rows | Emitter | Notes |
 |---|---|---|---|---|
 | `decode` | M0 (baseline), gated at M3 | 63 | `src/m_decode.rs` | the fixtures in `tests/golden/fixtures/`, built by `src/fixtures.rs` |
+| `error` | M1 | 30 | `src/m_error.rs` | `SelahError`'s Display |
+| `fmtf` | M1 | 24,060 | `src/m_fmtf.rs` | f32 / f64 through Rust's Display and serde_json (zmij): every binade, powers of ten, a seeded sweep |
+| `geometry` | M1 | 8,129 | `src/m_geometry.rs` | `Rect` (rects given as `Rect::new`'s arguments, returned as the layout), its JSON both ways |
+| `core` | M1 | 1,331 | `src/m_core.rs` | the enums, `xml_escape`, `derive_output_path`, `Color`, `RedactionTarget`, `CaptureSource`, `Annotation` JSON |
+| `uuid` | M1 | 144 | `src/m_uuid.rs` | ids written (hyphenated, simple, JSON) and read (`Uuid::parse_str`'s forms) |
+| `rfc3339` | M1 | 1,169 | `src/m_rfc3339.rs` | chrono's `DateTime<Utc>` through serde, both ways |
 
 ## Fixtures
 
@@ -71,7 +77,10 @@ fn <TAB> class <TAB> inputs <TAB> outputs <TAB> note
 | `s:<text>` | a string; `\\`, `\t`, `\n`, `\r` and `\s` (space) are escaped |
 | `b:0` / `b:1` | a bool |
 | `p:<path>` | a file under `tests/golden/` (a fixture input, or a byte blob such as decoded RGBA) |
-| `E:<Variant>` | the call returned `Err` with this `SelahError` variant; the message is in the note |
+| `e:<Enum>.<Variant>` | an enum value |
+| `h:<hex>` | raw bytes (a UUID's 16) |
+| `N` | `None` |
+| `E:<Variant>` | the call returned `Err` with this `SelahError` variant. In `decode` the message is in the note; from M1 an `s:` token after it carries the message (the port's `detail_out`). `E:serde` is a refused JSON document: the verdict is compared, not serde_json's message (ADR 0002 #14) |
 
 ### `decode`
 
@@ -83,7 +92,9 @@ refusal; class B for a decoded JPEG.
 
 ## Comparison
 
-- **A**: the verdict (ok or refused) must agree; on ok, the dimensions and every byte of the RGBA must be equal.
+- **A**: the verdict (ok or refused) must agree; on ok, every output token must be equal, and in `decode` the
+  dimensions and every byte of the RGBA. A `g:` / `f:` float token matches bit for bit, except that any NaN matches
+  any NaN (NaN payloads are not meaningful, and differ between targets).
 - **B**: the verdict and dimensions must agree; every channel within K_jpeg of the oracle's. K_jpeg is set from the
   M0 step 7 baseline before the class is gated (`docs/development/port-parity.md`).
 - **`adr=0002#N`**: the port's answer is the one ADR 0002 row N gives (for #1 and #2, a refusal), reported by name

@@ -311,8 +311,8 @@ this repo (CLAUDE.md).
    stdlib = ["assert", "bench"]
 
    [lib]
-   modules = ["src/error.cyr", "src/log.cyr", "src/fmtf.cyr", "src/json.cyr", "src/geometry.cyr", "src/core.cyr",
-              "src/uuid.cyr", "src/rfc3339.cyr", "src/ai.cyr", "src/codec.cyr", "src/png_enc.cyr",
+   modules = ["src/error.cyr", "src/log.cyr", "src/fmtf.cyr", "src/json.cyr", "src/uuid.cyr", "src/rfc3339.cyr",
+              "src/geometry.cyr", "src/core.cyr", "src/ai.cyr", "src/codec.cyr", "src/png_enc.cyr",
               "src/bmp_enc.cyr", "src/jpeg_enc.cyr", "src/raster.cyr", "src/annotate.cyr", "src/fsutil.cyr",
               "src/history.cyr", "src/http.cyr", "src/spawn.cyr", "src/capture.cyr", "src/daimon.cyr",
               "src/selah.cyr"]
@@ -559,7 +559,7 @@ and leaves when the upstream piece ships. The format is pravash's.
 | L2 | hand JSON codecs (D8) | `#derive(Serialize)` defects | cyrius `2026-11-07-derive-serialize-key-scan-reads-past-nul`, `…-reader-memsets-a-refused-allocation`, `…-vec-struct-element-loop-hangs-on-stray-brace`, `2026-11-11-derive-writer-faults-on-a-zero-str-field`, `2026-11-12-derive-serialize-in-a-second-private-file-fails-to-compile` | the derive is fixed and byte-matches serde_json |
 | L3 | `src/spawn.cyr`: a spawn that writes stdin while draining stderr | `lib/process.cyr` has `run`, `spawn` and `exec_capture`, but none feeds stdin | **to file at M5** as a cyrius stdlib request | the stdlib grows it |
 | L4 | a stable top-N or merge sort for `history::list` | `vec_sort_by` is introsort and not stable | cyrius `2026-11-11-no-stable-sort` | the stdlib has a stable sort |
-| L5 | `src/rfc3339.cyr`: RFC 3339 with nanoseconds, parse and format | `iso8601` / `iso8601_parse` are whole seconds only | **to file at M1** once the parser's handling of fractions and offsets is confirmed | `lib/chrono.cyr` covers it |
+| L5 | `src/rfc3339.cyr`: RFC 3339 with nanoseconds, chrono's AutoSi writer and its relaxed parser | `iso8601` / `iso8601_parse` are whole seconds only, with no offset but `Z` | **filed** `../cyrius/docs/development/issues/2026-11-14-chrono-rfc3339-has-no-fraction-or-offset.md` | `lib/chrono.cyr` covers it |
 | L6 | `src/png_enc.cyr`, `bmp_enc.cyr`, `jpeg_enc.cyr` | chitra is decode-only by policy, and no Cyrius encoder library exists | none. A sibling encoder package is the maintainer's call (§7) | an encoder package exists |
 | L7 | `src/geometry.cyr` | hisab has no 2D f32 rect | none: selah needs six operations | hisab grows a 2D rect |
 | L8 | the OCR downscale loop, and only OpenAI-compatible OCR models | hoosh's 1 MiB cap, and its image parts on other providers | **filed** `../hoosh/docs/development/issues/2026-11-14-selah-vision-image-parts-reach-only-openai-shaped-providers.md` | hoosh lands it |
@@ -592,7 +592,7 @@ around silently. That includes the probe results in M0 step 4 when they find one
 | Milestone | Status | Golden rows | Ported tests | Benches | Notes |
 |---|---|---|---|---|---|
 | M0 Initialize | ✅ done 2026-11-14 | `decode` 63 (the baseline: 47 ok, 14 measured, 2 accepted; identical on x86_64 ELF, aarch64 and x86_64 PE) | — | Rust baseline at `c0da3e1` (all 13 in `rust-old/bench-history.csv`) | Step 0: the oracle green on rustc 1.100.0 (289 tests), released and tagged as **0.30.0** (`1a494b4`). Steps 1–3: `cyrius port`, the scaffold repaired (CLAUDE.md, roadmap, state, workflows, version, bench, stub docs), the Rust material moved to `rust-old/`, ADRs 0001 and 0002, the manifest with chitra, ranga and an optional bote, `lib/` vendored. Step 4: probes a–f (§2). Steps 5–7: `scripts/oracle/` (deterministic, `--check`; 63 fixtures), `tests/parity.tcyr`, and the decode baseline with five findings, F1–F5, for M3 to settle ([port-parity.md](port-parity.md) §2). The M0 gate is green: build, test, `test --bounds`, bench, lint, fmt, docs, audit; the only warning is the tolerated static-data advisory |
-| M1 Foundation | ⏳ | | | `rect_new`, `rect_contains_point`, `rect_intersects`, `xml_escape_*` | |
+| M1 Foundation | ✅ done 2026-11-14 | error 30 + fmtf 24,060 + geometry 8,129 + core 1,331 + uuid 144 + rfc3339 1,169 = **34,863, all class A, all equal on x86_64 ELF, aarch64 and x86_64 PE** | error.tcyr (6 Rust tests + 1), geometry.tcyr (19 + 1 doctest), core.tcyr (39 + 5 doctests + 2): 186 assertions; selah.tcyr smoke-tests `dist/selah.cyr` | 6 (`rect_new` 5.7×, `rect_contains_point` 17×, `rect_intersects` 32×, `xml_escape_plain` 5.2×, `_special` 6.8×, `_long` 13× Rust: [benchmarks-rust-v-cyrius.md](../benchmarks-rust-v-cyrius.md)) | `error`, `log`, `fmtf`, `json`, `uuid`, `rfc3339`, `geometry`, `core`; `[lib]` and `dist/selah.cyr`; surface parity 34/34 (`scripts/surface_parity.py`). Learned: zmij's JSON positional range is −6..=12 for f32 (−5..=15 for f64); serde also accepts `{"Variant": null}` for a unit variant and a struct as an array; Rust's `f32::min`/`max` on ±0 give the second operand. ADR 0002 rows #14 (serde error text) and #15 (f64 accessors). Filed: cyrius chrono RFC 3339 (L5) |
 | M2 PII and smart crop | ⏳ | | | `suggest_redactions_*`, `extract_text_regions_64k` | |
 | M3 Codecs | ⏳ | | | | Starts by settling port-parity.md §2 F1–F5 (JPEG upsampling, IDCT bound K_jpeg = 2, 16-bit BMP expansion, 32-bit `BI_RGB` alpha, CMYK) and flipping `_PAR_DECODE_GATED` |
 | M4 Annotation | ⏳ | | | `render_to_image_64x64`, `render_to_image_512_bmp`, `to_svg_100` | |

@@ -1,0 +1,149 @@
+# format 1 · module uuid
+# oracle: selah 0.30.0 (rust-old/, tag 0.30.0), image 0.25.10, png 0.18.1, zune-jpeg 0.5.15, image-webp 0.2.4
+# regenerate: cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml
+# columns: fn<TAB>class<TAB>inputs<TAB>outputs<TAB>note · h:<16 bytes> for an id
+# rows: 144
+Uuid::fmt	A	h:00000000000000000000000000000000	s:00000000-0000-0000-0000-000000000000	
+Uuid::simple	A	h:00000000000000000000000000000000	s:00000000000000000000000000000000	
+Uuid::to_json	A	h:00000000000000000000000000000000	s:"00000000-0000-0000-0000-000000000000"	
+Uuid::fmt	A	h:ffffffffffffffffffffffffffffffff	s:ffffffff-ffff-ffff-ffff-ffffffffffff	
+Uuid::simple	A	h:ffffffffffffffffffffffffffffffff	s:ffffffffffffffffffffffffffffffff	
+Uuid::to_json	A	h:ffffffffffffffffffffffffffffffff	s:"ffffffff-ffff-ffff-ffff-ffffffffffff"	
+Uuid::fmt	A	h:00000075a916d496507512fbe41d1cbf	s:00000075-a916-d496-5075-12fbe41d1cbf	
+Uuid::simple	A	h:00000075a916d496507512fbe41d1cbf	s:00000075a916d496507512fbe41d1cbf	
+Uuid::to_json	A	h:00000075a916d496507512fbe41d1cbf	s:"00000075-a916-d496-5075-12fbe41d1cbf"	
+Uuid::fmt	A	h:868754af6589e9465616554eb2386b14	s:868754af-6589-e946-5616-554eb2386b14	
+Uuid::simple	A	h:868754af6589e9465616554eb2386b14	s:868754af6589e9465616554eb2386b14	
+Uuid::to_json	A	h:868754af6589e9465616554eb2386b14	s:"868754af-6589-e946-5616-554eb2386b14"	
+Uuid::fmt	A	h:6599a44711a05ec2984c9c6621b2eeff	s:6599a447-11a0-5ec2-984c-9c6621b2eeff	
+Uuid::simple	A	h:6599a44711a05ec2984c9c6621b2eeff	s:6599a44711a05ec2984c9c6621b2eeff	
+Uuid::to_json	A	h:6599a44711a05ec2984c9c6621b2eeff	s:"6599a447-11a0-5ec2-984c-9c6621b2eeff"	
+Uuid::fmt	A	h:ba1661cb7551d4e2d43c4bdb92c40fcb	s:ba1661cb-7551-d4e2-d43c-4bdb92c40fcb	
+Uuid::simple	A	h:ba1661cb7551d4e2d43c4bdb92c40fcb	s:ba1661cb7551d4e2d43c4bdb92c40fcb	
+Uuid::to_json	A	h:ba1661cb7551d4e2d43c4bdb92c40fcb	s:"ba1661cb-7551-d4e2-d43c-4bdb92c40fcb"	
+Uuid::fmt	A	h:321d9dc63f331514a18e2ac17156b63e	s:321d9dc6-3f33-1514-a18e-2ac17156b63e	
+Uuid::simple	A	h:321d9dc63f331514a18e2ac17156b63e	s:321d9dc63f331514a18e2ac17156b63e	
+Uuid::to_json	A	h:321d9dc63f331514a18e2ac17156b63e	s:"321d9dc6-3f33-1514-a18e-2ac17156b63e"	
+Uuid::fmt	A	h:35db495ed97a54d2bae392dad931d4fb	s:35db495e-d97a-54d2-bae3-92dad931d4fb	
+Uuid::simple	A	h:35db495ed97a54d2bae392dad931d4fb	s:35db495ed97a54d2bae392dad931d4fb	
+Uuid::to_json	A	h:35db495ed97a54d2bae392dad931d4fb	s:"35db495e-d97a-54d2-bae3-92dad931d4fb"	
+Uuid::fmt	A	h:b9f78cbcc94de992e38c6890f31556c1	s:b9f78cbc-c94d-e992-e38c-6890f31556c1	
+Uuid::simple	A	h:b9f78cbcc94de992e38c6890f31556c1	s:b9f78cbcc94de992e38c6890f31556c1	
+Uuid::to_json	A	h:b9f78cbcc94de992e38c6890f31556c1	s:"b9f78cbc-c94d-e992-e38c-6890f31556c1"	
+Uuid::fmt	A	h:fa7c30e26526ec2c05e4d71a603a2af4	s:fa7c30e2-6526-ec2c-05e4-d71a603a2af4	
+Uuid::simple	A	h:fa7c30e26526ec2c05e4d71a603a2af4	s:fa7c30e26526ec2c05e4d71a603a2af4	
+Uuid::to_json	A	h:fa7c30e26526ec2c05e4d71a603a2af4	s:"fa7c30e2-6526-ec2c-05e4-d71a603a2af4"	
+Uuid::fmt	A	h:b66faa77d86c63a1641652b846fc7326	s:b66faa77-d86c-63a1-6416-52b846fc7326	
+Uuid::simple	A	h:b66faa77d86c63a1641652b846fc7326	s:b66faa77d86c63a1641652b846fc7326	
+Uuid::to_json	A	h:b66faa77d86c63a1641652b846fc7326	s:"b66faa77-d86c-63a1-6416-52b846fc7326"	
+Uuid::fmt	A	h:1ebbd6c0038982404693b250532e0144	s:1ebbd6c0-0389-8240-4693-b250532e0144	
+Uuid::simple	A	h:1ebbd6c0038982404693b250532e0144	s:1ebbd6c0038982404693b250532e0144	
+Uuid::to_json	A	h:1ebbd6c0038982404693b250532e0144	s:"1ebbd6c0-0389-8240-4693-b250532e0144"	
+Uuid::fmt	A	h:2633fb04e0ac8c46da5f66535a7a04de	s:2633fb04-e0ac-8c46-da5f-66535a7a04de	
+Uuid::simple	A	h:2633fb04e0ac8c46da5f66535a7a04de	s:2633fb04e0ac8c46da5f66535a7a04de	
+Uuid::to_json	A	h:2633fb04e0ac8c46da5f66535a7a04de	s:"2633fb04-e0ac-8c46-da5f-66535a7a04de"	
+Uuid::fmt	A	h:78f462ae2c7a07573d96b8fca37bc699	s:78f462ae-2c7a-0757-3d96-b8fca37bc699	
+Uuid::simple	A	h:78f462ae2c7a07573d96b8fca37bc699	s:78f462ae2c7a07573d96b8fca37bc699	
+Uuid::to_json	A	h:78f462ae2c7a07573d96b8fca37bc699	s:"78f462ae-2c7a-0757-3d96-b8fca37bc699"	
+Uuid::fmt	A	h:96c9c6f592b7b7541bdf1f6138e18d3a	s:96c9c6f5-92b7-b754-1bdf-1f6138e18d3a	
+Uuid::simple	A	h:96c9c6f592b7b7541bdf1f6138e18d3a	s:96c9c6f592b7b7541bdf1f6138e18d3a	
+Uuid::to_json	A	h:96c9c6f592b7b7541bdf1f6138e18d3a	s:"96c9c6f5-92b7-b754-1bdf-1f6138e18d3a"	
+Uuid::fmt	A	h:45d8b8a5721440a04ffde522b5b64021	s:45d8b8a5-7214-40a0-4ffd-e522b5b64021	
+Uuid::simple	A	h:45d8b8a5721440a04ffde522b5b64021	s:45d8b8a5721440a04ffde522b5b64021	
+Uuid::to_json	A	h:45d8b8a5721440a04ffde522b5b64021	s:"45d8b8a5-7214-40a0-4ffd-e522b5b64021"	
+Uuid::fmt	A	h:f359aa615c8b04e1927e122dc93f0aa8	s:f359aa61-5c8b-04e1-927e-122dc93f0aa8	
+Uuid::simple	A	h:f359aa615c8b04e1927e122dc93f0aa8	s:f359aa615c8b04e1927e122dc93f0aa8	
+Uuid::to_json	A	h:f359aa615c8b04e1927e122dc93f0aa8	s:"f359aa61-5c8b-04e1-927e-122dc93f0aa8"	
+Uuid::fmt	A	h:e823a4298140debd2fccea6d39225040	s:e823a429-8140-debd-2fcc-ea6d39225040	
+Uuid::simple	A	h:e823a4298140debd2fccea6d39225040	s:e823a4298140debd2fccea6d39225040	
+Uuid::to_json	A	h:e823a4298140debd2fccea6d39225040	s:"e823a429-8140-debd-2fcc-ea6d39225040"	
+Uuid::fmt	A	h:2c438c4be80c04e094209c2ab59324e9	s:2c438c4b-e80c-04e0-9420-9c2ab59324e9	
+Uuid::simple	A	h:2c438c4be80c04e094209c2ab59324e9	s:2c438c4be80c04e094209c2ab59324e9	
+Uuid::to_json	A	h:2c438c4be80c04e094209c2ab59324e9	s:"2c438c4b-e80c-04e0-9420-9c2ab59324e9"	
+Uuid::fmt	A	h:84b14055d16c18e0b6fbc8255376f8d1	s:84b14055-d16c-18e0-b6fb-c8255376f8d1	
+Uuid::simple	A	h:84b14055d16c18e0b6fbc8255376f8d1	s:84b14055d16c18e0b6fbc8255376f8d1	
+Uuid::to_json	A	h:84b14055d16c18e0b6fbc8255376f8d1	s:"84b14055-d16c-18e0-b6fb-c8255376f8d1"	
+Uuid::fmt	A	h:f77eaa6719b4016079f05895586f3162	s:f77eaa67-19b4-0160-79f0-5895586f3162	
+Uuid::simple	A	h:f77eaa6719b4016079f05895586f3162	s:f77eaa6719b4016079f05895586f3162	
+Uuid::to_json	A	h:f77eaa6719b4016079f05895586f3162	s:"f77eaa67-19b4-0160-79f0-5895586f3162"	
+Uuid::fmt	A	h:1ef82800603ff780b350f7ab412c686f	s:1ef82800-603f-f780-b350-f7ab412c686f	
+Uuid::simple	A	h:1ef82800603ff780b350f7ab412c686f	s:1ef82800603ff780b350f7ab412c686f	
+Uuid::to_json	A	h:1ef82800603ff780b350f7ab412c686f	s:"1ef82800-603f-f780-b350-f7ab412c686f"	
+Uuid::fmt	A	h:059d77c24747cb7f409a23fc1d067b29	s:059d77c2-4747-cb7f-409a-23fc1d067b29	
+Uuid::simple	A	h:059d77c24747cb7f409a23fc1d067b29	s:059d77c24747cb7f409a23fc1d067b29	
+Uuid::to_json	A	h:059d77c24747cb7f409a23fc1d067b29	s:"059d77c2-4747-cb7f-409a-23fc1d067b29"	
+Uuid::fmt	A	h:d2d4bc9350f99d9ff38eac38a944e964	s:d2d4bc93-50f9-9d9f-f38e-ac38a944e964	
+Uuid::simple	A	h:d2d4bc9350f99d9ff38eac38a944e964	s:d2d4bc9350f99d9ff38eac38a944e964	
+Uuid::to_json	A	h:d2d4bc9350f99d9ff38eac38a944e964	s:"d2d4bc93-50f9-9d9f-f38e-ac38a944e964"	
+Uuid::fmt	A	h:72818263676cb9b6a8efae267730cd45	s:72818263-676c-b9b6-a8ef-ae267730cd45	
+Uuid::simple	A	h:72818263676cb9b6a8efae267730cd45	s:72818263676cb9b6a8efae267730cd45	
+Uuid::to_json	A	h:72818263676cb9b6a8efae267730cd45	s:"72818263-676c-b9b6-a8ef-ae267730cd45"	
+Uuid::fmt	A	h:3192ea8b557b5d9f6252ea4e2f7d2ce4	s:3192ea8b-557b-5d9f-6252-ea4e2f7d2ce4	
+Uuid::simple	A	h:3192ea8b557b5d9f6252ea4e2f7d2ce4	s:3192ea8b557b5d9f6252ea4e2f7d2ce4	
+Uuid::to_json	A	h:3192ea8b557b5d9f6252ea4e2f7d2ce4	s:"3192ea8b-557b-5d9f-6252-ea4e2f7d2ce4"	
+Uuid::fmt	A	h:0c988a16168e6fbde54d55c82c8b3c22	s:0c988a16-168e-6fbd-e54d-55c82c8b3c22	
+Uuid::simple	A	h:0c988a16168e6fbde54d55c82c8b3c22	s:0c988a16168e6fbde54d55c82c8b3c22	
+Uuid::to_json	A	h:0c988a16168e6fbde54d55c82c8b3c22	s:"0c988a16-168e-6fbd-e54d-55c82c8b3c22"	
+Uuid::fmt	A	h:3e984bcb3c2d62daeba2f4bb9068ce9f	s:3e984bcb-3c2d-62da-eba2-f4bb9068ce9f	
+Uuid::simple	A	h:3e984bcb3c2d62daeba2f4bb9068ce9f	s:3e984bcb3c2d62daeba2f4bb9068ce9f	
+Uuid::to_json	A	h:3e984bcb3c2d62daeba2f4bb9068ce9f	s:"3e984bcb-3c2d-62da-eba2-f4bb9068ce9f"	
+Uuid::fmt	A	h:6f2824eb552c58c222c6a3c2a26e70f3	s:6f2824eb-552c-58c2-22c6-a3c2a26e70f3	
+Uuid::simple	A	h:6f2824eb552c58c222c6a3c2a26e70f3	s:6f2824eb552c58c222c6a3c2a26e70f3	
+Uuid::to_json	A	h:6f2824eb552c58c222c6a3c2a26e70f3	s:"6f2824eb-552c-58c2-22c6-a3c2a26e70f3"	
+Uuid::fmt	A	h:e3936f31930cf0d2e0bcedf3966a9db3	s:e3936f31-930c-f0d2-e0bc-edf3966a9db3	
+Uuid::simple	A	h:e3936f31930cf0d2e0bcedf3966a9db3	s:e3936f31930cf0d2e0bcedf3966a9db3	
+Uuid::to_json	A	h:e3936f31930cf0d2e0bcedf3966a9db3	s:"e3936f31-930c-f0d2-e0bc-edf3966a9db3"	
+Uuid::fmt	A	h:49f9eaae30c744489d9a1f12047ed8c0	s:49f9eaae-30c7-4448-9d9a-1f12047ed8c0	
+Uuid::simple	A	h:49f9eaae30c744489d9a1f12047ed8c0	s:49f9eaae30c744489d9a1f12047ed8c0	
+Uuid::to_json	A	h:49f9eaae30c744489d9a1f12047ed8c0	s:"49f9eaae-30c7-4448-9d9a-1f12047ed8c0"	
+Uuid::fmt	A	h:81816692ce3a15719e5fd6311dbb1d1b	s:81816692-ce3a-1571-9e5f-d6311dbb1d1b	
+Uuid::simple	A	h:81816692ce3a15719e5fd6311dbb1d1b	s:81816692ce3a15719e5fd6311dbb1d1b	
+Uuid::to_json	A	h:81816692ce3a15719e5fd6311dbb1d1b	s:"81816692-ce3a-1571-9e5f-d6311dbb1d1b"	
+Uuid::fmt	A	h:e88a23a5e9264de16adf260a90af593a	s:e88a23a5-e926-4de1-6adf-260a90af593a	
+Uuid::simple	A	h:e88a23a5e9264de16adf260a90af593a	s:e88a23a5e9264de16adf260a90af593a	
+Uuid::to_json	A	h:e88a23a5e9264de16adf260a90af593a	s:"e88a23a5-e926-4de1-6adf-260a90af593a"	
+Uuid::fmt	A	h:1eecc209576f0908e1ca4d705516951a	s:1eecc209-576f-0908-e1ca-4d705516951a	
+Uuid::simple	A	h:1eecc209576f0908e1ca4d705516951a	s:1eecc209576f0908e1ca4d705516951a	
+Uuid::to_json	A	h:1eecc209576f0908e1ca4d705516951a	s:"1eecc209-576f-0908-e1ca-4d705516951a"	
+Uuid::fmt	A	h:b78eca285fdabeb0c2b70a69e186a7cd	s:b78eca28-5fda-beb0-c2b7-0a69e186a7cd	
+Uuid::simple	A	h:b78eca285fdabeb0c2b70a69e186a7cd	s:b78eca285fdabeb0c2b70a69e186a7cd	
+Uuid::to_json	A	h:b78eca285fdabeb0c2b70a69e186a7cd	s:"b78eca28-5fda-beb0-c2b7-0a69e186a7cd"	
+Uuid::fmt	A	h:a7d6cc1e7491f9c22fbb0ef4865ceab1	s:a7d6cc1e-7491-f9c2-2fbb-0ef4865ceab1	
+Uuid::simple	A	h:a7d6cc1e7491f9c22fbb0ef4865ceab1	s:a7d6cc1e7491f9c22fbb0ef4865ceab1	
+Uuid::to_json	A	h:a7d6cc1e7491f9c22fbb0ef4865ceab1	s:"a7d6cc1e-7491-f9c2-2fbb-0ef4865ceab1"	
+Uuid::fmt	A	h:e4ff9f7adb74df24dc0635be97257f9a	s:e4ff9f7a-db74-df24-dc06-35be97257f9a	
+Uuid::simple	A	h:e4ff9f7adb74df24dc0635be97257f9a	s:e4ff9f7adb74df24dc0635be97257f9a	
+Uuid::to_json	A	h:e4ff9f7adb74df24dc0635be97257f9a	s:"e4ff9f7a-db74-df24-dc06-35be97257f9a"	
+Uuid::fmt	A	h:13ad9ddbab6d93e52b982f2156271182	s:13ad9ddb-ab6d-93e5-2b98-2f2156271182	
+Uuid::simple	A	h:13ad9ddbab6d93e52b982f2156271182	s:13ad9ddbab6d93e52b982f2156271182	
+Uuid::to_json	A	h:13ad9ddbab6d93e52b982f2156271182	s:"13ad9ddb-ab6d-93e5-2b98-2f2156271182"	
+Uuid::fmt	A	h:d5fc0310813d7f210b17ae189bbaed9f	s:d5fc0310-813d-7f21-0b17-ae189bbaed9f	
+Uuid::simple	A	h:d5fc0310813d7f210b17ae189bbaed9f	s:d5fc0310813d7f210b17ae189bbaed9f	
+Uuid::to_json	A	h:d5fc0310813d7f210b17ae189bbaed9f	s:"d5fc0310-813d-7f21-0b17-ae189bbaed9f"	
+Uuid::fmt	A	h:d703271f268d1f84b61532a7d10164bb	s:d703271f-268d-1f84-b615-32a7d10164bb	
+Uuid::simple	A	h:d703271f268d1f84b61532a7d10164bb	s:d703271f268d1f84b61532a7d10164bb	
+Uuid::to_json	A	h:d703271f268d1f84b61532a7d10164bb	s:"d703271f-268d-1f84-b615-32a7d10164bb"	
+Uuid::fmt	A	h:864cafcca30928b2b027ebfc71d55663	s:864cafcc-a309-28b2-b027-ebfc71d55663	
+Uuid::simple	A	h:864cafcca30928b2b027ebfc71d55663	s:864cafcca30928b2b027ebfc71d55663	
+Uuid::to_json	A	h:864cafcca30928b2b027ebfc71d55663	s:"864cafcc-a309-28b2-b027-ebfc71d55663"	
+Uuid::fmt	A	h:e7d878535eb1040f86475e3b7f4285c7	s:e7d87853-5eb1-040f-8647-5e3b7f4285c7	
+Uuid::simple	A	h:e7d878535eb1040f86475e3b7f4285c7	s:e7d878535eb1040f86475e3b7f4285c7	
+Uuid::to_json	A	h:e7d878535eb1040f86475e3b7f4285c7	s:"e7d87853-5eb1-040f-8647-5e3b7f4285c7"	
+Uuid::from_json	A	s:"12345678-9abc-4def-8123-456789abcdef"	h:123456789abc4def8123456789abcdef	
+Uuid::from_json	A	s:"12345678-9ABC-4DEF-8123-456789ABCDEF"	h:123456789abc4def8123456789abcdef	
+Uuid::from_json	A	s:"123456789abc4def8123456789abcdef"	h:123456789abc4def8123456789abcdef	
+Uuid::from_json	A	s:"{12345678-9abc-4def-8123-456789abcdef}"	h:123456789abc4def8123456789abcdef	
+Uuid::from_json	A	s:"urn:uuid:12345678-9abc-4def-8123-456789abcdef"	h:123456789abc4def8123456789abcdef	
+Uuid::from_json	A	s:"URN:UUID:12345678-9abc-4def-8123-456789abcdef"	h:123456789abc4def8123456789abcdef	
+Uuid::from_json	A	s:"12345678-9abc-4def-8123-456789abcde"	E:serde s:UUID\sparsing\sfailed:\sinvalid\sgroup\slength\sin\sgroup\s4:\sexpected\s12,\sfound\s11\sat\sline\s1\scolumn\s37	
+Uuid::from_json	A	s:"12345678-9abc-4def-8123-456789abcdeff"	E:serde s:UUID\sparsing\sfailed:\sinvalid\sgroup\slength\sin\sgroup\s4:\sexpected\s12,\sfound\s13\sat\sline\s1\scolumn\s39	
+Uuid::from_json	A	s:"1234567-89abc-4def-8123-456789abcdef"	E:serde s:UUID\sparsing\sfailed:\sinvalid\sgroup\slength\sin\sgroup\s0:\sexpected\s8,\sfound\s7\sat\sline\s1\scolumn\s38	
+Uuid::from_json	A	s:"12345678-9abc-4def-8123-456789abcdeg"	E:serde s:UUID\sparsing\sfailed:\sinvalid\scharacter:\sfound\s`g`\sat\s35\sat\sline\s1\scolumn\s38	
+Uuid::from_json	A	s:"12345678\s9abc\s4def\s8123\s456789abcdef"	E:serde s:UUID\sparsing\sfailed:\sinvalid\scharacter:\sfound\s`\s`\sat\s8\sat\sline\s1\scolumn\s38	
+Uuid::from_json	A	s:"{12345678-9abc-4def-8123-456789abcdef"	E:serde s:UUID\sparsing\sfailed:\sinvalid\scharacter:\sfound\s`{`\sat\s0\sat\sline\s1\scolumn\s39	
+Uuid::from_json	A	s:""	E:serde s:UUID\sparsing\sfailed:\sinvalid\slength:\sfound\s0\sat\sline\s1\scolumn\s2	
+Uuid::from_json	A	s:"\s12345678-9abc-4def-8123-456789abcdef"	E:serde s:UUID\sparsing\sfailed:\sinvalid\scharacter:\sfound\s`\s`\sat\s0\sat\sline\s1\scolumn\s39	
+Uuid::from_json	A	s:"00000000-0000-0000-0000-000000000000"	h:00000000000000000000000000000000	
+Uuid::from_json	A	s:12	E:serde s:invalid\stype:\sinteger\s`12`,\sexpected\sa\sformatted\sUUID\sstring\sat\sline\s1\scolumn\s2	
+Uuid::from_json	A	s:null	E:serde s:invalid\stype:\snull,\sexpected\sa\sformatted\sUUID\sstring\sat\sline\s1\scolumn\s4	
+Uuid::from_json	A	s:[1,2]	E:serde s:invalid\stype:\ssequence,\sexpected\sa\sformatted\sUUID\sstring\sat\sline\s1\scolumn\s0	

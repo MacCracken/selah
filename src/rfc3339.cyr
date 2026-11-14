@@ -1,0 +1,292 @@
+# rfc3339.cyr — selah's timestamps (Rust: chrono 0.4.45 `DateTime<Utc>` through serde).
+#
+# UPSTREAM(L5): lib/chrono.cyr's iso8601 / iso8601_parse are whole seconds only. A history entry's timestamp keeps
+# nanoseconds, so this module writes and reads them as chrono does:
+# - writing (serde's `Serialize`): `YYYY-MM-DDTHH:MM:SS[.f]Z`, with the shortest of 0, 3, 6 or 9 fraction digits
+#   (chrono's `SecondsFormat::AutoSi`);
+# - reading (serde's `Deserialize`, i.e. `DateTime<FixedOffset>::from_str`, chrono's `parse_rfc3339_relaxed`), item
+#   by item: every numeric item first skips Unicode whitespace; the year is 1–4 digits, or a sign and any digits;
+#   month, day, hour, minute and second are 1–2 digits each; whitespace may surround each `-` and `:`; the date and
+#   time are separated by `T`, `t` or one space; an optional `.` and at least one digit gives the nanoseconds (the
+#   first nine digits count, the rest are skipped); then optional whitespace and `UTC` (any case), `Z`, `z`, or a
+#   sign (`+`, `-`, U+2212) with two hour digits, any run of `:` and whitespace, and two minute digits; trailing
+#   whitespace is allowed. Second 60 is a leap second: second 59 with 10^9 added to the nanoseconds.
+# tests/golden/rfc3339.tsv pins both directions.
+
+# Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's days_from_civil; any year).
+#must_use
+fn _sl_days_from_civil(y, m, d): i64 {
+    var yy = y;
+    if (m <= 2) { yy = yy - 1; }
+    var era = yy / 400;
+    if (yy < 0 && yy % 400 != 0) { era = era - 1; }
+    var yoe = yy - era * 400;
+    var mp = (m + 9) % 12;
+    var doy = (153 * mp + 2) / 5 + d - 1;
+    var doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+# The civil date (y, m, d) of a day count since 1970-01-01 (civil_from_days).
+fn _sl_civil_from_days(z0): (i64, i64, i64) {
+    var z = z0 + 719468;
+    var era = z / 146097;
+    if (z < 0 && z % 146097 != 0) { era = era - 1; }
+    var doe = z - era * 146097;
+    var yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    var y = yoe + era * 400;
+    var doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    var mp = (5 * doy + 2) / 153;
+    var d = doy - (153 * mp + 2) / 5 + 1;
+    var m = mp + 3;
+    if (m > 12) { m = m - 12; }
+    if (m <= 2) { y = y + 1; }
+    return (y, m, d);
+}
+
+# Appends v as exactly `width` decimal digits (v >= 0).
+fn _sl_sb_digits_n(sb, v, width): i64 {
+    var buf[24];
+    var i = width - 1;
+    var x = v;
+    while (i >= 0) {
+        store8(&buf + i, 48 + x % 10);
+        x = x / 10;
+        i = i - 1;
+    }
+    return _sl_sb_bytes(sb, &buf, width);
+}
+
+# Appends the instant (unix seconds, nanoseconds 0..=1_999_999_999) as chrono's serde writes a DateTime<Utc>,
+# without quotes.
+fn _sl_rfc3339_fmt(sb, secs, nanos): i64 {
+    var days = secs / 86400;
+    var sod = secs % 86400;
+    if (sod < 0) {
+        sod = sod + 86400;
+        days = days - 1;
+    }
+    var y, mo, d = _sl_civil_from_days(days);
+    if (y >= 0 && y <= 9999) {
+        _sl_sb_digits_n(sb, y, 4);
+    } else {
+        if (y < 0) { str_builder_putc(sb, 45); } else { str_builder_putc(sb, 43); }
+        var ay = y;
+        if (ay < 0) { ay = -ay; }
+        if (ay < 10000) { _sl_sb_digits_n(sb, ay, 4); } else { str_builder_add_int(sb, ay); }
+    }
+    str_builder_putc(sb, 45);
+    _sl_sb_digits_n(sb, mo, 2);
+    str_builder_putc(sb, 45);
+    _sl_sb_digits_n(sb, d, 2);
+    str_builder_putc(sb, 84);
+    var sec = sod % 60;
+    var ns = nanos;
+    # A leap second is stored as second 59 with 10^9 added; it prints as second 60.
+    if (ns >= 1000000000) {
+        sec = sec + 1;
+        ns = ns - 1000000000;
+    }
+    _sl_sb_digits_n(sb, sod / 3600, 2);
+    str_builder_putc(sb, 58);
+    _sl_sb_digits_n(sb, (sod / 60) % 60, 2);
+    str_builder_putc(sb, 58);
+    _sl_sb_digits_n(sb, sec, 2);
+    if (ns != 0) {
+        str_builder_putc(sb, 46);
+        if (ns % 1000000 == 0) {
+            _sl_sb_digits_n(sb, ns / 1000000, 3);
+        } elif (ns % 1000 == 0) {
+            _sl_sb_digits_n(sb, ns / 1000, 6);
+        } else {
+            _sl_sb_digits_n(sb, ns, 9);
+        }
+    }
+    str_builder_putc(sb, 90);
+    return 0;
+}
+
+# ── parsing ──────────────────────────────────────────────────────────────────────────
+
+# The length of the Unicode whitespace character (Rust's char::is_whitespace) at p[i..n), or 0.
+#must_use
+fn _sl_ws_len(p, i, n): i64 {
+    if (i >= n) { return 0; }
+    var c = load8(p + i);
+    if (c == 32 || (c >= 9 && c <= 13)) { return 1; }
+    if (c == 0xC2 && i + 1 < n) {
+        var c2 = load8(p + i + 1);
+        if (c2 == 0x85 || c2 == 0xA0) { return 2; }
+        return 0;
+    }
+    if (c == 0xE1 && i + 2 < n && load8(p + i + 1) == 0x9A && load8(p + i + 2) == 0x80) { return 3; }
+    if (c == 0xE2 && i + 2 < n) {
+        var b1 = load8(p + i + 1);
+        var b2 = load8(p + i + 2);
+        if (b1 == 0x80 && ((b2 >= 0x80 && b2 <= 0x8A) || b2 == 0xA8 || b2 == 0xA9 || b2 == 0xAF)) { return 3; }
+        if (b1 == 0x81 && b2 == 0x9F) { return 3; }
+        return 0;
+    }
+    if (c == 0xE3 && i + 2 < n && load8(p + i + 1) == 0x80 && load8(p + i + 2) == 0x80) { return 3; }
+    return 0;
+}
+
+# The index after any whitespace from i.
+#must_use
+fn _sl_skip_ws(p, i, n): i64 {
+    var j = i;
+    loop {
+        var w = _sl_ws_len(p, j, n);
+        if (w == 0) { return j; }
+        j = j + w;
+    }
+    return j;
+}
+
+# chrono's scan::number: between `min` and `max` ASCII digits from i. Returns (value, next index), or (-1, -1).
+fn _sl_scan_number(p, i, n, min, max): (i64, i64) {
+    var v = 0;
+    var k = 0;
+    while (k < max && i + k < n) {
+        var c = load8(p + i + k);
+        if (c < 48 || c > 57) { break; }
+        if (v > 92233720368547758) { return (-1, -1); }
+        v = v * 10 + (c - 48);
+        k = k + 1;
+    }
+    if (k < min) { return (-1, -1); }
+    return (v, i + k);
+}
+
+# A numeric item: whitespace, then `width` digits at most (or, when `signed`, a sign and any number). Returns
+# (value, next index), or (-1, -1) — a signed item's failure is (-1, -2), since -1 is a value.
+fn _sl_rfc_num(p, i, n, width, signed): (i64, i64) {
+    var j = _sl_skip_ws(p, i, n);
+    if (signed == 1 && j < n && (load8(p + j) == 45 || load8(p + j) == 43)) {
+        var neg = load8(p + j) == 45;
+        var v, k = _sl_scan_number(p, j + 1, n, 1, 4611686018427387903);
+        if (k < 0) { return (-1, -2); }
+        if (neg) { return (-v, k); }
+        return (v, k);
+    }
+    var v2, k2 = _sl_scan_number(p, j, n, 1, width);
+    if (k2 < 0) { return (-1, -2); }
+    return (v2, k2);
+}
+
+# A literal byte after optional whitespace (chrono's `Space("")` then `Literal`). The next index, or -1.
+#must_use
+fn _sl_rfc_lit(p, i, n, ch): i64 {
+    var j = _sl_skip_ws(p, i, n);
+    if (j >= n || load8(p + j) != ch) { return -1; }
+    return j + 1;
+}
+
+# 1 when (y, m, d) is a real date.
+#must_use
+fn _sl_valid_date(y, m, d): i64 {
+    if (m < 1 || m > 12 || d < 1) { return 0; }
+    var dim = 31;
+    if (m == 4 || m == 6 || m == 9 || m == 11) { dim = 30; }
+    if (m == 2) {
+        dim = 28;
+        if ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) { dim = 29; }
+    }
+    if (d > dim) { return 0; }
+    return 1;
+}
+
+# Parse p[0..n) as chrono reads a DateTime<Utc> (the file header). Stores unix seconds and nanoseconds; returns 1,
+# or 0 when chrono refuses it.
+fn _sl_rfc3339_parse(p, n, secs_out, nanos_out): i64 {
+    var y, i = _sl_rfc_num(p, 0, n, 4, 1);
+    if (i < 0) { return 0; }
+    i = _sl_rfc_lit(p, i, n, 45);
+    if (i < 0) { return 0; }
+    var mo, i2 = _sl_rfc_num(p, i, n, 2, 0);
+    if (i2 < 0) { return 0; }
+    i = _sl_rfc_lit(p, i2, n, 45);
+    if (i < 0) { return 0; }
+    var d, i3 = _sl_rfc_num(p, i, n, 2, 0);
+    if (i3 < 0) { return 0; }
+    i = i3;
+    if (i >= n) { return 0; }
+    var sep = load8(p + i);
+    if (sep != 84 && sep != 116 && sep != 32) { return 0; }
+    i = i + 1;
+    var hh, i4 = _sl_rfc_num(p, i, n, 2, 0);
+    if (i4 < 0) { return 0; }
+    i = _sl_rfc_lit(p, i4, n, 58);
+    if (i < 0) { return 0; }
+    var mi, i5 = _sl_rfc_num(p, i, n, 2, 0);
+    if (i5 < 0) { return 0; }
+    i = _sl_rfc_lit(p, i5, n, 58);
+    if (i < 0) { return 0; }
+    var ss, i6 = _sl_rfc_num(p, i, n, 2, 0);
+    if (i6 < 0) { return 0; }
+    i = i6;
+    var ns = 0;
+    if (i < n && load8(p + i) == 46) {
+        var v, k = _sl_scan_number(p, i + 1, n, 1, 9);
+        if (k < 0) { return 0; }
+        var digits = k - (i + 1);
+        var scale = 1;
+        var z = digits;
+        while (z < 9) {
+            scale = scale * 10;
+            z = z + 1;
+        }
+        ns = v * scale;
+        i = k;
+        while (i < n && load8(p + i) >= 48 && load8(p + i) <= 57) { i = i + 1; }
+    }
+    i = _sl_skip_ws(p, i, n);
+    # The offset.
+    var off = 0;
+    if (i + 3 <= n && (load8(p + i) | 32) == 117 && (load8(p + i + 1) | 32) == 116 && (load8(p + i + 2) | 32) == 99) {
+        i = i + 3;
+    } elif (i < n && (load8(p + i) == 90 || load8(p + i) == 122)) {
+        i = i + 1;
+    } else {
+        var neg = 0;
+        if (i < n && load8(p + i) == 43) {
+            i = i + 1;
+        } elif (i < n && load8(p + i) == 45) {
+            neg = 1;
+            i = i + 1;
+        } elif (i + 3 <= n && load8(p + i) == 0xE2 && load8(p + i + 1) == 0x88 && load8(p + i + 2) == 0x92) {
+            neg = 1;
+            i = i + 3;
+        } else {
+            return 0;
+        }
+        if (i + 2 > n) { return 0; }
+        var h1 = load8(p + i) - 48;
+        var h2 = load8(p + i + 1) - 48;
+        if (h1 < 0 || h1 > 9 || h2 < 0 || h2 > 9) { return 0; }
+        i = i + 2;
+        while (i < n && (load8(p + i) == 58 || _sl_ws_len(p, i, n) > 0)) {
+            if (load8(p + i) == 58) { i = i + 1; } else { i = i + _sl_ws_len(p, i, n); }
+        }
+        if (i + 2 > n) { return 0; }
+        var m1 = load8(p + i) - 48;
+        var m2 = load8(p + i + 1) - 48;
+        if (m1 < 0 || m1 > 5 || m2 < 0 || m2 > 9) { return 0; }
+        i = i + 2;
+        off = (h1 * 10 + h2) * 3600 + (m1 * 10 + m2) * 60;
+        if (neg == 1) { off = -off; }
+    }
+    if (_sl_skip_ws(p, i, n) != n) { return 0; }
+    # chrono's range checks (Parsed's setters, then the date and the offset).
+    if (y < -262143 || y > 262142) { return 0; }
+    if (hh > 23 || mi > 59 || ss > 60) { return 0; }
+    if (off <= -86400 || off >= 86400) { return 0; }
+    if (_sl_valid_date(y, mo, d) == 0) { return 0; }
+    if (ss == 60) {
+        ss = 59;
+        ns = ns + 1000000000;
+    }
+    store64(secs_out, _sl_days_from_civil(y, mo, d) * 86400 + hh * 3600 + mi * 60 + ss - off);
+    store64(nanos_out, ns);
+    return 1;
+}

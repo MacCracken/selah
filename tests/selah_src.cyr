@@ -1,0 +1,10 @@
+# selah_src.cyr — every src/ module, in [lib] order (cyrius.cyml), for the test units. No src/ file includes
+# another, so a test includes this once.
+include "src/error.cyr"
+include "src/log.cyr"
+include "src/fmtf.cyr"
+include "src/json.cyr"
+include "src/uuid.cyr"
+include "src/rfc3339.cyr"
+include "src/geometry.cyr"
+include "src/core.cyr"
