@@ -1,0 +1,60 @@
+[package]
+name = "selah"
+version = "${file:VERSION}"
+description = "AI-native screenshot capture, annotation, and redaction library for AGNOS"
+license = "GPL-3.0-only"
+language = "cyrius"
+repository = "https://github.com/MacCracken/selah"
+cyrius = "6.7.18"
+
+[build]
+entry = "src/main.cyr"
+output = "build/selah"
+
+# Stdlib leaves auto-prepended into every build / test / bench. Each is named for what selah uses:
+#   syscalls string alloc str fmt io fs vec hashmap — the core
+#   math                 f64/f32 helpers (f64_floor / ceil / trunc / abs) for the rasterizer and rects
+#   tagged result        the value-form Option / Result and `?`
+#   freelist             decoded images and pixel buffers, freed back to the OS (port plan D10)
+#   chrono random        RFC 3339 timestamps (clock_epoch_ns), UUID v4 (random_bytes)
+#   process thread       the clipboard tools (wl-copy / xclip) and their stdin writer
+#   bayan                JSON and base64
+#   sandhi               the HTTP client for daimon and hoosh
+#   sakshi               tracing
+# No "sankoch": chitra's own [deps.sankoch] vendors dist/sankoch-zlib.cyr (zlib, deflate, CRC-32), which is
+# all selah uses; the full fold adds Brotli / zstd / xz tables (port plan §2 step 4, probe c).
+[deps]
+stdlib = [
+    "syscalls", "string", "alloc", "str", "fmt", "io", "fs", "vec", "hashmap",
+    "math", "tagged", "result", "freelist", "chrono", "random", "process", "thread",
+    "bayan", "sandhi", "sakshi",
+]
+
+# Pinned by git + tag only: a `path =` override would bypass the commit pin in cyrius.lock.
+[deps.chitra]
+git = "https://github.com/MacCracken/chitra.git"
+tag = "1.3.1"
+modules = ["dist/chitra.cyr"]
+
+[deps.ranga]
+git = "https://github.com/MacCracken/ranga.git"
+tag = "2.4.0"
+modules = ["dist/ranga.cyr"]
+
+# The full bundle: the stdio transport is not in bote-core. Its own deps (libro, majra, patra, sigil)
+# resolve and lock on their own.
+[deps.bote]
+git = "https://github.com/MacCracken/bote.git"
+tag = "3.8.15"
+modules = ["dist/bote.cyr"]
+optional = true
+
+[features]
+default = []
+mcp = ["bote"]
+
+[test]
+stdlib = ["assert", "bench"]
+
+# [lib] arrives at M1 with its first module (src/error.cyr): `[lib] modules = []` is invalid.
+# Its order will be the port plan's §2 step 3 list; [lib.mcp] repeats it and adds src/mcp.cyr.

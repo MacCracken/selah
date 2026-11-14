@@ -1,0 +1,68 @@
+# format 1 · module decode
+# oracle: selah 0.30.0 (rust-old/, tag 0.30.0), image 0.25.10, png 0.18.1, zune-jpeg 0.5.15, image-webp 0.2.4
+# regenerate: cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml
+# columns: fn<TAB>class<TAB>inputs<TAB>outputs<TAB>note · decode: E:<variant> on refusal, the message in the note; adr=0002#N marks an accepted divergence
+# rows: 63
+decode	A	p:fixtures/png-rgba8-1x1.png	i:1 i:1 p:decode/png-rgba8-1x1.png.rgba	png: png 0.18.1 RGBA8
+decode	A	p:fixtures/png-rgba8-7x3.png	i:7 i:3 p:decode/png-rgba8-7x3.png.rgba	png: png 0.18.1 RGBA8 noise
+decode	A	p:fixtures/png-rgba8-33x17.png	i:33 i:17 p:decode/png-rgba8-33x17.png.rgba	png: png 0.18.1 RGBA8 noise
+decode	A	p:fixtures/png-rgba8-64x64-grad.png	i:64 i:64 p:decode/png-rgba8-64x64-grad.png.rgba	png: png 0.18.1 RGBA8 gradient
+decode	A	p:fixtures/png-rgb8-33x17.png	i:33 i:17 p:decode/png-rgb8-33x17.png.rgba	png: png 0.18.1 RGB8
+decode	A	p:fixtures/png-gray8-33x17.png	i:33 i:17 p:decode/png-gray8-33x17.png.rgba	png: png 0.18.1 gray 8
+decode	A	p:fixtures/png-graya8-33x17.png	i:33 i:17 p:decode/png-graya8-33x17.png.rgba	png: png 0.18.1 gray+alpha 8
+decode	A	p:fixtures/png-gray1-33x17.png	i:33 i:17 p:decode/png-gray1-33x17.png.rgba	png: png 0.18.1 gray 1-bit
+decode	A	p:fixtures/png-pal1-33x17.png	i:33 i:17 p:decode/png-pal1-33x17.png.rgba	png: png 0.18.1 palette 1-bit
+decode	A	p:fixtures/png-gray2-33x17.png	i:33 i:17 p:decode/png-gray2-33x17.png.rgba	png: png 0.18.1 gray 2-bit
+decode	A	p:fixtures/png-pal2-33x17.png	i:33 i:17 p:decode/png-pal2-33x17.png.rgba	png: png 0.18.1 palette 2-bit
+decode	A	p:fixtures/png-gray4-33x17.png	i:33 i:17 p:decode/png-gray4-33x17.png.rgba	png: png 0.18.1 gray 4-bit
+decode	A	p:fixtures/png-pal4-33x17.png	i:33 i:17 p:decode/png-pal4-33x17.png.rgba	png: png 0.18.1 palette 4-bit
+decode	A	p:fixtures/png-pal8-33x17.png	i:33 i:17 p:decode/png-pal8-33x17.png.rgba	png: png 0.18.1 palette 8-bit
+decode	A	p:fixtures/png-pal8-trns-33x17.png	i:33 i:17 p:decode/png-pal8-trns-33x17.png.rgba	png: png 0.18.1 palette 8-bit + per-entry tRNS
+decode	A	p:fixtures/png-rgb8-trns-33x17.png	i:33 i:17 p:decode/png-rgb8-trns-33x17.png.rgba	png: png 0.18.1 RGB8 + tRNS key (first pixel's colour)
+decode	A	p:fixtures/png-gray8-trns-33x17.png	i:33 i:17 p:decode/png-gray8-trns-33x17.png.rgba	png: png 0.18.1 gray 8 + tRNS key
+decode	A	p:fixtures/png-rgb16-33x17.png	i:33 i:17 p:decode/png-rgb16-33x17.png.rgba	png: png 0.18.1 rgb16
+decode	A	p:fixtures/png-rgba16-33x17.png	i:33 i:17 p:decode/png-rgba16-33x17.png.rgba	png: png 0.18.1 rgba16
+decode	A	p:fixtures/png-gray16-33x17.png	i:33 i:17 p:decode/png-gray16-33x17.png.rgba	png: png 0.18.1 gray16
+decode	A	p:fixtures/png-graya16-33x17.png	i:33 i:17 p:decode/png-graya16-33x17.png.rgba	png: png 0.18.1 graya16
+decode	A	p:fixtures/png-adam7-rgba8-33x17.png	i:33 i:17 p:decode/png-adam7-rgba8-33x17.png.rgba	png: hand-written Adam7, RGBA8, filter 0
+decode	A	p:fixtures/png-adam7-pal4-33x17.png	i:33 i:17 p:decode/png-adam7-pal4-33x17.png.rgba	png: hand-written Adam7, palette 4-bit
+decode	A	p:fixtures/png-adam7-gray1-5x5.png	i:5 i:5 p:decode/png-adam7-gray1-5x5.png.rgba	png: hand-written Adam7, gray 1-bit, 5x5 (passes 2, 4, 6 partly empty)
+decode	A	p:fixtures/png-truncated.png	E:AnnotationError	png: png-rgba8-33x17.png cut in half (mid-IDAT) -- refused: annotation error: failed to load image: unexpected end of file
+decode	A	p:fixtures/png-idat-badcrc.png	E:AnnotationError	png: png-rgba8-33x17.png with the IDAT CRC corrupted -- refused: annotation error: failed to load image: Format error decoding Png: CRC error: expected 0x46119b7f have 0x46119b80 while decoding ChunkType { type: IDAT, critical: true, private: false, reserved: false, safecopy: false } chunk.
+decode	A	p:fixtures/png-too-wide-40000x1.png	E:AnnotationError	png: IHDR 40000x1 (over MAX_IMAGE_DIMENSION 32768), one-row IDAT -- refused: annotation error: failed to load image: Image size exceeds limit
+decode	A	p:fixtures/png-too-big-20000x20000.png	E:AnnotationError	png: IHDR 20000x20000 RGBA8 (1.6 GB, over MAX_DECODE_ALLOC 512 MiB), tiny IDAT -- refused: annotation error: failed to load image: 20000x20000 needs 1600000000 bytes, limit 536870912
+decode	A	p:fixtures/bmp-image-rgb8-33x17.bmp	i:33 i:17 p:decode/bmp-image-rgb8-33x17.bmp.rgba	bmp: image 0.25.10 BmpEncoder, RGB8
+decode	A	p:fixtures/bmp-image-rgba8-33x17.bmp	i:33 i:17 p:decode/bmp-image-rgba8-33x17.bmp.rgba	bmp: image 0.25.10 BmpEncoder, RGBA8
+decode	A	p:fixtures/bmp-image-l8-33x17.bmp	i:33 i:17 p:decode/bmp-image-l8-33x17.bmp.rgba	bmp: image 0.25.10 BmpEncoder, L8
+decode	A	p:fixtures/bmp-24-bottomup-33x17.bmp	i:33 i:17 p:decode/bmp-24-bottomup-33x17.bmp.rgba	bmp: hand-written BI_RGB 24-bit, bottom-up
+decode	A	p:fixtures/bmp-24-topdown-33x17.bmp	i:33 i:17 p:decode/bmp-24-topdown-33x17.bmp.rgba	bmp: hand-written BI_RGB 24-bit, top-down
+decode	A	p:fixtures/bmp-pal1-33x17.bmp	i:33 i:17 p:decode/bmp-pal1-33x17.bmp.rgba	bmp: hand-written BI_RGB 1-bit palette
+decode	A	p:fixtures/bmp-pal4-33x17.bmp	i:33 i:17 p:decode/bmp-pal4-33x17.bmp.rgba	bmp: hand-written BI_RGB 4-bit palette
+decode	A	p:fixtures/bmp-pal8-33x17.bmp	i:33 i:17 p:decode/bmp-pal8-33x17.bmp.rgba	bmp: hand-written BI_RGB 8-bit palette
+decode	A	p:fixtures/bmp-rle8-33x17.bmp	i:33 i:17 p:decode/bmp-rle8-33x17.bmp.rgba	bmp: hand-written BI_RLE8, encoded runs
+decode	A	p:fixtures/bmp-rle4-33x17.bmp	i:33 i:17 p:decode/bmp-rle4-33x17.bmp.rgba	bmp: hand-written BI_RLE4, encoded runs
+decode	A	p:fixtures/bmp-16-555-33x17.bmp	i:33 i:17 p:decode/bmp-16-555-33x17.bmp.rgba	bmp: hand-written BI_RGB 16-bit (5-5-5)
+decode	A	p:fixtures/bmp-16-565-33x17.bmp	i:33 i:17 p:decode/bmp-16-565-33x17.bmp.rgba	bmp: hand-written BI_BITFIELDS 16-bit 5-6-5, INFO header + 3 masks
+decode	A	p:fixtures/bmp-32-rgb-33x17.bmp	i:33 i:17 p:decode/bmp-32-rgb-33x17.bmp.rgba	bmp: hand-written BI_RGB 32-bit (the fourth byte is not alpha by spec; noise here)
+decode	A	p:fixtures/bmp-32-v4-alpha-33x17.bmp	i:33 i:17 p:decode/bmp-32-v4-alpha-33x17.bmp.rgba	bmp: hand-written V4 BI_BITFIELDS 32-bit with an alpha mask
+decode	A	p:fixtures/bmp-bad-dib-size.bmp	E:AnnotationError	bmp: bmp-24-bottomup with DIB header size 77 (no such header) -- refused: annotation error: failed to load image: The decoder for Bmp does not support the format features Unknown bitmap header type (size=77)
+decode	B	p:fixtures/jpeg-image-q75-rgb-33x17-grad.jpg	i:33 i:17 p:decode/jpeg-image-q75-rgb-33x17-grad.jpg.rgba	jpeg: image 0.25.10 JpegEncoder q75, RGB8 gradient
+decode	B	p:fixtures/jpeg-image-q95-rgb-64x64-grad.jpg	i:64 i:64 p:decode/jpeg-image-q95-rgb-64x64-grad.jpg.rgba	jpeg: image 0.25.10 JpegEncoder q95, RGB8 gradient
+decode	B	p:fixtures/jpeg-image-q50-gray-33x17-grad.jpg	i:33 i:17 p:decode/jpeg-image-q50-gray-33x17-grad.jpg.rgba	jpeg: image 0.25.10 JpegEncoder q50, L8 gradient
+decode	B	p:fixtures/jpeg-image-q75-rgb-33x17-noise.jpg	i:33 i:17 p:decode/jpeg-image-q75-rgb-33x17-noise.jpg.rgba	jpeg: image 0.25.10 JpegEncoder q75, RGB8 noise (worst case for any IDCT difference)
+decode	B	p:fixtures/jpeg-enc-420-64x64.jpg	i:64 i:64 p:decode/jpeg-enc-420-64x64.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 420 subsampling, baseline
+decode	B	p:fixtures/jpeg-enc-422-64x64.jpg	i:64 i:64 p:decode/jpeg-enc-422-64x64.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 422 subsampling, baseline
+decode	B	p:fixtures/jpeg-enc-444-64x64.jpg	i:64 i:64 p:decode/jpeg-enc-444-64x64.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 444 subsampling, baseline
+decode	B	p:fixtures/jpeg-enc-440-64x64.jpg	i:64 i:64 p:decode/jpeg-enc-440-64x64.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 440 subsampling, baseline
+decode	B	p:fixtures/jpeg-enc-420-33x17.jpg	i:33 i:17 p:decode/jpeg-enc-420-33x17.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 4:2:0, odd size (partial MCUs)
+decode	B	p:fixtures/jpeg-enc-420-1x1.jpg	i:1 i:1 p:decode/jpeg-enc-420-1x1.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 4:2:0, 1x1
+decode	B	p:fixtures/jpeg-enc-restart-64x64.jpg	i:64 i:64 p:decode/jpeg-enc-restart-64x64.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 4:2:0, restart interval 2 MCUs
+decode	B	p:fixtures/jpeg-enc-gray-64x64.jpg	i:64 i:64 p:decode/jpeg-enc-gray-64x64.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, grayscale
+decode	B	p:fixtures/jpeg-enc-progressive-64x64.jpg	i:64 i:64 p:decode/jpeg-enc-progressive-64x64.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 4:2:0, progressive (SOF2) adr=0002#2
+decode	B	p:fixtures/jpeg-enc-cmyk-33x17.jpg	i:33 i:17 p:decode/jpeg-enc-cmyk-33x17.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, CMYK (Adobe APP14)
+decode	A	p:fixtures/jpeg-truncated.jpg	E:AnnotationError	jpeg: jpeg-enc-420-64x64 cut in half (mid-scan) -- refused: annotation error: failed to load image: Format error decoding Jpeg: I/O errors Not enough bytes, expected 162 but found 114\n
+decode	A	p:fixtures/webp-lossless-rgba8-7x3.webp	i:7 i:3 p:decode/webp-lossless-rgba8-7x3.webp.rgba	webp: image 0.25.10 WebPEncoder lossless, RGBA8 adr=0002#1
+decode	A	p:fixtures/gif-1x1.gif	E:AnnotationError	gif: a minimal valid GIF89a, 1x1 (selah refuses GIF on both sides) -- refused: annotation error: failed to load image: The image format Gif is not supported
+decode	A	p:fixtures/other-empty.bin	E:AnnotationError	other: zero bytes -- refused: annotation error: failed to load image: The image format could not be determined
+decode	A	p:fixtures/other-noise-64.bin	E:AnnotationError	other: 64 noise bytes -- refused: annotation error: failed to load image: The image format could not be determined
+decode	A	p:fixtures/other-text.txt	E:AnnotationError	other: plain text -- refused: annotation error: failed to load image: The image format could not be determined

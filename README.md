@@ -5,6 +5,10 @@
 [![License](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
 [![Status](https://img.shields.io/badge/status-development-yellow)]()
 
+> **Porting to Cyrius.** selah 1.0.0 is being ported to Cyrius ([port plan](docs/development/selah-port-plan.md)).
+> The Rust crate is final at **0.30.0** (crates.io; source frozen in `rust-old/`), and the Rust usage below
+> applies to it. This README is rewritten for the Cyrius API at 1.0.0.
+
 **Selah** is an AI-powered screenshot and annotation tool for [AGNOS](https://github.com/MacCracken/agnosticos). It wraps the daimon screen capture API and adds annotation, OCR, smart crop, and automatic redaction of sensitive content.
 
 ## Features

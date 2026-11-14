@@ -1,0 +1,64 @@
+# fixture<TAB>kind<TAB>bytes<TAB>how
+png-rgba8-1x1.png	png	70	png 0.18.1 RGBA8
+png-rgba8-7x3.png	png	155	png 0.18.1 RGBA8 noise
+png-rgba8-33x17.png	png	2329	png 0.18.1 RGBA8 noise
+png-rgba8-64x64-grad.png	png	374	png 0.18.1 RGBA8 gradient
+png-rgb8-33x17.png	png	1768	png 0.18.1 RGB8
+png-gray8-33x17.png	png	646	png 0.18.1 gray 8
+png-graya8-33x17.png	png	1207	png 0.18.1 gray+alpha 8
+png-gray1-33x17.png	png	170	png 0.18.1 gray 1-bit
+png-pal1-33x17.png	png	188	png 0.18.1 palette 1-bit
+png-gray2-33x17.png	png	238	png 0.18.1 gray 2-bit
+png-pal2-33x17.png	png	262	png 0.18.1 palette 2-bit
+png-gray4-33x17.png	png	374	png 0.18.1 gray 4-bit
+png-pal4-33x17.png	png	434	png 0.18.1 palette 4-bit
+png-pal8-33x17.png	png	1426	png 0.18.1 palette 8-bit
+png-pal8-trns-33x17.png	png	1694	png 0.18.1 palette 8-bit + per-entry tRNS
+png-rgb8-trns-33x17.png	png	1786	png 0.18.1 RGB8 + tRNS key (first pixel's colour)
+png-gray8-trns-33x17.png	png	660	png 0.18.1 gray 8 + tRNS key
+png-rgb16-33x17.png	png	3451	png 0.18.1 rgb16
+png-rgba16-33x17.png	png	4573	png 0.18.1 rgba16
+png-gray16-33x17.png	png	1207	png 0.18.1 gray16
+png-graya16-33x17.png	png	2329	png 0.18.1 graya16
+png-adam7-rgba8-33x17.png	png	2346	hand-written Adam7, RGBA8, filter 0
+png-adam7-pal4-33x17.png	png	451	hand-written Adam7, palette 4-bit
+png-adam7-gray1-5x5.png	png	79	hand-written Adam7, gray 1-bit, 5x5 (passes 2, 4, 6 partly empty)
+png-truncated.png	png	1164	png-rgba8-33x17.png cut in half (mid-IDAT)
+png-idat-badcrc.png	png	2329	png-rgba8-33x17.png with the IDAT CRC corrupted
+png-too-wide-40000x1.png	png	68	IHDR 40000x1 (over MAX_IMAGE_DIMENSION 32768), one-row IDAT
+png-too-big-20000x20000.png	png	68	IHDR 20000x20000 RGBA8 (1.6 GB, over MAX_DECODE_ALLOC 512 MiB), tiny IDAT
+bmp-image-rgb8-33x17.bmp	bmp	1754	image 0.25.10 BmpEncoder, RGB8
+bmp-image-rgba8-33x17.bmp	bmp	2366	image 0.25.10 BmpEncoder, RGBA8
+bmp-image-l8-33x17.bmp	bmp	1690	image 0.25.10 BmpEncoder, L8
+bmp-24-bottomup-33x17.bmp	bmp	1754	hand-written BI_RGB 24-bit, bottom-up
+bmp-24-topdown-33x17.bmp	bmp	1754	hand-written BI_RGB 24-bit, top-down
+bmp-pal1-33x17.bmp	bmp	198	hand-written BI_RGB 1-bit palette
+bmp-pal4-33x17.bmp	bmp	458	hand-written BI_RGB 4-bit palette
+bmp-pal8-33x17.bmp	bmp	1690	hand-written BI_RGB 8-bit palette
+bmp-rle8-33x17.bmp	bmp	1366	hand-written BI_RLE8, encoded runs
+bmp-rle4-33x17.bmp	bmp	406	hand-written BI_RLE4, encoded runs
+bmp-16-555-33x17.bmp	bmp	1210	hand-written BI_RGB 16-bit (5-5-5)
+bmp-16-565-33x17.bmp	bmp	1222	hand-written BI_BITFIELDS 16-bit 5-6-5, INFO header + 3 masks
+bmp-32-rgb-33x17.bmp	bmp	2298	hand-written BI_RGB 32-bit (the fourth byte is not alpha by spec; noise here)
+bmp-32-v4-alpha-33x17.bmp	bmp	2366	hand-written V4 BI_BITFIELDS 32-bit with an alpha mask
+bmp-bad-dib-size.bmp	bmp	1754	bmp-24-bottomup with DIB header size 77 (no such header)
+jpeg-image-q75-rgb-33x17-grad.jpg	jpeg	796	image 0.25.10 JpegEncoder q75, RGB8 gradient
+jpeg-image-q95-rgb-64x64-grad.jpg	jpeg	1918	image 0.25.10 JpegEncoder q95, RGB8 gradient
+jpeg-image-q50-gray-33x17-grad.jpg	jpeg	377	image 0.25.10 JpegEncoder q50, L8 gradient
+jpeg-image-q75-rgb-33x17-noise.jpg	jpeg	1471	image 0.25.10 JpegEncoder q75, RGB8 noise (worst case for any IDCT difference)
+jpeg-enc-420-64x64.jpg	jpeg	1122	jpeg-encoder 0.6.1 q85, 420 subsampling, baseline
+jpeg-enc-422-64x64.jpg	jpeg	1234	jpeg-encoder 0.6.1 q85, 422 subsampling, baseline
+jpeg-enc-444-64x64.jpg	jpeg	1415	jpeg-encoder 0.6.1 q85, 444 subsampling, baseline
+jpeg-enc-440-64x64.jpg	jpeg	1194	jpeg-encoder 0.6.1 q85, 440 subsampling, baseline
+jpeg-enc-420-33x17.jpg	jpeg	828	jpeg-encoder 0.6.1 q85, 4:2:0, odd size (partial MCUs)
+jpeg-enc-420-1x1.jpg	jpeg	633	jpeg-encoder 0.6.1 q85, 4:2:0, 1x1
+jpeg-enc-restart-64x64.jpg	jpeg	1145	jpeg-encoder 0.6.1 q85, 4:2:0, restart interval 2 MCUs
+jpeg-enc-gray-64x64.jpg	jpeg	709	jpeg-encoder 0.6.1 q85, grayscale
+jpeg-enc-progressive-64x64.jpg	jpeg	1315	jpeg-encoder 0.6.1 q85, 4:2:0, progressive (SOF2)
+jpeg-enc-cmyk-33x17.jpg	jpeg	1019	jpeg-encoder 0.6.1 q85, CMYK (Adobe APP14)
+jpeg-truncated.jpg	jpeg	561	jpeg-enc-420-64x64 cut in half (mid-scan)
+webp-lossless-rgba8-7x3.webp	webp	256	image 0.25.10 WebPEncoder lossless, RGBA8
+gif-1x1.gif	gif	43	a minimal valid GIF89a, 1x1 (selah refuses GIF on both sides)
+other-empty.bin	other	0	zero bytes
+other-noise-64.bin	other	64	64 noise bytes
+other-text.txt	other	13	plain text

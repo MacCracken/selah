@@ -1,0 +1,450 @@
+# ================================================================
+# Opaque context handle
+# ================================================================
+# Returned by tls_native_new_client / new_server (and their `_in` forms);
+# passed to every stateful fn. Internally points to a struct laid out below
+# (.15), drawn from the ctx's allocator. Callers MUST treat it as opaque and
+# end a connection with tls_native_close, which frees NOTHING: the ctx and
+# every allocation of its connection live in that allocator — the no-free
+# global heap (a == 0), or the Allocator given to an `_in` constructor, which
+# reset_via reclaims after the close. CHANGELOG [6.6.13]
+#
+# At the API boundary a context is an i64 handle. 0 means "alloc
+# failed / invalid"; positive means a valid pointer.
+
+# ================================================================
+# Connection context + server handshake state machine (.15)
+# ================================================================
+# The context is a TLS_CTX_LEN-byte struct from the ctx's allocator
+# (_tn_ctx_new_in); the API handle is its pointer (>0). Shared by client
+# and server. Offsets +0..+128 are the handshake control block; the slots
+# after it hold the parsed credentials, the traffic keys and sequence
+# numbers, the record buffers and the 6.6.13 additions, up to TLS_CTX_LEN.
+
+# 640 = 80 i64 slots. 512 held +3 record partial-read hold buffer, +1 (v6.2.25) ALLOC,
+# +1 (v6.2.8) CERT_REQUESTED; 6.6.13 added +512..+568 (see the block after READ_HOLD_OFF), 6.6.14
+# filled +560 and +568 and added +576 (NOSIGPIPE), 6.6.15 the key-exchange block from +584, 6.6.17
+# the backend tag at +616, 6.7.12 the trust policy at +624, 6.7.18 the KeyUpdate count at +632 (at
+# the end of the list).
+# Nothing outside _tn_ctx_new_in reads this; a new slot goes INSIDE it, never past it.
+var TLS_CTX_LEN          = 640;
+var TLS_CTX_OFF_ROLE       = 0;   # TlsRole (CLIENT/SERVER)
+var TLS_CTX_OFF_STATE      = 8;   # TlsState
+var TLS_CTX_OFF_VERSION    = 16;  # negotiated TlsProtocolVersion (0 until SH)
+var TLS_CTX_OFF_CIPHER     = 24;  # negotiated TlsCipherSuite (0 until SH)
+var TLS_CTX_OFF_VERIFY     = 32;  # TlsVerifyMode
+var TLS_CTX_OFF_MIN_VER    = 40;  # min acceptable TlsProtocolVersion
+var TLS_CTX_OFF_MAX_VER    = 48;  # max acceptable TlsProtocolVersion
+var TLS_CTX_OFF_TRANSCRIPT = 56;  # transcript-hash handle (0 until cipher known)
+var TLS_CTX_OFF_KEYSCHED   = 64;  # key-schedule handle (0 until derived)
+var TLS_CTX_OFF_CERT_CHAIN = 72;  # server: DER cert-chain ptr
+var TLS_CTX_OFF_CERT_LEN   = 80;  # server: cert-chain byte len
+var TLS_CTX_OFF_KEY        = 88;  # server: DER private-key ptr
+var TLS_CTX_OFF_KEY_LEN    = 96;  # server: key byte len
+var TLS_CTX_OFF_HOST       = 104; # client: SNI host cstr ptr
+var TLS_CTX_OFF_HOST_LEN   = 112; # client: host byte len
+var TLS_CTX_OFF_SOCK_FD    = 120; # caller socket fd (set by accept/connect)
+var TLS_CTX_OFF_LAST_ERR   = 128; # last TLS_ERR_* recorded (0 if none)
+# Parsed server credentials (.16) — populated by load_creds:
+var TLS_CTX_OFF_KEY_ALGO   = 136; # SIG_PRIVKEY_* of the loaded private key
+var TLS_CTX_OFF_KEY_MAT    = 144; # ptr to parsed key material (scalar/seed)
+var TLS_CTX_OFF_KEY_MAT_LEN = 152; # key material length (32 P-256/Ed25519, 48 P-384)
+var TLS_CTX_OFF_LEAF_CERT  = 160; # ptr to the parsed x509 leaf-cert struct (256 B)
+var TLS_CTX_OFF_CREDS_LOADED = 168; # 1 once load_creds has succeeded
+# Hello exchange (.17) — populated by server_respond_hello:
+var TLS_CTX_OFF_CLIENT_RANDOM = 176; # ptr to client_random (32 B, from ClientHello)
+var TLS_CTX_OFF_SERVER_RANDOM = 184; # ptr to server_random (32 B, ours)
+var TLS_CTX_OFF_SESSION_ID    = 192; # ptr to legacy_session_id echo bytes
+var TLS_CTX_OFF_SESSION_ID_LEN = 200; # session-id length (0..32)
+var TLS_CTX_OFF_GROUP         = 208; # negotiated TlsNamedGroup (0 until the SH / a 1.2 client's SKE; a 1.3 server
+#                                       sets it when it sends a HelloRetryRequest: the group it asked for)
+var TLS_CTX_OFF_EPH_PRIV      = 216; # ptr to our ephemeral private key: every buffer _TN_EPH_MAX = 48 B, whatever
+#                                       the group (32 B used on x25519 / secp256r1), so one wipe fits all
+var TLS_CTX_OFF_EPH_PUB       = 224; # ptr to our ephemeral public key, both versions: 32 B x25519, 65 B secp256r1,
+#                                       97 B secp384r1 (0x04 || X || Y)
+var TLS_CTX_OFF_SHARED        = 232; # ptr to the ECDHE shared secret / 1.2 premaster: every buffer 48 B
+#                                       (_TN_EPH_MAX; 32 B used on x25519 / secp256r1, 48 on secp384r1)
+var TLS_CTX_OFF_PEER_PUB      = 240; # ptr to the peer's ephemeral pubkey (server: into CH buf; 1.2 client: 32/65/97 B)
+var TLS_CTX_OFF_SENT_HRR      = 248; # 1 if the server's LAST respond_hello built a HelloRetryRequest (reset by each
+#                                       call); the once-per-connection latch is TLS_CTX_OFF_HRR
+# CHANGELOG [6.6.15] (the five comments above)
+var TLS_CTX_OFF_CLIENT_CERT   = 256; # ptr to the parsed client leaf cert (client auth)
+var TLS_CTX_OFF_STEK          = 264; # ptr to the server ticket-encryption key (32 B, lazy)
+# Record-protection traffic keys (.21) — installed after derive_handshake:
+var TLS_CTX_OFF_SRV_HS_KEY    = 272; # server handshake-traffic key ptr
+var TLS_CTX_OFF_SRV_HS_IV     = 280; # server handshake-traffic static IV ptr (12 B)
+var TLS_CTX_OFF_CLI_HS_KEY    = 288; # client handshake-traffic key ptr
+var TLS_CTX_OFF_CLI_HS_IV     = 296; # client handshake-traffic static IV ptr (12 B)
+var TLS_CTX_OFF_SRV_SEQ       = 304; # inline 8-byte server write sequence number
+var TLS_CTX_OFF_CLI_SEQ       = 312; # inline 8-byte client (read) sequence number
+# Client-side (.24): buffered ClientHello for retroactive transcript
+# init once the cipher (hence hash) is known from the ServerHello.
+var TLS_CTX_OFF_CH_BUF        = 320; # ptr to the sent ClientHello message bytes
+var TLS_CTX_OFF_CH_LEN        = 328; # ClientHello message length
+var TLS_CTX_OFF_SERVER_CERT   = 336; # client: parsed server leaf cert (.26)
+var TLS_CTX_OFF_SRV_FIN_BUF   = 344; # client: stashed server Finished message (.26 → .27)
+var TLS_CTX_OFF_SRV_FIN_LEN   = 352; # client: server Finished message length
+# Application-traffic keys (.28) — installed after derive_master:
+var TLS_CTX_OFF_SRV_APP_KEY   = 360; # server application-traffic key ptr
+var TLS_CTX_OFF_SRV_APP_IV    = 368; # server application-traffic static IV ptr
+var TLS_CTX_OFF_CLI_APP_KEY   = 376; # client application-traffic key ptr
+var TLS_CTX_OFF_CLI_APP_IV    = 384; # client application-traffic static IV ptr
+var TLS_CTX_OFF_SRV_APP_SEQ   = 392; # inline 8-byte server app-record sequence
+var TLS_CTX_OFF_CLI_APP_SEQ   = 400; # inline 8-byte client app-record sequence
+var TLS_CTX_OFF_CA_ROOT       = 408; # client: parsed trust-anchor cert (.29)
+var TLS_CTX_OFF_MASTER12      = 416; # TLS 1.2: ptr to the 48-byte master_secret (.74)
+# — 1.2 has no HKDF keysched object, so both
+# Finished verify_data computations need a home
+# for the master here. (Offsets continue contiguously
+# below; the last slot and TLS_CTX_LEN are at the end of the list.)
+var TLS_CTX_OFF_USE_EMS       = 424; # TLS 1.2 Extended Master Secret (RFC 7627, .77):
+# 1 = EMS negotiated, 0 = legacy. READ by
+# derive_keys; SET/cleared by the CH/SH parsers.
+# Zeroed by the new_ctx loop → defaults to legacy.
+var TLS_CTX_OFF_ALPN_OFFER    = 432; # ALPN (RFC 7301, .78): ptr to [be16 len][protos]
+# offered list (OpenSSL-style 1-byte-len-prefixed protos), or 0.
+# SET by set_alpn; READ by the CH builders.
+var TLS_CTX_OFF_ALPN_SEL      = 440; # ALPN: ptr to [u8 len][proto] the peer selected, or 0.
+# SET by the SH/EE parsers; READ by get_alpn_selected.
+var TLS_CTX_OFF_SERVER_INTERS = 448; # client: ptr to [count][interm0 ptr]... the server's
+# intermediate certs in TLS (leaf→root) order, or 0. SET by the cert-chain parser;
+# READ (reversed) by verify_chain. (.78 trust-store + intermediate-chain walk)
+# v6.1.36 (the TLS post-handshake false-EOF bug): the current application-traffic secrets, retained so a
+# post-handshake KeyUpdate (RFC 8446 §7.2) can derive secret_{N+1}. SET by
+# install_app_keys; rotated in place by _tn_rotate_recv_keys/_tn_rotate_send_keys.
+var TLS_CTX_OFF_SRV_APP_SECRET = 456; # server application-traffic secret ptr
+var TLS_CTX_OFF_CLI_APP_SECRET = 464; # client application-traffic secret ptr
+var TLS_CTX_OFF_CERT_REQUESTED = 472; # client: 1 if the server sent a CertificateRequest (mTLS; 1.3 v6.2.8, 1.2 6.6.14)
+var TLS_CTX_OFF_ALLOC          = 480; # v6.2.25 Allocator handle for per-connection allocs (0 = global bump).
+# A server accept loop passes arena_allocator(cap) via new_server_in
+# and reset_via()s it per connection → flat RSS. See _tn_alloc.
+# Partial-record read hold buffer: when a decrypted application_data record's
+# content exceeds the caller's `maxlen`, tls_native_read delivers `maxlen` bytes
+# and HOLDS the remainder here, draining it on subsequent reads before decrypting
+# the next record. Lets a caller read a TLS stream in sub-record chunks (an h2
+# 9-byte frame header, the tail of a bounded response buffer) without losing data
+# or desyncing the AEAD read sequence. Zeroed by the ctor → no hold until needed.
+var TLS_CTX_OFF_READ_HOLD      = 488; # ptr to held-plaintext buffer (TLS_RECORD_MAX_PLAINTEXT, reused), 0 = none
+var TLS_CTX_OFF_READ_HOLD_LEN  = 496; # total valid held bytes (0 = nothing held)
+var TLS_CTX_OFF_READ_HOLD_OFF  = 504; # held bytes already delivered to the caller
+# 6.6.13 — TLS_CTX_LEN 512 -> 576. The offsets of +512..+568 are ALLOCATED here, each `var` is
+# added by the change that first uses it, so no offset can be handed out twice:
+var TLS_CTX_OFF_READ_BUF       = 512; # record read buffer + its decrypt scratch, allocated on the first read
+var TLS_CTX_OFF_WRITE_BUF      = 520; # record seal buffer, allocated on the first write
+var TLS_CTX_OFF_PEER_CLOSED    = 528; # 1 once the peer's close_notify was read: every later tls_native_read is EOF
+var TLS_CTX_OFF_CA_SKIPPED     = 536; # blocks the last trust-root install could not use (tls_native_ca_skipped)
+var TLS_CTX_OFF_DEADLINE       = 544; # absolute clock_now_ns() deadline for every read and write; 0 = none
+var TLS_CTX_OFF_CCS_STATE      = 552; # bit0: the peer's CCS was read; bit1: our TLS 1.2 CCS was sent
+# CHANGELOG [6.6.13]
+# 6.6.14 (CYRIUS-2026-0019):
+var TLS_CTX_OFF_CLIENT_SIG_SCHEME = 560; # 1.2 client: the SignatureScheme our CertificateVerify uses; 0 = answer a
+#                                          CertificateRequest with an empty Certificate (_tn_12_parse_cert_request)
+var TLS_CTX_OFF_HS_DONE = 568;           # server: 1 once the handshake COMPLETED (_tn_server_connected), never
+#                                          cleared — the client identity it authenticated outlives a later
+#                                          connection error (_tn_peer_leaf)
+# 6.6.14 — +576: the default transport's per-connection SIGPIPE guard (lib/tls_native_conn.cyr).
+var TLS_CTX_OFF_NOSIGPIPE      = 576; # macOS: fd + 1 of the socket SO_NOSIGPIPE was set on (_tn_nosigpipe); 0 = not yet
+# CHANGELOG [6.6.14]
+# 6.6.15 — key exchange on secp256r1 / secp384r1 in TLS 1.3 and on the 1.2 server, and the
+# HelloRetryRequest round trip (lib/tls_native_hs13.cyr, "ECDHE groups"):
+var TLS_CTX_OFF_GROUPS         = 584; # the groups this ctx offers (client) or accepts (server), in preference order,
+#                                       16 bits each from the low end; 0 = the default x25519, secp256r1,
+#                                       secp384r1 (tls_native_set_groups)
+var TLS_CTX_OFF_HS_ALERT       = 592; # the fatal alert description a refusing handshake step asks its driver to send
+#                                       (_tn_hs_fail sets it, _tn_send_hs_alert sends it once); 0 = none
+var TLS_CTX_OFF_HRR            = 600; # 1 once a HelloRetryRequest was SENT (server) / PROCESSED (client); never
+#                                       cleared — there is never a second one (RFC 8446 §4.1.4)
+var TLS_CTX_OFF_KS_GROUP       = 608; # 1.3 client: the group of the key_share in our latest ClientHello (its key is
+#                                       EPH_PRIV / EPH_PUB); the ServerHello's share must be on it
+# CHANGELOG [6.6.15]
+# 6.6.17 — +616: what makes a native ctx recognisable as one. lib/tls.cyr's hook-handle verbs
+# (tls_set_alpn, tls_ctx_set_session_*_cb, …) take either a native ctx or a libssl SSL_CTX*, and
+# dispatched on the GLOBAL backend, so a handle used after tls_set_backend flipped reached the wrong
+# backend (an SSL_CTX* handed to native code, a native ctx handed to libssl). They dispatch on this
+# tag instead (_tls_handle_native). A 64-bit value no pointer or flag word holds — its top 16 bits
+# make it a non-canonical address — so reading it at +616 of an SSL_CTX (over 1 KiB on OpenSSL 3)
+# cannot match. Written by _tn_ctx_new_in, never changed. CHANGELOG [6.6.17]
+var TLS_CTX_OFF_BACKEND_TAG    = 616; # _TN_CTX_TAG on every native ctx
+var _TN_CTX_TAG = 0x434E534C54525943;   # "CYRTLSNC", little-endian
+# 6.7.12 — +624: the trust policy of the installed root set (_tn_pol_new, lib/tls_native_hs12.cyr):
+# what Windows' system store distrusts beyond its roots — the disallowed list's keys, the Disallowed
+# store's certificates, a dated root's issuance bound — applied by _tn_verify_chain to every certificate
+# of a path. tls_native_set_ca_system installs the system set's (0 off Windows); every other install
+# clears it. CHANGELOG [6.7.12]
+var TLS_CTX_OFF_CA_POLICY      = 624; # the root set's policy, or 0
+# 6.7.18 — +632: the peer's KeyUpdates since the last application data it sent (_tn_handle_post_handshake
+# counts, tls_native_read clears on delivering data); past _TN_KEY_UPDATE_MAX the connection fails.
+# CHANGELOG [6.7.18]
+var TLS_CTX_OFF_KEY_UPDATES    = 632; # consecutive peer KeyUpdates with no application data between them
+
+# Handshake state-machine events. The protocol-message build/parse
+# that fires each event lands in .16-.19; this slot validates the
+# transitions in isolation so the driver they plug into is trusted.
+var TLS_EV_START         = 0;   # accept()/connect() begins the handshake
+var TLS_EV_RECV_CH       = 1;   # server got ClientHello (and emits its flight)
+var TLS_EV_RECV_CERT     = 2;   # received peer Certificate (client-auth)
+var TLS_EV_RECV_CV       = 3;   # received peer CertificateVerify (client-auth)
+var TLS_EV_RECV_FINISHED = 4;   # received peer Finished
+
+# Allocate + zero-init a context for `role`, applying handshake
+# defaults: state INIT, verify NONE, version range 1.2..1.3.
+# Returns the ctx pointer (>0) or 0 on OOM.
+# v6.2.25: arena-parameterized ctor. `a` is an Allocator handle (lib/alloc.cyr,
+# 0 = global bump). When non-zero, the ctx struct AND every per-connection alloc
+# routed through `_tn_alloc(ctx,...)` draw from `a`, so a server accept loop can
+# reset_via(a) per connection → flat RSS. The arena is stashed AFTER the zero
+# loop (which would otherwise clear it). a==0 is byte-identical to the old ctor.
+fn _tn_ctx_new_in(a, role): i64 {
+    var ctx = 0;
+    if (a == 0) { ctx = alloc(TLS_CTX_LEN); }
+    if (a != 0) { ctx = alloc_via(a, TLS_CTX_LEN); }
+    if (ctx == 0) { return 0; }
+    var i = 0;
+    while (i < TLS_CTX_LEN) {
+        store64(ctx + i, 0);
+        i = i + 8;
+    }
+    store64(ctx + TLS_CTX_OFF_ROLE,    role);
+    store64(ctx + TLS_CTX_OFF_STATE,   TLS_STATE_INIT);
+    store64(ctx + TLS_CTX_OFF_VERIFY,  TLS_VERIFY_NONE);
+    store64(ctx + TLS_CTX_OFF_MIN_VER, TLS_VERSION_1_2);
+    store64(ctx + TLS_CTX_OFF_MAX_VER, TLS_VERSION_1_3);
+    store64(ctx + TLS_CTX_OFF_ALLOC,   a);
+    store64(ctx + TLS_CTX_OFF_BACKEND_TAG, _TN_CTX_TAG);
+    return ctx;
+}
+
+fn _tn_ctx_new(role): i64 {
+    return _tn_ctx_new_in(0, role);
+}
+
+# Per-connection allocation choke-point (v6.2.25). Routes through the ctx's
+# stashed Allocator when set, else the global bump — the v6.2.4 transport-vtable
+# "one helper, zero call-site churn" pattern. Every per-connection alloc on the
+# server handshake/record path goes through here so reset_via(arena) reclaims it.
+# Allocator-handle version (for keysched/transcript helpers that carry an
+# Allocator but not a ctx). a==0 → global bump.
+fn _tn_alloc_a(a, n): i64 {
+    if (a == 0) { return alloc(n); }
+    return alloc_via(a, n);
+}
+
+fn _tn_alloc(ctx, n): i64 {
+    return _tn_alloc_a(load64(ctx + TLS_CTX_OFF_ALLOC), n);
+}
+
+# Raw arena backing the ctx's Allocator (for sigil's x509_*_into(arena), which
+# take a raw arena, not an Allocator). 0 = global bump (and allocator_state must
+# NOT be called on 0 — it would deref a low address).
+fn _tn_arena(ctx): i64 {
+    var alc = load64(ctx + TLS_CTX_OFF_ALLOC);
+    if (alc == 0) { return 0; }
+    return allocator_state(alc);
+}
+
+# Attach an Allocator to an already-constructed ctx (for callers that
+# new_server() then set the per-connection arena). 0 resets to the global bump.
+fn tls_native_set_alloc(ctx, a): i64 {
+    if (ctx == 0) { return 0 - 1; }
+    store64(ctx + TLS_CTX_OFF_ALLOC, a);
+    return 0;
+}
+
+# The ECDHE groups a ctx offers (client) or accepts (server), most preferred first: the list
+# tls_native_set_groups installed, else the default x25519, secp256r1, secp384r1. Packed 16 bits
+# per group from the low end, so lane i is (g >> (16 * i)) & 0xFFFF and an empty lane is 0.
+fn _tn_groups(ctx): i64 {
+    var g = load64(ctx + TLS_CTX_OFF_GROUPS);
+    if (g == 0) { g = TLS_GROUP_X25519 | (TLS_GROUP_SECP256R1 << 16) | (TLS_GROUP_SECP384R1 << 32); }
+    return g;
+}
+
+# 1 if `group` is in the packed list `g` (_tn_groups), else 0.
+fn _tn_groups_has(g, group): i64 {
+    if (group == 0) { return 0; }
+    var i = 0;
+    while (i < 3) {
+        if (((g >> (16 * i)) & 0xFFFF) == group) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The number of groups in the packed list `g` (_tn_groups): 1 to 3 (lanes are filled from the low end).
+fn _tn_groups_n(g): i64 {
+    var n = 0;
+    while (n < 3) {
+        if (((g >> (16 * n)) & 0xFFFF) == 0) { return n; }
+        n = n + 1;
+    }
+    return 3;
+}
+
+# Set the ECDHE groups `ctx` offers (a client: its supported_groups, in this order, and — TLS 1.3 —
+# a key_share for the FIRST of them) or accepts (a server: it picks the first of these the client
+# can use). `groups` points at `n` i64 TlsNamedGroup values, 1 <= n <= 3, each one of
+# TLS_GROUP_X25519, TLS_GROUP_SECP256R1, TLS_GROUP_SECP384R1, none twice. The default, until this
+# is called, is all three with x25519 first. Set before connect / accept. Returns TLS_OK, or
+# TLS_ERR_INVALID_PARAM (ctx 0, `groups` 0, n out of range, an unknown or repeated group — the ctx
+# is then unchanged). The OpenSSL analogue is SSL_set1_groups. CHANGELOG [6.6.15]
+fn tls_native_set_groups(ctx, groups, n): i64 {
+    if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
+    if (groups == 0) { return TLS_ERR_INVALID_PARAM; }
+    if (n < 1) { return TLS_ERR_INVALID_PARAM; }
+    if (n > 3) { return TLS_ERR_INVALID_PARAM; }
+    var packed = 0;
+    var i = 0;
+    while (i < n) {
+        var g = load64(groups + i * 8);
+        var known = 0;
+        if (g == TLS_GROUP_X25519) { known = 1; }
+        if (g == TLS_GROUP_SECP256R1) { known = 1; }
+        if (g == TLS_GROUP_SECP384R1) { known = 1; }
+        if (known == 0) { return TLS_ERR_INVALID_PARAM; }
+        if (_tn_groups_has(packed, g) == 1) { return TLS_ERR_INVALID_PARAM; }
+        packed = packed | (g << (16 * i));
+        i = i + 1;
+    }
+    store64(ctx + TLS_CTX_OFF_GROUPS, packed);
+    return TLS_OK;
+}
+
+# Record a fatal error: stash it in LAST_ERR and drive the ctx to the
+# ERROR state (unusable). Returns `err` so callers can `return
+# _tn_ctx_fail(ctx, ...)` directly.
+fn _tn_ctx_fail(ctx, err): i64 {
+    store64(ctx + TLS_CTX_OFF_LAST_ERR, err);
+    store64(ctx + TLS_CTX_OFF_STATE, TLS_STATE_ERROR);
+    return err;
+}
+
+# A handshake step refusing its peer: record the fatal alert `desc` (TLS_AD_*) the step's driver is
+# to send — a step that parses a message never writes to the socket, its driver does
+# (_tn_send_hs_alert) — and return `err`, which the caller fails the ctx with as before. RFC 8446
+# §6.2 / RFC 5246 §7.2 name the alert for each refusal; 0 (close_notify) is never one, so 0 means
+# none recorded. CHANGELOG [6.6.15]
+fn _tn_hs_fail(ctx, desc, err): i64 {
+    store64(ctx + TLS_CTX_OFF_HS_ALERT, desc);
+    return err;
+}
+
+# _tn_hs_fail, and the ctx failed with `err` (_tn_ctx_fail). Returns `err`.
+fn _tn_hs_refuse(ctx, desc, err): i64 {
+    return _tn_ctx_fail(ctx, _tn_hs_fail(ctx, desc, err));
+}
+
+# Server-side handshake state machine (RFC 8446 §A.2). Drives one
+# transition per event:
+#   INIT --START--> WAIT_CH
+#   WAIT_CH --RECV_CH--> WAIT_FINISHED           (no client auth)
+#                     \-> WAIT_CLIENT_FLIGHT2     (client cert requested)
+#   WAIT_CLIENT_FLIGHT2 --RECV_CERT/RECV_CV--> (stay; client auth flight)
+#   WAIT_FINISHED      --RECV_FINISHED--> CONNECTED
+#   WAIT_CLIENT_FLIGHT2--RECV_FINISHED--> CONNECTED
+# Any event illegal for the current state drives the ctx to ERROR and
+# returns TLS_ERR_PROTOCOL. Returns TLS_OK on a legal transition.
+fn tls_native_server_transition(ctx, event): i64 {
+    if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
+    if (load64(ctx + TLS_CTX_OFF_ROLE) != TLS_ROLE_SERVER) {
+        return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL);
+    }
+    var st = load64(ctx + TLS_CTX_OFF_STATE);
+    if (event == TLS_EV_START) {
+        if (st != TLS_STATE_INIT) { return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL); }
+        store64(ctx + TLS_CTX_OFF_STATE, TLS_STATE_WAIT_CH);
+        return TLS_OK;
+    }
+    if (event == TLS_EV_RECV_CH) {
+        if (st != TLS_STATE_WAIT_CH) { return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL); }
+        # ClientHello consumed; the server's full flight is emitted in
+        # .16-.18. Whether we then expect the client's auth flight or
+        # just its Finished is decided by the verify mode set on the ctx.
+        if (load64(ctx + TLS_CTX_OFF_VERIFY) == TLS_VERIFY_NONE) {
+            store64(ctx + TLS_CTX_OFF_STATE, TLS_STATE_WAIT_FINISHED);
+        } else {
+            store64(ctx + TLS_CTX_OFF_STATE, TLS_STATE_WAIT_CLIENT_FLIGHT2);
+        }
+        return TLS_OK;
+    }
+    if (event == TLS_EV_RECV_CERT) {
+        if (st != TLS_STATE_WAIT_CLIENT_FLIGHT2) {
+            return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL);
+        }
+        return TLS_OK;   # client Certificate consumed; CertificateVerify next
+    }
+    if (event == TLS_EV_RECV_CV) {
+        if (st != TLS_STATE_WAIT_CLIENT_FLIGHT2) {
+            return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL);
+        }
+        return TLS_OK;   # client CertificateVerify consumed; Finished next
+    }
+    if (event == TLS_EV_RECV_FINISHED) {
+        if (st == TLS_STATE_WAIT_FINISHED) { return _tn_server_connected(ctx); }
+        if (st == TLS_STATE_WAIT_CLIENT_FLIGHT2) { return _tn_server_connected(ctx); }
+        return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL);
+    }
+    return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL);
+}
+
+# The server's handshake completed (1.3: the client's Finished verified; 1.2: ours sent after it):
+# CONNECTED, and TLS_CTX_OFF_HS_DONE latched. Returns TLS_OK.
+# WHY a latch (6.6.14, CYRIUS-2026-0019): the server's client-identity getters (_tn_peer_leaf) must answer for
+# a completed handshake and never for one that failed after the certificate verified. The ctx state
+# cannot tell those apart — any later read or write error (a client gone without close_notify) also
+# drives it to ERROR, and libssl keeps the identity then. CHANGELOG [6.6.14]
+fn _tn_server_connected(ctx): i64 {
+    store64(ctx + TLS_CTX_OFF_STATE, TLS_STATE_CONNECTED);
+    store64(ctx + TLS_CTX_OFF_HS_DONE, 1);
+    return TLS_OK;
+}
+
+# ================================================================
+# Public API
+# ================================================================
+
+# Capability check. Returns 1 if cyrius can complete a TLS handshake
+# (at least one ciphersuite end-to-end wired through encrypt/decrypt).
+# Flipped 0→1 at v6.0.14 with AES-256-GCM-SHA384 + ChaCha20-Poly1305-
+# SHA256 backed by sigil 3.5.6. AES-128-GCM-SHA256 still needs sigil
+# AES-128; lands when that ships (see sigil audit issue 2026-05-28).
+fn tls_native_available(): i64 {
+    return 1;
+}
+
+# Create a client-side context for connecting to `host` (NUL-terminated
+# cstr, used for SNI + hostname verification). `host_len` is the byte
+# length excluding the NUL; pass 0 to derive via strlen.
+# Returns: ctx handle (>0) on success, 0 on OOM. The ctx is NOT yet
+# connected — call tls_native_set_* hooks then tls_native_connect.
+# 6.6.13: `a` is an Allocator handle (lib/alloc.cyr; 0 = the global bump heap). The ctx, the host
+# copy and every allocation the connection makes afterwards — the handshake, the trust roots a
+# hook installs, the per-ctx record buffers — come from `a`, so a client loop gives a whole
+# connection back with tls_native_close + reset_via(a). A non-zero `a` MUST be an
+# arena_allocator: sigil's X.509 parse takes the raw arena behind it (_tn_arena), as on the
+# server side (tls_native_new_server_in). The system root set (tls_native_set_ca_system) is
+# shared and lives on the global heap, never in `a`. tls_native_new_client is the a == 0 wrapper.
+# Issue 2026-09-30-tls-client-memory-and-alert-gaps (b); CHANGELOG [6.6.13].
+fn tls_native_new_client_in(a, host, host_len): i64 {
+    var ctx = _tn_ctx_new_in(a, TLS_ROLE_CLIENT);
+    if (ctx == 0) { return 0; }
+    store64(ctx + TLS_CTX_OFF_VERIFY, TLS_VERIFY_PEER);   # clients verify by default
+    if (host != 0) {
+        var hl = host_len;
+        if (hl == 0) { hl = strlen(host); }
+        if (hl > 0) {
+            var hbuf = _tn_alloc(ctx, hl + 1);
+            if (hbuf == 0) { return 0; }
+            memcpy(hbuf, host, hl);
+            store8(hbuf + hl, 0);
+            store64(ctx + TLS_CTX_OFF_HOST, hbuf);
+            store64(ctx + TLS_CTX_OFF_HOST_LEN, hl);
+        }
+    }
+    return ctx;
+}
+
+# Global-heap client ctor (the a == 0 case of tls_native_new_client_in).
+fn tls_native_new_client(host, host_len): i64 {
+    return tls_native_new_client_in(0, host, host_len);
+}
+

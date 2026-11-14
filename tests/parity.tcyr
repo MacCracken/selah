@@ -1,0 +1,241 @@
+# parity.tcyr — replays the golden corpus (tests/golden/*.tsv) against the port.
+#
+# Port plan §2 step 6. Format and comparison rules: scripts/oracle/README.md; the machinery and the row
+# outcomes are in tests/parity_core.cyr. The module list is tests/golden/modules.txt, which the generator writes.
+#
+# The exit code is the number of modules with a FAILED row, so the 8-bit exit status cannot wrap.
+
+include "tests/parity_core.cyr"
+
+# ---------------------------------------------------------------- decode
+#
+# M0 (port plan §2 step 7) takes the baseline: `decode` is not gated yet, so a difference is "measured", and every
+# such row is printed. M3 sets _PAR_DECODE_GATED = 1, sets K_jpeg from docs/development/port-parity.md, and swaps
+# the stand-in below for src/codec.cyr's decode.
+
+var _PAR_DECODE_GATED = 0;
+var _PAR_K_JPEG = 0;
+# selah's MAX_DECODE_ALLOC (rust-old/src/annotate.rs): 512 MiB of RGBA8.
+var _PAR_MAX_DECODE_ALLOC = 536870912;
+
+enum ParFmt {
+    PAR_FMT_UNKNOWN = 0;
+    PAR_FMT_PNG = 1;
+    PAR_FMT_JPEG = 2;
+    PAR_FMT_BMP = 3;
+    PAR_FMT_GIF = 4;
+    PAR_FMT_WEBP = 5;
+}
+
+# The signature check selah makes before decoding (Rust: image's guess_format, then the supported subset).
+fn _par_sniff(src, n): i64 {
+    if (n >= 8 && memeq(src, "\x89PNG\r\n\x1a\n", 8) == 1) { return PAR_FMT_PNG; }
+    if (n >= 3 && load8(src) == 255 && load8(src + 1) == 216 && load8(src + 2) == 255) { return PAR_FMT_JPEG; }
+    if (n >= 2 && load8(src) == 66 && load8(src + 1) == 77) { return PAR_FMT_BMP; }
+    if (n >= 6 && (memeq(src, "GIF87a", 6) == 1 || memeq(src, "GIF89a", 6) == 1)) { return PAR_FMT_GIF; }
+    if (n >= 12 && memeq(src, "RIFF", 4) == 1 && memeq(src + 8, "WEBP", 4) == 1) { return PAR_FMT_WEBP; }
+    return PAR_FMT_UNKNOWN;
+}
+
+# The M0 stand-in for selah's decode: the sniff, then chitra's budgeted decode for PNG, JPEG and BMP only.
+# Returns a chitra image handle, or 0 with *why_out set to a cstring.
+fn _par_decode_m0(src, n, why_out): i64 {
+    var fmt = _par_sniff(src, n);
+    if (fmt == PAR_FMT_GIF) { store64(why_out, "GIF refused (selah)"); return 0; }
+    if (fmt == PAR_FMT_WEBP) { store64(why_out, "WebP refused (ADR 0002 #1)"); return 0; }
+    if (fmt == PAR_FMT_UNKNOWN) { store64(why_out, "unrecognised signature"); return 0; }
+    var err = 0;
+    var img = chitra_image_decode_budget(src, n, _PAR_MAX_DECODE_ALLOC, &err);
+    if (img == 0) {
+        store64(why_out, chitra_err_name(chitra_err_code(err)));
+        return 0;
+    }
+    return img;
+}
+
+# A why-message buffer: prefix + decimal + text + decimal + text.
+var _par_why: u8[256];
+fn _par_why5(a, n1, b, n2, c): i64 {
+    var p = &_par_why;
+    var k = 0;
+    var parts: i64[3];
+    parts[0] = a;
+    parts[1] = b;
+    parts[2] = c;
+    var nums: i64[2];
+    nums[0] = n1;
+    nums[1] = n2;
+    var i = 0;
+    while (i < 3) {
+        var s = parts[i];
+        var l = strlen(s);
+        if (k + l > 200) { l = 200 - k; }
+        memcpy(p + k, s, l);
+        k = k + l;
+        if (i < 2) {
+            var nb: u8[32];
+            var nl = fmt_int_buf(nums[i], &nb);
+            memcpy(p + k, &nb, nl);
+            k = k + nl;
+        }
+        i = i + 1;
+    }
+    store8(p + k, 0);
+    return p;
+}
+
+# One decode row.
+fn _par_decode_row(): i64 {
+    var tp = 0;
+    var tn = 0;
+    _pc_tok(2, 0, &tp, &tn);
+    if (tn < 2 || memeq(tp, "p:", 2) != 1) { return _pc_record(PC_FAILED, "malformed input token"); }
+    var len = 0;
+    var src = _pc_read(tp + 2, tn - 2, &len);
+    if (src == 0) { return _pc_record(PC_FAILED, "fixture unreadable"); }
+
+    var adr1 = _pc_contains(_pc_f[8], _pc_f[9], "adr=0002#1");
+    var adr2 = _pc_contains(_pc_f[8], _pc_f[9], "adr=0002#2");
+    var miss = PC_MEASURED;
+    if (_PAR_DECODE_GATED == 1) { miss = PC_FAILED; }
+
+    var why = 0;
+    var img = _par_decode_m0(src, len, &why);
+
+    var op = 0;
+    var on = 0;
+    _pc_tok(3, 0, &op, &on);
+    var oracle_refused = 0;
+    if (on >= 2 && memeq(op, "E:", 2) == 1) { oracle_refused = 1; }
+
+    if (oracle_refused == 1) {
+        if (img == 0) { return _pc_record(PC_OK, "both refuse"); }
+        var w0 = chitra_image_width(img);
+        var h0 = chitra_image_height(img);
+        chitra_image_free(img);
+        return _pc_record(miss, _par_why5("oracle refuses, port decodes ", w0, "x", h0, ""));
+    }
+    if (img == 0) {
+        if (adr1 == 1 || adr2 == 1) { return _pc_record(PC_ACCEPTED, why); }
+        return _pc_record(miss, why);
+    }
+    if (adr1 == 1 || adr2 == 1) {
+        chitra_image_free(img);
+        return _pc_record(miss, "ADR 0002 says refuse, port decodes");
+    }
+
+    var wp = 0;
+    var wn = 0;
+    var hp = 0;
+    var hn = 0;
+    var bp = 0;
+    var bn = 0;
+    _pc_tok(3, 0, &wp, &wn);
+    _pc_tok(3, 1, &hp, &hn);
+    _pc_tok(3, 2, &bp, &bn);
+    var ow = _pc_int(wp + 2, wn - 2);
+    var oh = _pc_int(hp + 2, hn - 2);
+    var pw = chitra_image_width(img);
+    var ph = chitra_image_height(img);
+    if (pw != ow || ph != oh) {
+        chitra_image_free(img);
+        return _pc_record(PC_FAILED, _par_why5("dimensions differ: port ", pw, "x", ph, ""));
+    }
+    var blen = 0;
+    var blob = _pc_read(bp + 2, bn - 2, &blen);
+    if (blob == 0 || blen != ow * oh * 4) {
+        chitra_image_free(img);
+        return _pc_record(PC_FAILED, "oracle RGBA blob unreadable or the wrong size");
+    }
+    var px = chitra_image_pixels(img);
+    var outcome = PC_OK;
+    var cls = load8(_pc_f[2]);
+    if (memeq(px, blob, blen) != 1) {
+        var diff = 0;
+        var mx = 0;
+        var i = 0;
+        while (i < blen) {
+            var d = load8(px + i) - load8(blob + i);
+            if (d < 0) { d = -d; }
+            if (d != 0) { diff = diff + 1; }
+            if (d > mx) { mx = d; }
+            i = i + 1;
+        }
+        if (cls == 66) {
+            _pc_hist_add(px, blob, blen);
+            if (_PAR_DECODE_GATED == 1 && mx <= _PAR_K_JPEG) { outcome = PC_OK; } else { outcome = miss; }
+        } else {
+            outcome = miss;
+        }
+        chitra_image_free(img);
+        if (outcome == PC_OK) { return _pc_record(PC_OK, "within K_jpeg"); }
+        return _pc_record(outcome, _par_why5("pixels differ: ", diff, " bytes, max |d| ", mx, ""));
+    }
+    if (cls == 66) { _pc_hist_add(px, blob, blen); }
+    chitra_image_free(img);
+    return _pc_record(PC_OK, "identical");
+}
+
+# ---------------------------------------------------------------- driver
+
+# Replay one module's .tsv. Returns 1 when the module failed.
+fn _par_module(name, n): i64 {
+    _pc_reset();
+    var file = alloc(n + 5);
+    memcpy(file, name, n);
+    memcpy(file + n, ".tsv", 4);
+    store8(file + n + 4, 0);
+    var len = 0;
+    var tsv = _pc_read(file, n + 4, &len);
+    if (tsv == 0) {
+        _pc_s("[");
+        _pc_s(file);
+        _pc_s("] FAILED: the golden file is missing\n");
+        return 1;
+    }
+    var is_decode = 0;
+    if (n == 6 && memeq(name, "decode", 6) == 1) { is_decode = 1; _pc_print_limit = 1000; }
+    var pos = 0;
+    while (pos < len) {
+        var e = _pc_find(tsv, pos, len, 10);
+        var ln = e - pos;
+        if (ln > 0 && load8(tsv + pos) != 35) {
+            _pc_split(tsv + pos, ln);
+            if (is_decode == 1 && _pc_f[1] == 6 && memeq(_pc_f[0], "decode", 6) == 1) {
+                _par_decode_row();
+            } else {
+                _pc_record(PC_PENDING, "no dispatcher");
+            }
+        }
+        pos = e + 1;
+    }
+    var modname = alloc(n + 1);
+    memcpy(modname, name, n);
+    store8(modname + n, 0);
+    return _pc_summary(modname);
+}
+
+# Replay every module in tests/golden/modules.txt; the exit code is the number that failed.
+fn main(): i64 {
+    alloc_init();
+    var len = 0;
+    var list = _pc_read("modules.txt", 11, &len);
+    if (list == 0) {
+        _pc_s("parity: tests/golden/modules.txt is missing (run scripts/oracle)\n");
+        return 1;
+    }
+    var failed = 0;
+    var pos = 0;
+    while (pos < len) {
+        var e = _pc_find(list, pos, len, 10);
+        if (e > pos) { failed = failed + _par_module(list + pos, e - pos); }
+        pos = e + 1;
+    }
+    _pc_s("parity: ");
+    _pc_i(failed);
+    _pc_s(" module(s) failed\n");
+    return failed;
+}
+
+var exit_code = main();
+sys_exit_group(exit_code);

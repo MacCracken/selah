@@ -1,0 +1,28 @@
+[package]
+name = "selah-oracle"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.100"
+license = "GPL-3.0-only"
+publish = false
+description = "Drives the frozen Rust selah 0.30.0 in rust-old/ to write the Cyrius port's golden corpus"
+
+# The oracle is used by path and never built or edited in place (CLAUDE.md: do not modify rust-old/).
+# Cargo.lock was seeded from rust-old/Cargo.lock, so every shared dependency resolves to the version
+# the oracle was released and tested with; the codec crates are pinned exactly to say so.
+[dependencies]
+selah = { path = "../../rust-old", features = ["mcp"] }
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "webp"] }
+png = "=0.18.1"
+flate2 = "=1.1.11"
+# Fixture producer only (never on the oracle's path): JPEG chroma subsampling, progressive, restart
+# intervals and CMYK, which `image`'s own JPEG encoder cannot write.
+jpeg-encoder = "=0.6.1"
+
+[[bin]]
+name = "oracle"
+path = "src/main.rs"
+
+[profile.release]
+# Correctness, not speed: keep overflow checks so a bad fixture size fails loudly.
+overflow-checks = true

@@ -1,0 +1,224 @@
+# parity_core.cyr — the golden-corpus replay machinery (port plan §2 step 6).
+#
+# Format and comparison rules: scripts/oracle/README.md. tests/parity.tcyr drives it.
+#
+# Every row of every module ends as one of:
+# - ok: the verdict and every output matched within the row's class;
+# - FAILED: an output differs beyond its class; the first _pc_print_limit per module are printed with the note;
+# - measured: the module is not gated yet (a baseline is being taken); the difference is recorded and
+#   printed, but does not fail;
+# - accepted: the row carries an `adr=0002#N` tag and the port answered as that ADR row says;
+# - pending: the row's function has no dispatcher entry yet.
+
+var _PC_ROOT = "tests/golden/";
+
+# Row outcomes.
+enum PcOutcome { PC_OK = 0; PC_FAILED = 1; PC_MEASURED = 2; PC_ACCEPTED = 3; PC_PENDING = 4; }
+
+# Per-module counters, by outcome.
+var _pc_count: i64[5];
+var _pc_failed_printed = 0;
+# How many FAILED / measured rows a module prints. A baseline run prints them all.
+var _pc_print_limit = 10;
+
+# The B-class histogram of per-byte absolute differences: 0, 1, 2, 3..8, > 8.
+var _pc_hist: i64[5];
+var _pc_hist_max = 0;
+
+# Print a NUL-terminated string.
+fn _pc_s(s): i64 {
+    print(s, strlen(s));
+    return 0;
+}
+
+# Print n bytes at p.
+fn _pc_b(p, n): i64 {
+    print(p, n);
+    return 0;
+}
+
+# Print a decimal integer.
+fn _pc_i(n): i64 {
+    print_num(n);
+    return 0;
+}
+
+# tests/golden/ + rel[0..n), as a fresh NUL-terminated path.
+fn _pc_path(rel, n): i64 {
+    var rl = strlen(_PC_ROOT);
+    var p = alloc(rl + n + 1);
+    if (p == 0) { return 0; }
+    memcpy(p, _PC_ROOT, rl);
+    memcpy(p + rl, rel, n);
+    store8(p + rl + n, 0);
+    return p;
+}
+
+# Read tests/golden/<rel[0..n)> whole. Returns the buffer and stores the length, or returns 0 (with a negative
+# length) when the file can't be read. An empty file is a valid buffer of length 0.
+fn _pc_read(rel, n, len_out): i64 {
+    var p = _pc_path(rel, n);
+    if (p == 0) { store64(len_out, 0 - 12); return 0; }
+    var buf = file_read_whole_max(p, 268435456, len_out);
+    if (load64(len_out) < 0) { return 0; }
+    return buf;
+}
+
+# The parsed decimal at s[0..n); -1 when it is not one.
+fn _pc_int(s, n): i64 {
+    if (n <= 0) { return 0 - 1; }
+    var v = 0;
+    var i = 0;
+    while (i < n) {
+        var c = load8(s + i);
+        if (c < 48 || c > 57) { return 0 - 1; }
+        v = v * 10 + (c - 48);
+        i = i + 1;
+    }
+    return v;
+}
+
+# Index of the first byte equal to ch in s[from..n), or n.
+fn _pc_find(s, from, n, ch): i64 {
+    var i = from;
+    while (i < n) {
+        if (load8(s + i) == ch) { return i; }
+        i = i + 1;
+    }
+    return n;
+}
+
+# 1 when the needle (NUL-terminated) occurs in s[0..n).
+fn _pc_contains(s, n, needle): i64 {
+    var m = strlen(needle);
+    if (m == 0) { return 1; }
+    var i = 0;
+    while (i + m <= n) {
+        if (memeq(s + i, needle, m) == 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# A row's fields, as (pointer, length) pairs: fn, class, inputs, outputs, note.
+var _pc_f: i64[10];
+
+# Split one line at tabs into _pc_f. Returns the field count.
+fn _pc_split(line, n): i64 {
+    var k = 0;
+    var start = 0;
+    while (k < 5) {
+        var e = _pc_find(line, start, n, 9);
+        _pc_f[k * 2] = line + start;
+        _pc_f[k * 2 + 1] = e - start;
+        k = k + 1;
+        if (e >= n) { break; }
+        start = e + 1;
+    }
+    return k;
+}
+
+# The i-th space-separated token of field f (0-based): stores its pointer and length, returns 1, or 0 when there
+# is no such token.
+fn _pc_tok(f, i, p_out, n_out): i64 {
+    var s = _pc_f[f * 2];
+    var n = _pc_f[f * 2 + 1];
+    var start = 0;
+    var k = 0;
+    while (start <= n) {
+        var e = _pc_find(s, start, n, 32);
+        if (k == i) {
+            store64(p_out, s + start);
+            store64(n_out, e - start);
+            return 1;
+        }
+        k = k + 1;
+        start = e + 1;
+    }
+    return 0;
+}
+
+# Count a row's outcome; print FAILED / measured rows (the first ten per module).
+fn _pc_record(outcome, why): i64 {
+    _pc_count[outcome] = _pc_count[outcome] + 1;
+    if (outcome == PC_FAILED || outcome == PC_MEASURED) {
+        if (_pc_failed_printed < _pc_print_limit) {
+            if (outcome == PC_FAILED) { _pc_s("  FAILED   "); } else { _pc_s("  measured "); }
+            _pc_b(_pc_f[4], _pc_f[5]);
+            _pc_s(": ");
+            _pc_s(why);
+            _pc_s("\n           note: ");
+            _pc_b(_pc_f[8], _pc_f[9]);
+            _pc_s("\n");
+        }
+        _pc_failed_printed = _pc_failed_printed + 1;
+    }
+    return 0;
+}
+
+# Reset the per-module counters.
+fn _pc_reset(): i64 {
+    var i = 0;
+    while (i < 5) {
+        _pc_count[i] = 0;
+        _pc_hist[i] = 0;
+        i = i + 1;
+    }
+    _pc_hist_max = 0;
+    _pc_failed_printed = 0;
+    return 0;
+}
+
+# Add per-byte differences of a[0..n) and b[0..n) to the histogram. Returns the largest.
+fn _pc_hist_add(a, b, n): i64 {
+    var mx = 0;
+    var i = 0;
+    while (i < n) {
+        var d = load8(a + i) - load8(b + i);
+        if (d < 0) { d = -d; }
+        if (d == 0) { _pc_hist[0] = _pc_hist[0] + 1; }
+        elif (d == 1) { _pc_hist[1] = _pc_hist[1] + 1; }
+        elif (d == 2) { _pc_hist[2] = _pc_hist[2] + 1; }
+        elif (d <= 8) { _pc_hist[3] = _pc_hist[3] + 1; }
+        else { _pc_hist[4] = _pc_hist[4] + 1; }
+        if (d > mx) { mx = d; }
+        i = i + 1;
+    }
+    if (mx > _pc_hist_max) { _pc_hist_max = mx; }
+    return mx;
+}
+
+# Print the module summary line (and the B histogram when it has data). Returns 1 when the module failed.
+fn _pc_summary(module): i64 {
+    _pc_s("[");
+    _pc_s(module);
+    _pc_s("] ok ");
+    _pc_i(_pc_count[PC_OK]);
+    _pc_s(", FAILED ");
+    _pc_i(_pc_count[PC_FAILED]);
+    _pc_s(", measured ");
+    _pc_i(_pc_count[PC_MEASURED]);
+    _pc_s(", accepted ");
+    _pc_i(_pc_count[PC_ACCEPTED]);
+    _pc_s(", pending ");
+    _pc_i(_pc_count[PC_PENDING]);
+    _pc_s("\n");
+    var total = _pc_hist[0] + _pc_hist[1] + _pc_hist[2] + _pc_hist[3] + _pc_hist[4];
+    if (total > 0) {
+        _pc_s("  class B bytes: |d|=0 ");
+        _pc_i(_pc_hist[0]);
+        _pc_s(", 1 ");
+        _pc_i(_pc_hist[1]);
+        _pc_s(", 2 ");
+        _pc_i(_pc_hist[2]);
+        _pc_s(", 3-8 ");
+        _pc_i(_pc_hist[3]);
+        _pc_s(", >8 ");
+        _pc_i(_pc_hist[4]);
+        _pc_s("; max ");
+        _pc_i(_pc_hist_max);
+        _pc_s("\n");
+    }
+    if (_pc_count[PC_FAILED] > 0) { return 1; }
+    return 0;
+}

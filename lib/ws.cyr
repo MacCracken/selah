@@ -1,0 +1,467 @@
+# ws.cyr — WebSocket protocol (RFC 6455)
+# Usage: include "lib/ws.cyr"
+# Self-sufficient: includes syscalls.cyr, alloc.cyr, string.cyr, net.cyr and the bayan fold
+# (base64_encode — base64.cyr was folded into bayan), whose bundle carries its own requires
+# block since 6.6.19 R1. CHANGELOG [6.6.19]
+#
+# Client-side WebSocket over existing TCP connections.
+# Handles framing, masking, ping/pong, close handshake.
+#
+#   var ip = net_resolve_ipv4("localhost");            # a name or IPv4 literal; -1 if unresolved
+#   var st, sock = tcp_socket();                        # Result pair: check is_err_result(st)
+#   var ct, cv = sock_connect(sock, ip, 8080);          # likewise is_err_result(ct)
+#   var ws = ws_connect(sock, "/ws", "localhost");
+#   if (ws_state(ws) == WS_OPEN) {
+#       ws_send_text(ws, "hello");
+#       var msg = ws_recv(ws);
+#   }
+#   ws_close(ws);                                       # closes the socket too — not sock_close again
+
+include "lib/syscalls.cyr"
+include "lib/alloc.cyr"
+include "lib/string.cyr"
+include "lib/net.cyr"
+include "lib/bayan.cyr"
+# 6.7.18: the handshake response and the frame header are read through fn-local [u8] slices,
+# checked in every build. CHANGELOG [6.7.18]
+include "lib/slice.cyr"
+
+# WebSocket opcodes
+enum WsOpcode {
+    WS_OP_CONTINUATION = 0;
+    WS_OP_TEXT   = 1;
+    WS_OP_BINARY = 2;
+    WS_OP_CLOSE  = 8;
+    WS_OP_PING   = 9;
+    WS_OP_PONG   = 10;
+}
+
+# WebSocket state
+enum WsState {
+    WS_CONNECTING = 0;
+    WS_OPEN       = 1;
+    WS_CLOSING    = 2;
+    WS_CLOSED     = 3;
+}
+
+# WebSocket handle layout (56 bytes)
+# +0  fd       socket file descriptor
+# +8  state    connection state
+# +16 mask_key 4-byte mask for client frames
+# +24 flags    (FIN, RSV, etc.)
+# +32 pending  bytes the handshake read past the 101's header block (or 0) — 6.7.18
+# +40 pend_len their count
+# +48 pend_off how many the frame reader has taken
+
+# Create WebSocket handle from connected socket
+fn ws_new(fd): i64 {
+    var ws = alloc(56);
+    if (ws == 0) { return 0; }
+    store64(ws, fd);
+    store64(ws + 8, WS_CONNECTING);
+    memset(ws + 16, 0, 40);            # mask, flags and the pending bytes: none yet
+    return ws;
+}
+
+# Get socket fd from WebSocket handle
+fn ws_fd(ws): i64 { return load64(ws); }
+
+# Get WebSocket connection state
+fn ws_state(ws): i64 { return load64(ws + 8); }
+
+# Generate the 4-byte frame mask key from the kernel CSPRNG.
+# the entropy-fallback hardening item (v6.1.36): fail-CLOSED. RFC 6455 §5.3 requires an UNPREDICTABLE
+# masking key; the old `/dev/urandom` open could fail (absent on macOS sandbox /
+# Windows) and silently store an uninitialized stack value. sys_getrandom routes
+# through getrandom(2) (getentropy on macOS); on failure we MUST NOT emit a weak
+# mask — return -1 so the caller aborts the send. Returns 0 on success.
+fn _ws_gen_mask(ws): i64 {
+    var mask[8];
+    if (sys_getrandom(&mask, 4, 0) != 4) { return 0 - 1; }
+    store64(ws + 16, load64(&mask) & 0xFFFFFFFF);
+    return 0;
+}
+
+# Build WebSocket upgrade request. Returns the request buffer, or 0 if the
+# CSPRNG is unavailable (the entropy-fallback hardening item v6.1.36: fail-CLOSED — the old /dev/urandom open
+# could fail and emit an uninitialized Sec-WebSocket-Key nonce).
+fn _ws_handshake_request(path, host, key_out): i64 {
+    # Generate the 16-byte Sec-WebSocket-Key nonce from the kernel CSPRNG.
+    var raw[16];
+    if (sys_getrandom(&raw, 16, 0) != 16) { return 0; }
+    var key = base64_encode(&raw, 16);
+    if (key == 0) { return 0; }
+    var kl = strlen(key);
+    memcpy(key_out, key, kl);
+    store8(key_out + kl, 0);
+
+    # 6.6.10: sized from the request, not a fixed 512. The path and host were memcpy'd into a
+    # 512-byte buffer with no length check, so a long path overran the heap (the CYRIUS-2026-0010 shape
+    # in lib/http.cyr); the fixed text below is 114 bytes plus the NUL. CHANGELOG [6.6.10]
+    var pl = strlen(path);
+    var hl = strlen(host);
+    var buf = alloc(pl + hl + kl + 160);
+    if (buf == 0) { return 0; }
+    var pos = 0;
+    # GET path HTTP/1.1\r\n
+    memcpy(buf + pos, "GET ", 4); pos += 4;
+    memcpy(buf + pos, path, pl); pos += pl;
+    memcpy(buf + pos, " HTTP/1.1\r\n", 11); pos += 11;
+    # Host
+    memcpy(buf + pos, "Host: ", 6); pos += 6;
+    memcpy(buf + pos, host, hl); pos += hl;
+    memcpy(buf + pos, "\r\n", 2); pos += 2;
+    # Upgrade headers
+    memcpy(buf + pos, "Upgrade: websocket\r\n", 20); pos += 20;
+    memcpy(buf + pos, "Connection: Upgrade\r\n", 21); pos += 21;
+    memcpy(buf + pos, "Sec-WebSocket-Version: 13\r\n", 27); pos += 27;
+    memcpy(buf + pos, "Sec-WebSocket-Key: ", 19); pos += 19;
+    memcpy(buf + pos, key, kl); pos += kl;
+    memcpy(buf + pos, "\r\n\r\n", 4); pos += 4;
+    store8(buf + pos, 0);
+    return buf;
+}
+
+# The largest response header block ws_connect reads (8 KiB, the common server limit).
+const _WS_HS_MAX = 8192;
+
+# ws_connect's answer for a handshake that failed: the handle, marked WS_CLOSED.
+fn _ws_hs_fail(ws): i64 {
+    store64(ws + 8, WS_CLOSED);
+    return ws;
+}
+
+# Perform WebSocket handshake on connected socket
+fn ws_connect(sock, path, host): i64 {
+    var ws = ws_new(sock);
+    if (ws == 0) { return 0; }
+    var key[32];
+    var req = _ws_handshake_request(path, host, &key);
+    # the entropy-fallback hardening item: no entropy → fail closed
+    if (req == 0) { return _ws_hs_fail(ws); }
+    # v6.6.8: the whole request or nothing — a short write left the server reading half a
+    # handshake. CHANGELOG [6.6.8]
+    var qlen = strlen(req);
+    if (sock_send_all(sock, req, qlen) != qlen) { return _ws_hs_fail(ws); }
+
+    # Read the response through the end of its header block (CRLF CRLF).
+    # ⛔ 6.7.18 (audit finding 19): this was ONE read of at most 511 bytes, the "101" checked and
+    # everything else dropped — so a server that pushes its first frame in the same segment as the
+    # 101 lost that frame, and a header block over 511 bytes left its tail to be parsed as frames.
+    # Now the header block is read whole (up to _WS_HS_MAX bytes; a longer one fails the handshake)
+    # and whatever follows it is kept in the handle, which the frame reader drains before the
+    # socket. The bytes are read through a slice of what arrived. CHANGELOG [6.7.18]
+    var resp[_WS_HS_MAX];
+    var got = 0;
+    var hend = 0 - 1;
+    while (hend < 0) {
+        if (got >= _WS_HS_MAX) { return _ws_hs_fail(ws); }
+        var n = _net_os_recv(sock, &resp + got, _WS_HS_MAX - got);   # not sys_read: see _ws_recv_exact
+        if (n == 0 - 4) { continue; }
+        if (n <= 0) { return _ws_hs_fail(ws); }
+        var from = got - 3;
+        if (from < 0) { from = 0; }
+        got += n;
+        hend = _ws_header_end(&resp, from, got);
+    }
+    var r: [u8] = 0;
+    slice_set(&r, &resp, got);
+    # 6.6.10: a header block shorter than 12 bytes cannot hold "HTTP/1.1 101". CHANGELOG [6.6.10]
+    if (hend < 12) { return _ws_hs_fail(ws); }
+    var left = got - hend;
+    if (left > 0) {
+        var pend = alloc(left);
+        if (pend == 0) { return _ws_hs_fail(ws); }
+        memcpy(pend, &resp + hend, left);
+        store64(ws + 32, pend);
+        store64(ws + 40, left);
+        store64(ws + 48, 0);
+    }
+
+    # Check for "101" in first line
+    if (r[9] == 49 && r[10] == 48 && r[11] == 49) {
+        store64(ws + 8, WS_OPEN);
+    }
+    return ws;
+}
+
+# The offset just past the first CRLF CRLF in buf[0, n) that ends at or after `from`, or -1.
+fn _ws_header_end(buf, from, n): i64 {
+    var s: [u8] = 0;
+    slice_set(&s, buf, n);
+    var i = from;
+    while (i + 3 < n) {
+        if (s[i] == 13 && s[i + 1] == 10 && s[i + 2] == 13 && s[i + 3] == 10) { return i + 4; }
+        i += 1;
+    }
+    return 0 - 1;
+}
+
+# Send a WebSocket frame. Returns len (0 for an empty frame such as a ping), or -1 when the
+# connection is not OPEN, len is negative or 4 GiB or more, the CSPRNG is unavailable, or a
+# write failed.
+#
+# ⛔ 6.6.20: NO ALLOCATION. The masked payload used to be an alloc(len) copy taken AFTER the header
+# was on the wire: alloc(0) is 0 on every target, so every empty frame (ws_ping, ws_send_text(ws,
+# ""), the close frame) went out in full and then reported -1; a refused allocation for len > 0
+# left a header announcing len bytes that never followed (the stream desynchronised, state still
+# OPEN); and the copy was never reclaimed, so a long-lived client grew by every byte it sent. The
+# frame is now built in one stack buffer — header, then the payload masked a chunk at a time, the
+# mask byte indexed by the ABSOLUTE payload offset — so nothing can be refused once a byte is sent.
+# Pinned by tests/tcyr/crossos/ws_client_short_write.tcyr (empty frames, chunk boundaries) and
+# tests/gates/memory/stdlib_alloc_refusal_sentinels.sh (the sender allocates nothing).
+# CHANGELOG [6.6.20]
+fn _ws_send_frame(ws, opcode, data, len): i64 {
+    if (ws_state(ws) != WS_OPEN) { return 0 - 1; }
+    if (len < 0) { return 0 - 1; }
+    # The 64-bit length below carries the low 32 bits only — the same bound ws_recv_frame
+    # accepts (CYRIUS-2026-0011) — so a frame of 4 GiB or more is refused before a byte is sent, not
+    # announced as len mod 2^32 with the whole payload streamed after it. CHANGELOG [6.6.20]
+    if (len > 0xFFFFFFFF) { return 0 - 1; }
+    var fd = ws_fd(ws);
+    var buf[4096];           # the header (<= 14 bytes), then masked payload; one write per fill
+    var hlen = 0;
+
+    # First byte: FIN + opcode
+    store8(&buf, 0x80 | (opcode & 0x0F));
+    hlen = 1;
+
+    # Second byte: MASK + length
+    if (len < 126) {
+        store8(&buf + 1, 0x80 | len);
+        hlen = 2;
+    } elif (len < 65536) {
+        store8(&buf + 1, 0x80 | 126);
+        store8(&buf + 2, (len >> 8) & 0xFF);
+        store8(&buf + 3, len & 0xFF);
+        hlen = 4;
+    } else {
+        store8(&buf + 1, 0x80 | 127);
+        store8(&buf + 2, 0); store8(&buf + 3, 0);
+        store8(&buf + 4, 0); store8(&buf + 5, 0);
+        store8(&buf + 6, (len >> 24) & 0xFF);
+        store8(&buf + 7, (len >> 16) & 0xFF);
+        store8(&buf + 8, (len >> 8) & 0xFF);
+        store8(&buf + 9, len & 0xFF);
+        hlen = 10;
+    }
+
+    # Mask key (the entropy-fallback hardening item: fail closed if the CSPRNG is unavailable — never send
+    # a frame under a predictable/uninitialized mask).
+    if (_ws_gen_mask(ws) != 0) { return 0 - 1; }
+    var mask = load64(ws + 16) & 0xFFFFFFFF;
+    store8(&buf + hlen, mask & 0xFF);
+    store8(&buf + hlen + 1, (mask >> 8) & 0xFF);
+    store8(&buf + hlen + 2, (mask >> 16) & 0xFF);
+    store8(&buf + hlen + 3, (mask >> 24) & 0xFF);
+    hlen += 4;
+
+    # Send header and masked payload. v6.6.8: every write goes through sock_send_all — they used
+    # to be bare sys_write calls whose counts were dropped, so a short write (SO_SNDTIMEO, a
+    # signal) sent a truncated frame and still returned `len`. A failed frame desynchronises the
+    # stream; the caller must close. CHANGELOG [6.6.8]
+    var pos = hlen;          # bytes already in buf: the header, on the first fill only
+    var off = 0;             # payload bytes masked and sent so far
+    var more = 1;
+    while (more == 1) {
+        var n = len - off;
+        if (n > 4096 - pos) { n = 4096 - pos; }
+        var i = 0;
+        while (i < n) {
+            var mb = (mask >> (((off + i) % 4) * 8)) & 0xFF;
+            store8(&buf + pos + i, load8(data + off + i) ^ mb);
+            i += 1;
+        }
+        if (sock_send_all(fd, &buf, pos + n) < 0) { return 0 - 1; }
+        off += n;
+        pos = 0;
+        if (off >= len) { more = 0; }
+    }
+    return len;
+}
+
+# Send text message
+fn ws_send_text(ws, msg): i64 {
+    return _ws_send_frame(ws, WS_OP_TEXT, msg, strlen(msg));
+}
+
+# Send binary message
+fn ws_send_binary(ws, data, len): i64 {
+    return _ws_send_frame(ws, WS_OP_BINARY, data, len);
+}
+
+# Send ping
+fn ws_ping(ws): i64 {
+    return _ws_send_frame(ws, WS_OP_PING, "", 0);
+}
+
+# Largest incoming frame payload ws_recv_frame accepts, in bytes (16 MiB). A frame declaring
+# more is refused and the connection marked CLOSED. Raise it before receiving if a peer
+# legitimately sends larger messages; it bounds what a peer can make this process allocate.
+var WS_RECV_MAX_PAYLOAD = 16777216;
+
+# Read EXACTLY n bytes into buf. Returns 0, or -1 on EOF / a read error (EINTR is retried).
+# A TCP read returns what has arrived, so any frame part — even the 2-byte header — may come
+# back short; a single read is never "the bytes".
+# ⛔ Socket reads go through lib/net.cyr's _net_os_recv, never sys_read: on Windows sys_read is
+# ReadFile, and ReadFile with no OVERLAPPED on an overlapped Winsock socket (what tcp_socket makes
+# there) returns 0 while data is waiting — a false EOF at the first read. Off Windows it IS
+# sys_read. CHANGELOG [6.6.11]
+fn _ws_recv_exact(fd, buf, n): i64 {
+    var got = 0;
+    while (got < n) {
+        var r = _net_os_recv(fd, buf + got, n - got);
+        if (r == 0 - 4) { continue; }
+        if (r <= 0) { return 0 - 1; }
+        got += r;
+    }
+    return 0;
+}
+
+# _ws_recv_exact for the connection `ws`: the bytes ws_connect read past the handshake come first,
+# then the socket. 6.7.18 (audit finding 19). CHANGELOG [6.7.18]
+fn _ws_recv_ws(ws, buf, n): i64 {
+    var got = 0;
+    var pend = load64(ws + 32);
+    if (pend != 0) {
+        var off = load64(ws + 48);
+        var avail = load64(ws + 40) - off;
+        var take = n;
+        if (take > avail) { take = avail; }
+        memcpy(buf, pend + off, take);
+        got = take;
+        off += take;
+        store64(ws + 48, off);
+        if (off >= load64(ws + 40)) {
+            store64(ws + 32, 0);
+            store64(ws + 40, 0);
+            store64(ws + 48, 0);
+        }
+    }
+    if (got >= n) { return 0; }
+    return _ws_recv_exact(ws_fd(ws), buf + got, n - got);
+}
+
+# A frame that cannot be read in full, or that breaks a bound, ends the connection: the stream
+# position is unknown after it, so nothing later on this socket can be parsed as a frame.
+fn _ws_recv_fail(ws): i64 {
+    store64(ws + 8, WS_CLOSED);
+    return 0;
+}
+
+# Receive a WebSocket frame, returns payload pointer (caller must check opcode)
+# Sets opcode_out to the frame opcode and len_out to the payload length. Returns 0, with
+# len_out 0 and the connection CLOSED, on EOF, a read error, a short frame, a length above
+# WS_RECV_MAX_PAYLOAD, or a failed allocation.
+#
+# ⛔ CYRIUS-2026-0011 (6.6.10). The extended-length, mask and payload reads were single unchecked
+# sys_read calls: a short read (routine for any frame larger than one TCP segment) left stale
+# stack bytes as the length or mask, and the payload was reported complete when it was not.
+# The 64-bit length dropped its high 32 bits, and `alloc(plen + 1)` took the peer's length
+# unchecked — so a remote peer chose the allocation size, and a failed alloc was written through
+# at `payload + plen`. Every read is now exact, a 64-bit length with any of its top 32 bits set
+# (RFC 6455 §5.2 requires the MSB to be 0; nothing that large fits the cap) or above the cap is
+# refused, and the allocation is checked. Pinned by
+# tests/tcyr/stdlib/ws_recv_frame_short_reads.tcyr. CHANGELOG [6.6.10]
+fn ws_recv_frame(ws, opcode_out, len_out): i64 {
+    store64(len_out, 0);
+    if (ws_state(ws) != WS_OPEN) { return 0; }
+    # 6.7.18 (D1): every header byte and every payload byte is read through a fn-local [u8] slice
+    # of exactly the bytes received, the extended lengths through slice_get_be — checked in every
+    # build, so a bound this fn gets wrong is `slice bounds violation`, never a read past the frame.
+    # CHANGELOG [6.7.18]
+    var hdr[2];
+    if (_ws_recv_ws(ws, &hdr, 2) != 0) { return _ws_recv_fail(ws); }
+    var h: [u8] = 0;
+    slice_set(&h, &hdr, 2);
+
+    var opcode = h[0] & 0x0F;
+    store64(opcode_out, opcode);
+    var masked = (h[1] >> 7) & 1;
+    var plen = h[1] & 0x7F;
+
+    var ext[8];
+    var e: [u8] = 0;
+    if (plen == 126) {
+        if (_ws_recv_ws(ws, &ext, 2) != 0) { return _ws_recv_fail(ws); }
+        slice_set(&e, &ext, 2);
+        plen = slice_get_be(&e, 0, 2);
+    } elif (plen == 127) {
+        if (_ws_recv_ws(ws, &ext, 8) != 0) { return _ws_recv_fail(ws); }
+        slice_set(&e, &ext, 8);
+        if (slice_get_be(&e, 0, 4) != 0) { return _ws_recv_fail(ws); }
+        plen = slice_get_be(&e, 4, 4);
+    }
+    if (plen > WS_RECV_MAX_PAYLOAD) { return _ws_recv_fail(ws); }
+
+    # Read mask if present
+    var mask = 0;
+    if (masked == 1) {
+        var mk[4];
+        if (_ws_recv_ws(ws, &mk, 4) != 0) { return _ws_recv_fail(ws); }
+        var m: [u8] = 0;
+        slice_set(&m, &mk, 4);
+        mask = m[0] | (m[1] << 8) | (m[2] << 16) | (m[3] << 24);
+    }
+
+    # Read payload
+    var payload = alloc(plen + 1);
+    if (payload == 0) { return _ws_recv_fail(ws); }
+    if (plen > 0) {
+        if (_ws_recv_ws(ws, payload, plen) != 0) { return _ws_recv_fail(ws); }
+    }
+
+    # Unmask if needed
+    if (masked == 1) {
+        var p: [u8] = 0;
+        slice_set(&p, payload, plen);
+        var i = 0;
+        while (i < plen) {
+            var mb = (mask >> ((i % 4) * 8)) & 0xFF;
+            p[i] = p[i] ^ mb;
+            i += 1;
+        }
+    }
+    store8(payload + plen, 0);
+    store64(len_out, plen);
+
+    # Auto-respond to ping with pong
+    if (opcode == WS_OP_PING) {
+        _ws_send_frame(ws, WS_OP_PONG, payload, plen);
+    }
+
+    # Handle close
+    if (opcode == WS_OP_CLOSE) {
+        _ws_send_frame(ws, WS_OP_CLOSE, "", 0);
+        store64(ws + 8, WS_CLOSED);
+    }
+
+    return payload;
+}
+
+# Receive text message (convenience — returns string or 0)
+fn ws_recv(ws): i64 {
+    var opcode[8];
+    var len[8];
+    var data = ws_recv_frame(ws, &opcode, &len);
+    if (data == 0) { return 0; }
+    if (load64(&opcode) == WS_OP_TEXT) { return data; }
+    if (load64(&opcode) == WS_OP_BINARY) { return data; }
+    return 0;
+}
+
+# Close WebSocket connection. Closes the socket too — the caller must not close ws_fd(ws) again.
+# ⛔ Through lib/net.cyr's sock_close, never a raw syscall(3): #3 is close(2) only where a
+# translation table makes it so. On agnos it is spawn — the socket was never closed (no FIN, its
+# conn-table slot leaked, so the 9th one made tcp_socket() fail) and the stray spawn's failure
+# path disarmed the caller's CH_ENDOW endowment; on Windows it is CloseHandle, which does not
+# close a SOCKET. Pinned by tests/gates/platform/ws_close_socket_route.sh. CHANGELOG [6.6.20]
+fn ws_close(ws): i64 {
+    if (ws_state(ws) == WS_OPEN) {
+        _ws_send_frame(ws, WS_OP_CLOSE, "", 0);
+        store64(ws + 8, WS_CLOSING);
+    }
+    sock_close(ws_fd(ws));
+    store64(ws + 8, WS_CLOSED);
+    return 0;
+}

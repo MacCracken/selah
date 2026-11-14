@@ -1,5 +1,37 @@
 # Selah Roadmap
 
+> Volatile state lives in [`state.md`](state.md). The Cyrius port's plan of record, with each milestone's scope,
+> gates and golden grid, is [`selah-port-plan.md`](selah-port-plan.md).
+
+## 1.0.0 — Cyrius port (in progress)
+
+- [x] **M0 Initialize** (2026-11-14): freeze the 0.30.0 oracle, `cyrius port`, repair the scaffold, the manifest,
+  toolchain probes, the golden generator, the parity harness, decode baselines
+- [ ] **M1 Foundation**: error, log, fmtf, json, geometry, core, uuid, rfc3339
+- [ ] **M2 PII and smart crop**: ai
+- [ ] **M3 Codecs**: chitra decode; PNG, BMP and baseline JPEG encoders; WebP refused (ADR 0002)
+- [ ] **M4 Annotation**: raster, annotate, the facade
+- [ ] **M5 System and clients**: fsutil, history, clipboard, HTTP; daimon and hoosh clients retargeted (ADR 0002)
+- [ ] **M6 MCP profile**: the five tools on bote
+- [ ] **M7 Release 1.0.0**: Rust-test ledger, full surface parity, benches against Rust, `dist/` bundles
+
+### Waiting on other repos
+
+- [ ] daimon: the `/v1/screen/*` routes (`daimon/docs/development/issues/2026-11-14-selah-screen-capture-routes.md`)
+- [ ] hoosh: image parts for non-OpenAI providers, the 1 MiB body cap
+  (`hoosh/docs/development/issues/2026-11-14-selah-vision-image-parts-reach-only-openai-shaped-providers.md`)
+- [ ] sandhi: `total_ms` bounding a blocked read (`sandhi/docs/development/issues/2026-11-11-total-ms-does-not-bound-a-blocked-first-read.md`)
+
+### After 1.0.0
+
+- [ ] WebP decode and encode
+- [ ] Progressive JPEG input (waits on chitra)
+- [ ] The open items of the Rust 0.30.0 section below
+
+---
+
+The sections below are the Rust crate's history, kept for reference.
+
 ## v0.30.0 — Toolchain, Dependencies & Hardening (final Rust release)
 
 The Cyrius port (1.0.0) follows this release: [selah-port-plan.md](selah-port-plan.md). The open items below carry over

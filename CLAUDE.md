@@ -1,89 +1,180 @@
 # Selah — Claude Code Instructions
 
+> **Core rule**: this file is **preferences, process, and procedures** — durable rules that change rarely. Volatile
+> state (current version, port progress, test counts, consumers' status) lives in
+> [`docs/development/state.md`](docs/development/state.md). Do not inline state here.
+
 ## Project Identity
 
 **Selah** (Hebrew: pause/capture a moment) — AI-native screenshot capture, annotation, and redaction library for AGNOS
 
-- **Type**: Flat library crate
-- **License**: GPL-3.0
-- **MSRV**: 1.100
-- **Version**: SemVer 0.D.M pre-1.0
+- **Type**: Flat library (Cyrius), ported from the Rust crate 0.30.0; the Cyrius port ships as 1.0.0
+- **License**: GPL-3.0-only
+- **Language**: Cyrius. The toolchain is pinned in `cyrius.cyml` `[package].cyrius`
+- **Version**: `VERSION` at the project root is the source of truth. Don't inline the number here
+- **Rust oracle**: selah 0.30.0 (tag `0.30.0`), frozen at `rust-old/`. It stays the parity reference until WebP is
+  ported or dropped and the Rust-test ledger is closed (port plan §7)
+- **Plan of record**: [`docs/development/selah-port-plan.md`](docs/development/selah-port-plan.md)
+- **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md) · [First-Party Documentation](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-documentation.md)
+
+## Goal
+
+selah owns screenshot work for AGNOS agents: capture through daimon, annotation and redaction rendered onto the pixels,
+PII detection, OCR through hoosh, a screenshot history, and the MCP tools that expose all of it.
 
 ## Consumers
 
-taswir (GUI/CLI app), aethersafta (compositing), kiran (game engine, planned)
+taswir (GUI/CLI app), aethersafta (compositing), kiran (game engine, planned). None is in Cyrius yet; Rust consumers
+stay on the Rust 0.30.x line.
 
-## Architecture
+## Architecture (Cyrius, as the port plan lays it out)
 
 ```
 selah/src/
-├── lib.rs        Crate root — re-exports, facade API (annotate_image, redact_image, decode_image_data)
-├── core.rs       Types — Annotation, AnnotationKind, ImageFormat, Color, Screenshot, Monitor
-├── geometry.rs   Rect wrapper over hisab::Rect, backward-compatible serde
-├── error.rs      SelahError (#[non_exhaustive])
-├── capture.rs    CaptureClient — async reqwest to daimon API, clipboard, session detection
-├── history.rs    HistoryStore — JSONL persistence with OS file locking
-├── annotate.rs   AnnotationCanvas — pixel rendering (ranga), SVG output, format conversion
-├── ai.rs         PII detection, OCR stub, smart crop suggestions
-├── daimon.rs     DaimonClient, HooshClient — agent lifecycle, LLM vision OCR
-├── mcp.rs        MCP server via bote (feature-gated: "mcp")
-├── http.rs       (private) shared HTTP client, status checks, bounded bodies
-└── fsutil.rs     (private) bounded reads, atomic writes, private permissions
+├── error.cyr      SlError codes; fallible fns take a trailing `detail_out = 0`
+├── log.cyr        sakshi tracing (the library never configures sakshi)
+├── fmtf.cyr       shortest f32/f64 digits, Rust Display and serde_json forms
+├── json.cyr       hand JSON writers on bayan (byte-identical to serde_json)
+├── geometry.cyr   SlRect ({min, max} f32, hisab's Rust layout), SlVec2
+├── core.cyr       Annotation, AnnotationKind, ImageFormat, Color, Screenshot, Monitor
+├── uuid.cyr       UUID v4      rfc3339.cyr   RFC 3339 timestamps with nanoseconds
+├── ai.cyr         PII detection, OCR stub, smart crop suggestions
+├── codec.cyr      sniff + chitra decode (PNG/JPEG/BMP); png_enc / bmp_enc / jpeg_enc
+├── raster.cyr     pixel drawing over ranga blend_row      annotate.cyr  canvas, layers, SVG
+├── fsutil.cyr     bounded reads, atomic writes, private permissions
+├── history.cyr    JSONL history with xflock
+├── http.cyr       sandhi client wrapper          spawn.cyr     spawn with stdin (clipboard)
+├── capture.cyr    CaptureClient, clipboard, session detection
+├── daimon.cyr     DaimonClient, HooshClient (retargeted to the live Cyrius services)
+├── selah.cyr      facade: annotate_image, redact_image, decode_image_data
+└── mcp.cyr        MCP server via bote ([features] mcp, [lib.mcp] profile)
 ```
 
 ## Ecosystem Dependencies
 
 | Need | Use | NOT |
 |------|-----|-----|
-| Vectors, geometry | `hisab` (wraps glam) | `glam` directly |
-| Image pixel ops | `ranga` (pixel buffers, blend) | Manual pixel math |
-| MCP protocol | `bote` (JSON-RPC, tool registry) | Custom JSON-RPC |
-| Image format I/O | `image` (codecs) | — (ranga lacks codecs) |
+| Image decode | chitra (PNG, baseline JPEG, BMP; GIF refused by selah) | hand-rolled decoders |
+| Image encode | selah's own `png_enc` / `bmp_enc` / `jpeg_enc` (chitra is decode-only by policy) | — |
+| Pixel blending | ranga (`blend_row`) | manual blend math |
+| MCP protocol | bote (`dist/bote.cyr`, optional) | custom JSON-RPC |
+| HTTP | sandhi (stdlib fold), always with `read_ms` + `write_ms` beside `total_ms` | raw sockets |
+| JSON, base64 | bayan (stdlib fold) | `#derive(Serialize)` until its open issues close |
+| zlib, CRC-32 | sankoch, via chitra's `dist/sankoch-zlib.cyr` | the full sankoch fold |
+| Geometry | local `SlRect` (hisab has no 2D rect) | — |
+
+## Quick Start
+
+```sh
+cyrius deps --features mcp                     # resolve dependencies (vendors lib/)
+cyrius build src/main.cyr build/selah          # compile
+cyrius test                                    # tests/*.tcyr: parity + ported Rust tests
+cyrius bench                                   # tests/*.bcyr
+cargo test --manifest-path rust-old/Cargo.toml --all-features            # the Rust oracle, read-only
+cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --check   # golden corpus up to date
+```
 
 ## Development Process
 
 ### P(-1): Scaffold Hardening (before any new features)
 
-1. Test + benchmark sweep of existing code
-2. Cleanliness check: `cargo fmt --check`, `cargo clippy --all-features --all-targets -- -D warnings`, `cargo audit`, `cargo deny check`
-3. Get baseline benchmarks (`./scripts/bench-history.sh`)
-4. Initial refactor + audit (performance, memory, security, edge cases)
-5. Cleanliness check — must be clean after audit
-6. Additional tests/benchmarks from observations
-7. Post-audit benchmarks — prove the wins
-8. Repeat audit if heavy
+0. Read the roadmap, the port plan, the CHANGELOG and the open issues
+1. Test + benchmark sweep of the existing code
+2. Cleanliness check (below)
+3. Get baseline benchmarks
+4. Internal deep review (performance, memory, security, edge cases)
+5. Cleanliness check — must be clean after the review
+6. Additional tests/benchmarks from the findings
+7. Post-review benchmarks — prove the wins
+8. Repeat if heavy
 
-### Development Loop (continuous)
+### Cleanliness check
 
-1. Work phase — new features, roadmap items, bug fixes
-2. Cleanliness check: `cargo fmt --check`, `cargo clippy --all-features --all-targets -- -D warnings`, `cargo audit`, `cargo deny check`
-3. Test + benchmark additions for new code
-4. Run benchmarks (`./scripts/bench-history.sh`)
-5. Audit phase — review performance, memory, security, throughput, correctness
-6. Cleanliness check — must be clean after audit
-7. Deeper tests/benchmarks from audit observations
-8. Run benchmarks again — prove the wins
-9. If audit heavy → return to step 5
-10. Documentation — update CHANGELOG, roadmap, docs
+```sh
+cyrius fmt --check
+cyrius lint
+cyrius vet
+cyrius build src/main.cyr build/selah
+cyrius test                 # must be warning-free, not just passing (one named exception below)
+cyrius test --bounds
+cyrius bench
+cyrius distlib --all && cyrius distlib --check
+cyrius deps --locked && cyrius deps --locked --features mcp
+cyrius audit
+```
+
+`cyrius test` and `cyrius build` must be **warning-free**. Every float type diagnostic is a bug: integer arithmetic
+with a float right operand, float arithmetic with a non-float right operand (an f32 operator reads its right operand
+as f32 bits), an integer stored into a float slot, a comparison mixing float and integer.
+
+The **one tolerated warning** is `warning: large static data (N bytes)`. It is the aggregate of the dependencies'
+tables (sandhi's TLS stack with any compression tables), printed for any unit that includes sandhi, even an empty
+`main`; itihas prints it too. Every other warning fails the check.
+
+### Work Loop (continuous)
+
+1. Work phase — one module at a time, in the order the port plan gives
+2. Cleanliness check
+3. Test + benchmark additions: golden parity rows, ported Rust tests, benches
+4. Run benchmarks, recorded against the Rust numbers
+5. Internal review, including a surface-parity diff against `rust-old/src/`
+6. Cleanliness check
+7. Deeper tests/benchmarks from the review
+8. Benchmarks again — prove the wins
+9. If the review was heavy, return to step 5
+10. Documentation — CHANGELOG, `state.md`, roadmap, the port plan's tracking table
 11. Return to step 1
 
-### Key Principles
+## Key Principles
 
-- **Never skip benchmarks.** Numbers don't lie. The CSV history is the proof.
-- **Tests + benchmarks are the way.** Minimum 80%+ coverage target.
-- **Own the stack.** If an AGNOS crate wraps an external lib, depend on the AGNOS crate.
+- **Cross-check against `rust-old/`.** The port's correctness bar is "matches what Rust did", within the parity class
+  the port plan (§4) assigns. Diverge only with a row in ADR 0002.
+- **Never skip benchmarks.** Numbers don't lie; the Rust numbers are the baseline.
+- **Tests + benchmarks are the way.** The Rust suite (289 tests) is ported or accounted for in the ledger.
+- **Own the stack.** If an AGNOS library covers a need, depend on it (table above).
 - **No magic.** Every operation is measurable, auditable, traceable.
-- **`#[non_exhaustive]`** on all public enums.
-- **`#[must_use]`** on all pure functions.
-- **`#[inline]`** on hot-path functions.
-- **`write!` over `format!`** — avoid temporary allocations.
-- **Feature-gate optional deps** — consumers pull only what they need.
-- **tracing on all operations** — structured logging for audit trail.
+- **Enums.** Public enums have explicit, append-only numeric values that are never renumbered (the Rust
+  `#[non_exhaustive]`). `match` keeps an `_ =>` arm.
+- **`#must_use` on all pure functions**, plus `#pure` where it applies.
+- **`str_builder` appends over intermediate `Str`s** (the Rust `write!` over `format!`).
+- **Feature-gate optional deps** with `[features]`, `optional = true` and a `[lib.<profile>]` bundle.
+- **Tracing on all operations** through `src/log.cyr` (sakshi).
+- **No aborts in library code.** `src/` never uses `+?`, `-?` or `*?` (they exit the process), `assert_fatal` or
+  `result_unwrap`, and no `@unsafe` blocks. Errors return a value-form `Result` with `SL_ERR_*` codes, and the text
+  goes through the caller's optional `detail_out`.
+- **Float hygiene.**
+  - Bind every call result to a typed `f32` / `f64` local before using it in an operator.
+  - Convert between f32 and f64 with `f32_from` / `f32_to`, explicitly.
+  - Never put hex in a `const`; never write `(0 - x)` on a float: use `-x`.
+  - Rust's `as u32` saturates (NaN → 0): write it out.
+- **Names.** Public free functions are `selah_<rust name>`; types are `Sl<Name>` with `impl` blocks; constants and
+  enum members are `SL_*`; private helpers are `_sl_*`. A bundle shares one flat namespace with its consumers.
+- **Generated files are never hand-edited.** `scripts/oracle/` writes the golden corpus; regenerate it.
+- Build with `cyrius build`, not raw `cat file | cycc` — the manifest auto-resolves deps.
+- Source files only need project includes — stdlib auto-resolves from `cyrius.cyml`.
+- `var buf[N]` = N **bytes**, not N entries; use `var a: i64[N]` for slots.
 
 ## DO NOT
+
 - **Do not commit or push** — the user handles all git operations (commit, push, tag)
-- **NEVER use `gh` CLI** — use `curl` to GitHub API only
+- **NEVER use `gh` CLI** — use `curl` to the GitHub API only
+- **Do not modify `rust-old/`** — it is the parity oracle. Tools that drive it live in `scripts/oracle/` and depend on
+  it by path
+- Do not modify `lib/` files (vendored by `cyrius deps`; never a symlink)
+- Do not hardcode toolchain versions in CI YAML — `cyrius = "X.Y.Z"` in `cyrius.cyml` is the source of truth
+- Do not widen a parity class to make a row pass; bounds are set before a function's first comparison
 - Do not add unnecessary dependencies — keep it lean
-- Do not `unwrap()` or `panic!()` in library code
 - Do not skip benchmarks before claiming performance improvements
-- Do not commit `target/` or `Cargo.lock` (library crates only)
+- Do not commit `build/` or `rust-old/target/`
+
+## Documentation
+
+- [`docs/development/selah-port-plan.md`](docs/development/selah-port-plan.md) — the port plan of record
+- [`docs/development/state.md`](docs/development/state.md) — live state
+- [`docs/development/roadmap.md`](docs/development/roadmap.md) — milestones and backlog
+- [`docs/development/port-parity.md`](docs/development/port-parity.md) — measured baselines and tolerance bounds
+- [`docs/adr/`](docs/adr/) — Architecture Decision Records (*why X over Y?*)
+- [`docs/architecture/`](docs/architecture/) — non-obvious constraints
+- [`docs/guides/`](docs/guides/) — task-oriented how-tos
+- [`docs/mcp-tools.md`](docs/mcp-tools.md) — the MCP tools (Rust 0.30 behaviour until M6 rewrites it)
+- `rust-old/docs/` — the Rust architecture overview and development guide, kept for reference

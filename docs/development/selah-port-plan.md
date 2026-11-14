@@ -401,7 +401,7 @@ this repo (CLAUDE.md).
    - It replays every module in `tests/golden/modules.txt`, a list the generator writes.
    - Each row gets one outcome: ok, **FAILED**, measured or pending.
    - The exit code is the number of failing modules.
-7. **Baselines**, recorded in `docs/development/port-parity.md`:
+7. **Baselines**, recorded in `docs/development/port-parity.md` (done 2026-11-14: §1 there is the result, §2 the five findings F1–F5 that M3 settles):
    - JPEG decode, chitra against `image`, on every JPEG fixture: a histogram of the maximum per-channel difference,
      which sets **K_jpeg** (class B) before the first gated comparison;
    - PNG and BMP decode, expected exact;
@@ -591,10 +591,10 @@ around silently. That includes the probe results in M0 step 4 when they find one
 
 | Milestone | Status | Golden rows | Ported tests | Benches | Notes |
 |---|---|---|---|---|---|
-| M0 Initialize | ◐ steps 0 and 4 done 2026-11-14; **waiting on the 0.30.0 commit and tag** before step 1 | — | — | Rust baseline at `c0da3e1` (all 13 in `bench-history.csv`) | Step 0: the oracle is green on rustc 1.100.0 (fmt, clippy, rustdoc `-D warnings`, audit, deny; 289/289 tests); the release cut is prepared as **0.30.0**; `.gitignore` now ignores only `/Cargo.lock`. Step 4: probes a–f pass (results in §2); D7 decided; sankoch dropped from `[deps]`. daimon and hoosh issues filed (D2); sandhi data point appended (L10) |
+| M0 Initialize | ✅ done 2026-11-14 | `decode` 63 (the baseline: 47 ok, 14 measured, 2 accepted; identical on x86_64 ELF, aarch64 and x86_64 PE) | — | Rust baseline at `c0da3e1` (all 13 in `rust-old/bench-history.csv`) | Step 0: the oracle green on rustc 1.100.0 (289 tests), released and tagged as **0.30.0** (`1a494b4`). Steps 1–3: `cyrius port`, the scaffold repaired (CLAUDE.md, roadmap, state, workflows, version, bench, stub docs), the Rust material moved to `rust-old/`, ADRs 0001 and 0002, the manifest with chitra, ranga and an optional bote, `lib/` vendored. Step 4: probes a–f (§2). Steps 5–7: `scripts/oracle/` (deterministic, `--check`; 63 fixtures), `tests/parity.tcyr`, and the decode baseline with five findings, F1–F5, for M3 to settle ([port-parity.md](port-parity.md) §2). The M0 gate is green: build, test, `test --bounds`, bench, lint, fmt, docs, audit; the only warning is the tolerated static-data advisory |
 | M1 Foundation | ⏳ | | | `rect_new`, `rect_contains_point`, `rect_intersects`, `xml_escape_*` | |
 | M2 PII and smart crop | ⏳ | | | `suggest_redactions_*`, `extract_text_regions_64k` | |
-| M3 Codecs | ⏳ | | | | K_jpeg and the R bounds are set at M0 step 7 / M3 start |
+| M3 Codecs | ⏳ | | | | Starts by settling port-parity.md §2 F1–F5 (JPEG upsampling, IDCT bound K_jpeg = 2, 16-bit BMP expansion, 32-bit `BI_RGB` alpha, CMYK) and flipping `_PAR_DECODE_GATED` |
 | M4 Annotation | ⏳ | | | `render_to_image_64x64`, `render_to_image_512_bmp`, `to_svg_100` | |
 | M5 System and clients | ⏳ | | | | live capture waits on daimon (L9) |
 | M6 MCP profile | ⏳ | | | | |

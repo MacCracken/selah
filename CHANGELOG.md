@@ -6,6 +6,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+**selah is becoming a Cyrius library.** 1.0.0 ports the Rust crate 0.30.0, which is frozen in `rust-old/` as the
+parity oracle ([port plan](docs/development/selah-port-plan.md), [ADR 0001](docs/adr/0001-cyrius-port-with-rust-oracle.md)).
+The Rust crate stays at 0.30.x on crates.io.
+
+### Port — M0 (initialize)
+
+- **Oracle frozen**: 0.30.0 (tag `0.30.0`, `1a494b4`) moved to `rust-old/` by `cyrius port` on Cyrius 6.7.18. It is
+  green from there: 289 tests. `rust-old/Cargo.lock` is tracked (`.gitignore` ignores only `/Cargo.lock`), so the
+  oracle builds against its released dependency versions. The Rust CI, scripts, development guide and architecture
+  overview moved to `rust-old/`.
+- **Scaffold repaired** (cyrius issue `2026-11-08-cyrius-port-clobbers-project-docs-and-omits-bench`):
+  - `CLAUDE.md` merged from the Rust rules and the scaffold's Cyrius rules;
+  - the roadmap restored, with the port milestones on top;
+  - `state.md` written for the real version;
+  - `cyrius.cyml` takes `version = "${file:VERSION}"`, and `[test] stdlib` has `bench`;
+  - the six stub functions are documented, so `cyrius audit` passes.
+- **Manifest**:
+  - chitra 1.3.1 and ranga 2.4.0;
+  - bote 3.8.15, optional behind `[features] mcp`;
+  - sankoch through chitra's zlib profile, not the full fold.
+  - `lib/` and `cyrius.lock` are vendored by `cyrius deps --features mcp`.
+- **CI**: the scaffold's Cyrius workflow, extended with `test --bounds`, both `deps --locked` profiles, `audit`, and
+  a no-`@unsafe` check on `src/`.
+- **ADRs**: [0001](docs/adr/0001-cyrius-port-with-rust-oracle.md) (the port and its oracle) and
+  [0002](docs/adr/0002-port-api-divergences.md) (the API changes, each with its parity comparison).
+- **Toolchain probes**: f32 rect arithmetic is bit-identical to Rust; small values through `Result`; chitra,
+  sankoch and bayan in one unit; bote's dispatcher; sandhi against a mock server; the error-detail design. Results
+  are in the port plan §2. Upstream:
+  - daimon and hoosh issues filed for the routes selah needs;
+  - a data point appended to sandhi's `total_ms` issue.
+- **Golden generator** (`scripts/oracle/`):
+  - a Rust crate on `rust-old/` by path, with its lock seeded from `rust-old/Cargo.lock` (every shared crate at the
+    oracle's version);
+  - deterministic output, with `--check`;
+  - format 1 is specified in its README;
+  - the first module, `decode`: 63 fixtures (PNG in every colour type and depth, Adam7, tRNS; BMP in palette, RLE,
+    bitfield, top-down and V4 forms; JPEG baseline at every subsampling, with restart intervals, progressive and
+    CMYK; WebP; GIF; malformed and oversized inputs), with Rust 0.30.0's verdict and RGBA through `annotate_image`.
+- **Parity harness** (`tests/parity.tcyr`, `tests/parity_core.cyr`): replays `tests/golden/modules.txt`. Each row
+  ends ok, FAILED, measured, accepted (ADR 0002) or pending; the exit code is the number of failing modules.
+- **Decode baseline** ([port-parity.md](docs/development/port-parity.md)), chitra 1.3.1 against Rust's decoders:
+  - every PNG and most BMPs bit-identical, and every refusal agrees;
+  - JPEG within 2 without chroma subsampling;
+  - five findings for M3 to settle: chroma upsampling (up to 36), 16-bit BMP expansion (±1), 32-bit `BI_RGB` alpha,
+    CMYK refused, and K_jpeg = 2.
+  - Identical on x86_64 ELF, aarch64 (qemu) and x86_64 PE (wine).
+
 ## [0.30.0] - 2026-11-14
 
 **Final Rust release.** selah is moving to Cyrius as **1.0.0**. This tree is frozen in `rust-old/` as the parity

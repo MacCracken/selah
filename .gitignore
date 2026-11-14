@@ -4,3 +4,9 @@
 *.swo
 *~
 .env
+
+# Cyrius port
+/rust-old/target/
+/scripts/oracle/target/
+/rust-old/**/__pycache__/
+/build/
