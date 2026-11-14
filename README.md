@@ -38,8 +38,8 @@ selah/src/
 
 ```toml
 [dependencies]
-selah = "0.29"
-# selah = { version = "0.29", features = ["mcp"] }  # MCP server
+selah = "0.30"
+# selah = { version = "0.30", features = ["mcp"] }  # MCP server
 ```
 
 ```rust

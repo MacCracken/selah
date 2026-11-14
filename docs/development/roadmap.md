@@ -1,6 +1,10 @@
 # Selah Roadmap
 
-## Unreleased — Toolchain, Dependencies & Hardening
+## v0.30.0 — Toolchain, Dependencies & Hardening (final Rust release)
+
+The Cyrius port (1.0.0) follows this release: [selah-port-plan.md](selah-port-plan.md). The open items below carry over
+to Cyrius after 1.0.0.
+
 
 - [x] MSRV 1.89 → 1.100 (edition 2024); dependencies to latest (ranga 1.0, bote 0.92, reqwest 0.13, hisab 1.4, base64 0.23, criterion 0.8)
 - [x] `image` restricted to supported codecs (PNG/JPEG/BMP/WebP); dependency tree 288 → 229 crates; zero ignored advisories

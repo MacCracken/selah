@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-11-14
+
+**Final Rust release.** selah is moving to Cyrius as **1.0.0**. This tree is frozen in `rust-old/` as the parity
+oracle for that port ([`docs/development/selah-port-plan.md`](docs/development/selah-port-plan.md)). Rust consumers
+stay on 0.30.x; there is no Rust 1.0.
+
 ### Changed
 
 - **Toolchain**: MSRV 1.89 → **1.100** (edition 2024 remains the latest edition); CI MSRV job updated

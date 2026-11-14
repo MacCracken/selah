@@ -48,3 +48,16 @@ timestamp,commit,branch,benchmark,estimate_ns
 2026-11-13T17:37:52Z,424dc7e,main,render_to_image_512_bmp,1393400.0000
 2026-11-13T17:37:52Z,424dc7e,main,to_svg_100,43202.0000
 2026-11-13T17:37:52Z,424dc7e,main,extract_text_regions_64k,66833.0000
+2026-11-14T16:28:40Z,c0da3e1,main,render_to_image_64x64,16228.0000
+2026-11-14T16:28:40Z,c0da3e1,main,suggest_redactions_clean,391.58
+2026-11-14T16:28:40Z,c0da3e1,main,suggest_redactions_pii,460.56
+2026-11-14T16:28:40Z,c0da3e1,main,suggest_redactions_long,36737.0000
+2026-11-14T16:28:40Z,c0da3e1,main,rect_new,1.9315
+2026-11-14T16:28:40Z,c0da3e1,main,rect_contains_point,1.1951
+2026-11-14T16:28:40Z,c0da3e1,main,rect_intersects,0.9873
+2026-11-14T16:28:40Z,c0da3e1,main,xml_escape_plain,21.216
+2026-11-14T16:28:40Z,c0da3e1,main,xml_escape_special,129.04
+2026-11-14T16:28:40Z,c0da3e1,main,xml_escape_long,603.73
+2026-11-14T16:28:40Z,c0da3e1,main,render_to_image_512_bmp,1288300.0000
+2026-11-14T16:28:40Z,c0da3e1,main,to_svg_100,39993.0000
+2026-11-14T16:28:40Z,c0da3e1,main,extract_text_regions_64k,61893.0000

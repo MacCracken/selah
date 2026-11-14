@@ -1,7 +1,7 @@
 # selah Rust → Cyrius port plan
 
 > **Plan of record** for porting selah to Cyrius, drafted 2026-11-14 against the installed Cyrius 6.7.18 toolchain.
-> The Rust tree at HEAD (0.29.4 plus the `[Unreleased]` audit work) is cut as the **final Rust release** and frozen in
+> The Rust tree is cut as the **final Rust release, 0.30.0** (0.29.4 plus the 2026-11 audit work), and frozen in
 > `rust-old/` as the **parity oracle**. The Cyrius port ships as **1.0.0**.
 >
 > The shape follows tanmatra's plan (`../tanmatra/docs/development/tanmatra-port-plan.md`), as kimiya, pravash and
@@ -11,12 +11,12 @@
 
 | Thing | Value | Source |
 |---|---|---|
-| Rust source (oracle) | selah 0.29.4 plus `[Unreleased]` (HEAD `4ee8a16`, 2026-11-13). 12 files and 7,160 lines in `src/`, 3,853 of them before the test modules. **289 tests**: 258 unit, 17 integration, 14 doc. 13 criterion benches | `src/`, `CHANGELOG.md`, `docs/development/roadmap.md` |
+| Rust source (oracle) | selah **0.30.0**, the final Rust release (0.29.4 plus the 2026-11 audit work, cut 2026-11-14). 12 files and 7,160 lines in `src/`, 3,853 of them before the test modules. **289 tests**: 258 unit, 17 integration, 14 doc. 13 criterion benches. Green on rustc 1.100.0, re-run 2026-11-14 (M0 step 0) | `src/`, `CHANGELOG.md`, `docs/development/roadmap.md` |
 | Cyrius toolchain | **6.7.18** | `~/.cyrius/current` |
 | Image decode | **chitra 1.3.1** (`dist/chitra.cyr`): PNG (every depth and colour type, Adam7), baseline JPEG, BMP and GIF, all to RGBA8. **Decode-only by policy** | `../chitra/README.md` |
 | Pixels | **ranga 2.4.0** (`dist/ranga.cyr`, the core profile): pixel buffers, `blend_row` | `../ranga/src/pixel.cyr`, `blend.cyr` |
 | MCP | **bote 3.8.15** (`dist/bote.cyr`, the full bundle, because the stdio transport isn't in `bote-core`) | `../bote/dist/` |
-| Stdlib folds used | bayan 1.11.1 (JSON, base64), sandhi 1.13.7 (HTTP client), sankoch 2.8.9 (zlib, CRC-32), sakshi 2.5.10 (tracing) | `../cyrius/docs/ecosystem.md` |
+| Stdlib folds used | bayan 1.11.1 (JSON, base64), sandhi 1.13.7 (HTTP client), sakshi 2.5.10 (tracing). sankoch 2.8.9 (zlib, CRC-32) comes in as chitra's `dist/sankoch-zlib.cyr` profile, not the full fold (M0 probe 4c) | `../cyrius/docs/ecosystem.md` |
 | Not used | **hisab 3.4.1**. Its only 2D surface is `HVec2` (f64, heap-allocated) and a quadtree; it has no 2D rect, and its bundle is 3.6 MB | `../hisab/src/geo.cyr` |
 | Services | **daimon 2.5.6** has no `/v1/screen/*` routes (filed, below). **hoosh 2.12.3** serves `/v1/chat/completions`, but image parts reach only OpenAI-shaped providers, and request bodies are capped at 1 MiB (filed) | `../daimon/src/router.cyr`, `../hoosh/src/lib/provider.cyr` |
 | Consumers | **None in Cyrius.** taswir has no local repo. aethersafta is Rust 0.50.0 and names selah only in its docs. aethersafha (Cyrius) does its own capture. Rust consumers stay on the final Rust release | sibling repos |
@@ -86,9 +86,13 @@
 - **D7. Errors.**
   - **Codes:** `enum SlError`, with append-only values, returned in a value-form `Result`.
   - **Detail:** tanmatra's errors carried no detail, but selah's do: an HTTP status and body, a tool's stderr, a path.
-    The MCP tools hand that text to the agent. So the text of the last failure is kept per thread, and
-    `sl_error_detail()` returns it.
-  - **Probed first:** M0 step 4f checks this design before any module uses it.
+    The MCP tools hand that text to the agent.
+  - **Decided by M0 probe 4f (2026-11-14):** every fallible function takes a trailing optional
+    `detail_out = 0` (6.7.7 default arguments). When it is non-zero, the failure stores its text there. The value
+    passes through `?` unchanged, and a caller that doesn't want the text simply omits the argument.
+  - A per-thread slot (`lib/thread_local.cyr`) was rejected. It needs every consumer's main thread to call
+    `thread_local_init` first, which is a hidden contract for a library, and it is order-sensitive around
+    `fdlopen`.
 - **D8. JSON is hand-written on bayan.**
   - `#derive(Serialize)` has open issues (cyrius `2026-11-07-derive-serialize-*`, `2026-11-11-derive-*`,
     `2026-11-12-derive-serialize-in-a-second-private-file-fails-to-compile`).
@@ -277,9 +281,11 @@ this repo (CLAUDE.md).
    output = "build/selah"
 
    [deps]
+   # No "sankoch": chitra's own [deps.sankoch] vendors dist/sankoch-zlib.cyr (zlib, deflate, CRC-32),
+   # which is all selah uses. The full fold adds Brotli/zstd/xz tables to static data (M0 probe 4c).
    stdlib = ["syscalls", "string", "alloc", "str", "fmt", "io", "fs", "vec", "hashmap", "math",
-             "tagged", "result", "freelist", "thread_local", "chrono", "random", "process", "thread",
-             "bayan", "sankoch", "sandhi", "sakshi"]
+             "tagged", "result", "freelist", "chrono", "random", "process", "thread",
+             "bayan", "sandhi", "sakshi"]
 
    [deps.chitra]
    git = "https://github.com/MacCracken/chitra.git"
@@ -333,6 +339,49 @@ this repo (CLAUDE.md).
      M5 test seam that replaces Rust's `serve_once`.
    - **f. The error design (D7).** A per-thread detail slot (`thread_local`) next to a value-form `Result`, through
      `?`.
+
+   **Results (2026-11-14, x86_64, all compiled and run; programs in the session scratchpad, not the repo):**
+   - **a. f32: bit-identical to Rust** (rustc 1.100.0 reference program).
+     - `Rect::new(0.1, 0.2, 0.3, −0.7)` gives `max_x` 0x3ecccccd, width 0x3e99999a and area 0x3e570a3e on both sides.
+     - `new(16777216, …, 1, …)` gives `max_x` 0x4b800000 and width 0, on both sides.
+     - The saturating cast gives `−1.5 → 0`, `NaN → 0`, `2³² → 4294967295` and `3.7 → 3`, as Rust's `as u32` does.
+     - The f32 rules: an f32 operator's right operand must already be f32, so convert with `f32_from` / `f32_to`;
+       `f64_abs` / `f64_trunc` work on the exact f64 widening. No type warnings.
+   - **b. `Result`.**
+     - A packed colour word rides `Ok` and `?`, with the payload intact on both the `Ok` and the `Err` path.
+     - An `SlRect` written through an out-pointer next to a `Result` tag works. Rects never travel inside a `Result`
+       (cyrius issue `2026-11-08-small-struct-result-payload-read-as-address`).
+   - **c. chitra + sankoch + bayan.**
+     - `bayan_base64_decode` returns a **`{data, len}` pair**, not the bytes.
+     - `chitra_image_decode_budget` decodes a 1×1 PNG to RGBA `255,0,0,255`, and refuses it under a 3-byte budget
+       with code 34.
+     - `zlib_compress` / `zlib_decompress` round-trip.
+     - **`crc32` needs `crc32_init_table()` first** (its documented precondition; skipping it faults).
+     - The resolver vendors chitra's `dist/sankoch-zlib.cyr` only when `sankoch` is **not** a stdlib leaf, hence the
+       manifest above.
+   - **d. bote 3.8.15.**
+     - Its transitive deps (libro 2.11.3, majra 2.13.0, patra 1.16.6, sigil 3.13.15) resolve and lock on their own,
+       so the manifest needs no lines for them.
+     - The full bundle compiles beside sandhi and bayan.
+     - `dispatcher_register_tool` plus `codec_process_message` answer `tools/list` and `tools/call`.
+     - `ann_read_only()` emits all four hints (`readOnlyHint` true, `destructiveHint` false, `idempotentHint` true,
+       `openWorldHint` false). M6 compares this with Rust bote 0.92's output.
+   - **e. sandhi against a loopback mock server on a thread.**
+     - `user_headers` is a `sandhi_headers_new()` object, and errors come from `sandhi_http_err_kind`.
+     - The request goes out right: method, path, `Content-Type`, `Authorization` and body.
+     - **`total_ms` alone does not bound a silent server.** It waited 3,000 ms, then reported `err_kind` 6 (protocol).
+       With `read_ms` also set it reports `err_kind` 4 (timeout) at 301 ms.
+     - This is filed upstream as sandhi `2026-11-11-total-ms-does-not-bound-a-blocked-first-read` (by ushma);
+       selah's data point is appended there. **selah always sets `read_ms` and `write_ms` with `total_ms`** (L10).
+   - **f. Error detail.** A trailing `detail_out = 0` default argument carries the text through `?`, and a call that
+     omits it is unaffected. This decided D7.
+   - **The static-data advisory.** Any unit with sandhi in it prints `warning: large static data (~136–187 KB)`,
+     even an empty `main`, and DCE does not remove it.
+     - sandhi plus the full `sankoch` fold crosses the threshold, and so does sandhi plus chitra's zlib profile
+       (143 KB).
+     - itihas (bote + sandhi) prints it too (136 KB).
+     - It is an aggregate of the deps' tables, not selah's. The warning-free gate exempts **exactly this advisory**,
+       by its text; every other warning still fails.
 5. **The golden-value generator, `scripts/oracle/`** (tanmatra's design).
    - **The crate** depends on `../../rust-old` by path, with `features = ["mcp"]`. It never builds inside `rust-old/`.
      Its `Cargo.lock` is seeded from `rust-old/Cargo.lock`.
@@ -442,13 +491,13 @@ Rules:
 | `hisab::Rect`, `Vec2` (f32) | `SlRect` (`{min, max}`, f32) and `SlVec2`, local (D4) |
 | `ranga::PixelBuffer`, `blend_row` (Rust ranga 1.0) | ranga 2.4.0: `pixel_view_new` / `pixel_buffer_from_view` over the decoded RGBA8, and `blend_row(src, dst, n, BM_NORMAL, opacity)`. ranga's own oracle holds it to Rust ranga, so highlight pixels stay class A |
 | `image` decode, `guess_format`, `Limits` | a local sniff, then `chitra_image_decode_budget` with `MAX_DECODE_ALLOC`; the dimension check comes before any allocation |
-| `image` encode | `src/png_enc.cyr` (kii), `src/bmp_enc.cyr`, `src/jpeg_enc.cyr`; sankoch `zlib_compress` and `crc32` |
-| `reqwest` (async, rustls) | sandhi `sandhi_http_get_opts` / `post_opts`, blocking, with deadlines and capped bodies; native TLS is the stdlib default |
+| `image` encode | `src/png_enc.cyr` (kii), `src/bmp_enc.cyr`, `src/jpeg_enc.cyr`; sankoch `zlib_compress` and `crc32`, after one `crc32_init_table()` |
+| `reqwest` (async, rustls) | sandhi `sandhi_http_get_opts` / `post_opts`, blocking: headers in a `sandhi_headers_new()` object; `total_ms` **with `read_ms` and `write_ms`** (L10) and `max_response_bytes`; failures from `sandhi_http_err_kind`. Native TLS is the stdlib default |
 | `serde`, `serde_json` | bayan `bayan_json_parse` for reading; `str_builder` and `str_builder_add_json_str` for writing (D8) |
-| `base64` | `bayan_base64_encode` / `bayan_base64_decode` |
+| `base64` | `bayan_base64_encode` / `bayan_base64_decode`; decode returns a `{data, len}` pair |
 | `uuid` v4 | `random_bytes`, then RFC 4122 bits and formatting (`src/uuid.cyr`) |
 | `chrono::DateTime<Utc>` | `clock_epoch_ns` and `src/rfc3339.cyr`. The stdlib `iso8601` is whole seconds only (L5) |
-| `thiserror` `SelahError` | `enum SlError` and `sl_error_detail()` (D7) |
+| `thiserror` `SelahError` | `enum SlError` and a trailing `detail_out = 0` argument (D7) |
 | `tracing` | sakshi, through `src/log.cyr` (D11) |
 | `tokio` (`mcp`) | none: bote's stdio loop is blocking |
 | `bote` 0.92 (Rust) | bote 3.8.15: `schema_new` / `schema_prop_new`, `tool_def_new`, `tool_def_with_annotations(ann_read_only())`, `dispatcher_register_tool`, `transport_stdio_run`, `content_text_response` |
@@ -462,7 +511,7 @@ Rules:
 
 | Rust | Cyrius |
 |---|---|
-| `Result<T, SelahError>` | a value-form `Result` with `SL_ERR_*` codes; the detail text through `sl_error_detail()`. Never return a `Result` through `callptr`, because its payload is lost |
+| `Result<T, SelahError>` | a value-form `Result` with `SL_ERR_*` codes; the detail text through a trailing `detail_out = 0` argument (D7). Never return a `Result` through `callptr`, because its payload is lost |
 | `Rect` (Copy, 16 bytes) | `struct SlRect { min_x: f32; min_y: f32; max_x: f32; max_y: f32; }`, passed by value as an argument and returned through an out-pointer (probe 4b) |
 | `Color { r, g, b, a: u8 }` | a packed `u32` word with `sl_color_r/g/b/a`, and constants `SL_COLOR_RED` … `SL_COLOR_YELLOW` |
 | `#[non_exhaustive] enum` (`AnnotationKind`, `ImageFormat`, `RedactionTarget`, `CaptureSource`, `SessionType`) | `enum` with explicit, append-only values; `match` keeps an `_ =>` arm |
@@ -515,6 +564,7 @@ and leaves when the upstream piece ships. The format is pravash's.
 | L7 | `src/geometry.cyr` | hisab has no 2D f32 rect | none: selah needs six operations | hisab grows a 2D rect |
 | L8 | the OCR downscale loop, and only OpenAI-compatible OCR models | hoosh's 1 MiB cap, and its image parts on other providers | **filed** `../hoosh/docs/development/issues/2026-11-14-selah-vision-image-parts-reach-only-openai-shaped-providers.md` | hoosh lands it |
 | L9 | `CaptureClient` tested only against the mock server | daimon has no `/v1/screen/*` routes | **filed** `../daimon/docs/development/issues/2026-11-14-selah-screen-capture-routes.md` | daimon ships the routes |
+| L10 | every HTTP call sets `read_ms` and `write_ms` alongside `total_ms` | `total_ms` alone doesn't bound a blocked `recv` (M0 probe 4e) | sandhi `2026-11-11-total-ms-does-not-bound-a-blocked-first-read` (ushma's; selah's data point appended) | sandhi clamps `SO_RCVTIMEO` to the deadline |
 
 Toolchain defects found during the port are filed in `../cyrius/docs/development/issues/` with a repro, not worked
 around silently. That includes the probe results in M0 step 4 when they find one.
@@ -541,7 +591,7 @@ around silently. That includes the probe results in M0 step 4 when they find one
 
 | Milestone | Status | Golden rows | Ported tests | Benches | Notes |
 |---|---|---|---|---|---|
-| M0 Initialize | ⏳ not started | — | — | Rust baseline at step 0 | daimon and hoosh issues filed 2026-11-14 (D2) |
+| M0 Initialize | ◐ steps 0 and 4 done 2026-11-14; **waiting on the 0.30.0 commit and tag** before step 1 | — | — | Rust baseline at `c0da3e1` (all 13 in `bench-history.csv`) | Step 0: the oracle is green on rustc 1.100.0 (fmt, clippy, rustdoc `-D warnings`, audit, deny; 289/289 tests); the release cut is prepared as **0.30.0**; `.gitignore` now ignores only `/Cargo.lock`. Step 4: probes a–f pass (results in §2); D7 decided; sankoch dropped from `[deps]`. daimon and hoosh issues filed (D2); sandhi data point appended (L10) |
 | M1 Foundation | ⏳ | | | `rect_new`, `rect_contains_point`, `rect_intersects`, `xml_escape_*` | |
 | M2 PII and smart crop | ⏳ | | | `suggest_redactions_*`, `extract_text_regions_64k` | |
 | M3 Codecs | ⏳ | | | | K_jpeg and the R bounds are set at M0 step 7 / M3 start |

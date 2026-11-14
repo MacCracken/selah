@@ -1,86 +1,86 @@
 # Benchmarks
 
-Latest: **2026-11-13T17:37:52Z** — commit `424dc7e`
+Latest: **2026-11-14T16:28:40Z** — commit `c0da3e1`
 
-Tracking: `424dc7e` (baseline) → `424dc7e` (optimized) → `424dc7e` (current)
+Tracking: `424dc7e` (baseline) → `424dc7e` (optimized) → `c0da3e1` (current)
 
 ## render_to_image_64x64
 
-| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`424dc7e`) |
+| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`c0da3e1`) |
 |-----------|------|------|------|
-| `render_to_image_64x64` | 24655.0 ns | 16953.0 ns **-31%** | 17585.0 ns **-29%** |
+| `render_to_image_64x64` | 24655.0 ns | 16953.0 ns **-31%** | 16228.0 ns **-34%** |
 
 ## suggest_redactions_clean
 
-| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`424dc7e`) |
+| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`c0da3e1`) |
 |-----------|------|------|------|
-| `suggest_redactions_clean` | 829.8 ns | 426.1 ns **-49%** | 412.3 ns **-50%** |
+| `suggest_redactions_clean` | 829.8 ns | 426.1 ns **-49%** | 391.6 ns **-53%** |
 
 ## suggest_redactions_pii
 
-| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`424dc7e`) |
+| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`c0da3e1`) |
 |-----------|------|------|------|
-| `suggest_redactions_pii` | 1268.8 ns | 515.9 ns **-59%** | 512.9 ns **-60%** |
+| `suggest_redactions_pii` | 1268.8 ns | 515.9 ns **-59%** | 460.6 ns **-64%** |
 
 ## suggest_redactions_long
 
-| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`424dc7e`) |
+| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`c0da3e1`) |
 |-----------|------|------|------|
-| `suggest_redactions_long` | 73517.0 ns | 50564.0 ns **-31%** | 41138.0 ns **-44%** |
+| `suggest_redactions_long` | 73517.0 ns | 50564.0 ns **-31%** | 36737.0 ns **-50%** |
 
 ## rect_new
 
-| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`424dc7e`) |
+| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`c0da3e1`) |
 |-----------|------|------|------|
-| `rect_new` | 5.48 ns | 2.13 ns **-61%** | 2.12 ns **-61%** |
+| `rect_new` | 5.48 ns | 2.13 ns **-61%** | 1.93 ns **-65%** |
 
 ## rect_contains_point
 
-| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`424dc7e`) |
+| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`c0da3e1`) |
 |-----------|------|------|------|
-| `rect_contains_point` | 0.99 ns | 1.38 ns +40% | 1.31 ns +33% |
+| `rect_contains_point` | 0.99 ns | 1.38 ns +40% | 1.20 ns +21% |
 
 ## rect_intersects
 
-| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`424dc7e`) |
+| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`c0da3e1`) |
 |-----------|------|------|------|
-| `rect_intersects` | 1.33 ns | 1.11 ns **-16%** | 1.06 ns **-20%** |
+| `rect_intersects` | 1.33 ns | 1.11 ns **-16%** | 0.99 ns **-26%** |
 
 ## xml_escape_plain
 
-| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`424dc7e`) |
+| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`c0da3e1`) |
 |-----------|------|------|------|
-| `xml_escape_plain` | 36.00 ns | 49.84 ns +38% | 23.30 ns **-35%** |
+| `xml_escape_plain` | 36.00 ns | 49.84 ns +38% | 21.22 ns **-41%** |
 
 ## xml_escape_special
 
-| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`424dc7e`) |
+| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`c0da3e1`) |
 |-----------|------|------|------|
-| `xml_escape_special` | 114.2 ns | 199.0 ns +74% | 139.4 ns +22% |
+| `xml_escape_special` | 114.2 ns | 199.0 ns +74% | 129.0 ns +13% |
 
 ## xml_escape_long
 
-| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`424dc7e`) |
+| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`c0da3e1`) |
 |-----------|------|------|------|
-| `xml_escape_long` | 2923.1 ns | 3219.3 ns +10% | 679.4 ns **-77%** |
+| `xml_escape_long` | 2923.1 ns | 3219.3 ns +10% | 603.7 ns **-79%** |
 
 ## render_to_image_512_bmp
 
-| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`424dc7e`) |
+| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`c0da3e1`) |
 |-----------|------|------|------|
-| `render_to_image_512_bmp` | — | 1463.9 µs | 1393.4 µs |
+| `render_to_image_512_bmp` | — | 1463.9 µs | 1288.3 µs |
 
 ## to_svg_100
 
-| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`424dc7e`) |
+| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`c0da3e1`) |
 |-----------|------|------|------|
-| `to_svg_100` | — | 46871.0 ns | 43202.0 ns |
+| `to_svg_100` | — | 46871.0 ns | 39993.0 ns |
 
 ## extract_text_regions_64k
 
-| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`424dc7e`) |
+| Benchmark | Baseline (`424dc7e`) | Mid (`424dc7e`) | Current (`c0da3e1`) |
 |-----------|------|------|------|
-| `extract_text_regions_64k` | — | 65702.0 ns | 66833.0 ns |
+| `extract_text_regions_64k` | — | 65702.0 ns | 61893.0 ns |
 
 ---
 
