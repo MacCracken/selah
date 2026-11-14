@@ -73,6 +73,8 @@ cyrius test                                    # tests/*.tcyr: parity + ported R
 cyrius bench                                   # tests/*.bcyr
 cargo test --manifest-path rust-old/Cargo.toml --all-features            # the Rust oracle, read-only
 cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --check   # golden corpus up to date
+cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --reverse # after cyrius test: Rust decodes the Cyrius-encoded files
+cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --bench   # after cyrius bench: Rust's codec numbers
 ```
 
 ## Development Process

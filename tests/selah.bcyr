@@ -1,6 +1,7 @@
 # selah benchmarks — the Rust criterion suite's benches (rust-old/benches/benchmarks.rs), same names and inputs, so
 # docs/benchmarks-rust-v-cyrius.md can set them side by side. Benches join as their modules are ported (M1: rect
-# operations, xml_escape; M2: suggest_redactions, extract_text_regions).
+# operations, xml_escape; M2: suggest_redactions, extract_text_regions). M3's codec benches have no criterion
+# counterpart: their Rust numbers come from `scripts/oracle -- --bench`, on the same image.
 #
 # Pattern: bench_new -> bench_batch_start -> tight loop -> bench_batch_stop -> bench_report.
 
@@ -125,6 +126,100 @@ fn _b_extract(): i64 {
     return sink;
 }
 
+# ---- M3: codecs, on one 512 x 512 RGBA image the oracle's --bench builds identically:
+# (x ^ y, 3x + y, 5y ^ x, 255) mod 256, a pattern with edges and gradients, neither flat nor noise.
+fn _b_image(): *SlImage {
+    var img: *SlImage = SlImage_new(512, 512);
+    var y = 0;
+    while (y < 512) {
+        var x = 0;
+        while (x < 512) {
+            var p = img.pixels + (y * 512 + x) * 4;
+            store8(p, (x ^ y) & 255);
+            store8(p + 1, (x * 3 + y) & 255);
+            store8(p + 2, ((y * 5) ^ x) & 255);
+            store8(p + 3, 255);
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return img;
+}
+
+# Encodes img as fmt n times.
+fn _b_encode(name, img: *SlImage, fmt, n): i64 {
+    var sink = 0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        var len = 0;
+        var t, v = _sl_encode_image(img, fmt, &len);
+        sink = sink + len;
+        selah_bytes_free(v);
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return sink;
+}
+
+# Decodes the bytes n times. chitra 1.3.1 keeps every decode's memory (ledger L16), so n stays small.
+fn _b_decode(name, src, len, n): i64 {
+    var sink = 0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        var t, v = _sl_decode_image(src, len);
+        var img: *SlImage = _sl_as_image(v);
+        sink = sink + img.width;
+        SlImage_free(img);
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return sink;
+}
+
+# convert_format PNG -> JPEG, n times.
+fn _b_convert(src, len, n): i64 {
+    var sink = 0;
+    var b = bench_new("convert_format_png_to_jpeg_512");
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        var on = 0;
+        var t, v = selah_convert_format(src, len, SL_FMT_JPEG, &on);
+        sink = sink + on;
+        selah_bytes_free(v);
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return sink;
+}
+
+fn _b_codecs(): i64 {
+    var img: *SlImage = _b_image();
+    _b_encode("encode_png_512", img, SL_FMT_PNG, 20);
+    _b_encode("encode_bmp_512", img, SL_FMT_BMP, 200);
+    _b_encode("encode_jpeg_512", img, SL_FMT_JPEG, 20);
+    var pn = 0;
+    var pt, png = _sl_encode_image(img, SL_FMT_PNG, &pn);
+    var jn = 0;
+    var jt, jpg = _sl_encode_image(img, SL_FMT_JPEG, &jn);
+    # The bytes decoded here, for the oracle's --bench to decode the same files.
+    sys_mkdir("build", 493);
+    sys_mkdir("build/bench", 493);
+    file_write_all("build/bench/image512.png", png, pn);
+    file_write_all("build/bench/image512.jpg", jpg, jn);
+    _b_decode("decode_png_512", png, pn, 20);
+    _b_decode("decode_jpeg_512", jpg, jn, 20);
+    _b_convert(png, pn, 10);
+    return 0;
+}
+
 # Runs every bench.
 fn main(): i64 {
     alloc_init();
@@ -156,6 +251,7 @@ fn main(): i64 {
     _b_redact("suggest_redactions_pii", pii, strlen(pii), 200000);
     _b_redact("suggest_redactions_long", str_data(ltext), str_len(ltext), 5000);
     _b_extract();
+    _b_codecs();
     return 0;
 }
 

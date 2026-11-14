@@ -16,51 +16,78 @@ include "src/geometry.cyr"
 include "src/core.cyr"
 include "src/ai_data.cyr"
 include "src/ai.cyr"
+include "src/png_enc.cyr"
+include "src/bmp_enc.cyr"
+include "src/jpeg_enc.cyr"
+include "src/codec.cyr"
 
-# ---------------------------------------------------------------- decode
+# ---------------------------------------------------------------- decode, convert_format, encode
 #
-# M0 (port plan §2 step 7) takes the baseline: `decode` is not gated yet, so a difference is "measured", and every
-# such row is printed. M3 sets _PAR_DECODE_GATED = 1, sets K_jpeg from docs/development/port-parity.md, and swaps
-# the stand-in below for src/codec.cyr's decode.
+# M3 gates these under ADR 0003 (port plan §4; the bounds are docs/development/port-parity.md §5):
+# - class A rows must match exactly (PNG and BMP pixels, every verdict and its error variant);
+# - class B rows (a JPEG decoded by both) must pass two gates: accuracy against the fixture's source pixels (port
+#   mean <= Rust's + 0.050 and max <= Rust's + 2) and conformance with Rust (per channel |d| <= K_jpeg);
+# - an `adr=0002#N` row passes when the port refuses with UnsupportedFormat, as ADR 0002 row N says;
+# - a row on the known-defect list (`_par_known`) reports `upstream` while it shows its defect, and FAILS once it
+#   passes, so the list is cut when the upstream fix lands.
 
-var _PAR_DECODE_GATED = 0;
-var _PAR_K_JPEG = 0;
-# selah's MAX_DECODE_ALLOC (rust-old/src/annotate.rs): 512 MiB of RGBA8.
-var _PAR_MAX_DECODE_ALLOC = 536870912;
+# The bounds of port-parity.md §5.
+var _PAR_K_JPEG = 2;
+var _PAR_ACC_MEAN = 50;   # thousandths
+var _PAR_ACC_MAX = 2;
 
-enum ParFmt {
-    PAR_FMT_UNKNOWN = 0;
-    PAR_FMT_PNG = 1;
-    PAR_FMT_JPEG = 2;
-    PAR_FMT_BMP = 3;
-    PAR_FMT_GIF = 4;
-    PAR_FMT_WEBP = 5;
+# The known-defect list: a decode fixture (exact file name) and the filed upstream issue it waits on (ADR 0003, port
+# plan §6). A listed row reports `upstream` while it shows the defect and FAILS once it passes.
+var _PAR_F1 = "chitra 2026-11-14-box-chroma-upsampling-loses-accuracy (L12)";
+var _PAR_F3 = "chitra 2026-11-14-bmp-sub-8-bit-replication-is-not-the-nearest-value (L13)";
+var _PAR_CAP = "chitra 2026-11-14-fixed-16-mp-cap-refuses-screenshots (L17)";
+
+# 1 when file[0..n) is exactly the NUL-terminated name.
+fn _par_is(file, n, name): i64 {
+    var l = strlen(name);
+    return n == l && memeq(file, name, l) == 1;
 }
 
-# The signature check selah makes before decoding (Rust: image's guess_format, then the supported subset).
-fn _par_sniff(src, n): i64 {
-    if (n >= 8 && memeq(src, "\x89PNG\r\n\x1a\n", 8) == 1) { return PAR_FMT_PNG; }
-    if (n >= 3 && load8(src) == 255 && load8(src + 1) == 216 && load8(src + 2) == 255) { return PAR_FMT_JPEG; }
-    if (n >= 2 && load8(src) == 66 && load8(src + 1) == 77) { return PAR_FMT_BMP; }
-    if (n >= 6 && (memeq(src, "GIF87a", 6) == 1 || memeq(src, "GIF89a", 6) == 1)) { return PAR_FMT_GIF; }
-    if (n >= 12 && memeq(src, "RIFF", 4) == 1 && memeq(src + 8, "WEBP", 4) == 1) { return PAR_FMT_WEBP; }
-    return PAR_FMT_UNKNOWN;
+fn _par_known(file, n): i64 {
+    if (_par_is(file, n, "jpeg-enc-420-64x64.jpg") == 1) { return _PAR_F1; }
+    if (_par_is(file, n, "jpeg-enc-420-33x17.jpg") == 1) { return _PAR_F1; }
+    if (_par_is(file, n, "jpeg-enc-422-64x64.jpg") == 1) { return _PAR_F1; }
+    if (_par_is(file, n, "jpeg-enc-440-64x64.jpg") == 1) { return _PAR_F1; }
+    if (_par_is(file, n, "jpeg-enc-restart-64x64.jpg") == 1) { return _PAR_F1; }
+    if (_par_is(file, n, "bmp-16-555-33x17.bmp") == 1) { return _PAR_F3; }
+    if (_par_is(file, n, "bmp-16-565-33x17.bmp") == 1) { return _PAR_F3; }
+    if (_par_is(file, n, "png-gray1-4100x4100.png") == 1) { return _PAR_CAP; }
+    return 0;
 }
 
-# The M0 stand-in for selah's decode: the sniff, then chitra's budgeted decode for PNG, JPEG and BMP only.
-# Returns a chitra image handle, or 0 with *why_out set to a cstring.
-fn _par_decode_m0(src, n, why_out): i64 {
-    var fmt = _par_sniff(src, n);
-    if (fmt == PAR_FMT_GIF) { store64(why_out, "GIF refused (selah)"); return 0; }
-    if (fmt == PAR_FMT_WEBP) { store64(why_out, "WebP refused (ADR 0002 #1)"); return 0; }
-    if (fmt == PAR_FMT_UNKNOWN) { store64(why_out, "unrecognised signature"); return 0; }
-    var err = 0;
-    var img = chitra_image_decode_budget(src, n, _PAR_MAX_DECODE_ALLOC, &err);
-    if (img == 0) {
-        store64(why_out, chitra_err_name(chitra_err_code(err)));
-        return 0;
+# The outcome note of a row the port refuses as ADR 0002 says.
+var _PAR_ADR_OK = "UnsupportedFormat, as ADR 0002 says";
+
+# The N of the row's `adr=0002#N` tag, or 0.
+fn _par_adr(): i64 {
+    var s = _pc_f[8];
+    var n = _pc_f[9];
+    var i = 0;
+    while (i + 9 <= n) {
+        if (memeq(s + i, "adr=0002#", 9) == 1) {
+            var j = i + 9;
+            var v = 0;
+            while (j < n && load8(s + j) >= 48 && load8(s + j) <= 57) {
+                v = v * 10 + load8(s + j) - 48;
+                j = j + 1;
+            }
+            return v;
+        }
+        i = i + 1;
     }
-    return img;
+    return 0;
+}
+
+# 1 when the output token at (op, on) is `E:` followed by the name of error `code`.
+fn _par_err_is(op, on, code): i64 {
+    var name = selah_error_name(code);
+    var l = strlen(name);
+    return on == l + 2 && memeq(op + 2, name, l) == 1;
 }
 
 # A why-message buffer: prefix + decimal + text + decimal + text.
@@ -94,8 +121,7 @@ fn _par_why5(a, n1, b, n2, c): i64 {
     return p;
 }
 
-# Accuracy against ground truth: the mean (in thousandths) and the largest absolute error of the RGB channels of
-# px[0..n) against the source pixels src[0..n). Returns (mean x 1000, max).
+# The mean (in thousandths) and the largest absolute error of the RGB channels of px[0..n) against src[0..n).
 fn _par_err_vs(px, src, n): (i64, i64) {
     var sum = 0;
     var mx = 0;
@@ -115,42 +141,72 @@ fn _par_err_vs(px, src, n): (i64, i64) {
     return (sum * 1000 / cnt, mx);
 }
 
-# Prints a lossy row's accuracy against its source pixels (tests/golden/fixtures/<file>.source.rgba), for the port
-# (px, or 0 when it refused) and for the oracle (blob); nothing when the fixture has no source.
-fn _par_accuracy(fp, fn_len, px, blob, n): i64 {
+# Prints a mean in thousandths as d.ddd.
+fn _par_milli(m): i64 {
+    _pc_i(m / 1000);
+    _pc_s(".");
+    if (m % 1000 < 100) { _pc_s("0"); }
+    if (m % 1000 < 10) { _pc_s("0"); }
+    _pc_i(m % 1000);
+    return 0;
+}
+
+# The source pixels of a lossy fixture (tests/golden/fixtures/<file>.source.rgba), or 0 when it has none or their
+# size is not n.
+fn _par_source(fp, fn_len, n): i64 {
     var path = alloc(fn_len + 16);
     memcpy(path, fp, fn_len);
     memcpy(path + fn_len, ".source.rgba", 12);
     var slen = 0;
     var src = _pc_read(path, fn_len + 12, &slen);
     if (src == 0 || slen != n) { return 0; }
+    return src;
+}
+
+# One line of the accuracy record: the port's and Rust's error against a fixture's source (px 0: the port refused).
+fn _par_accuracy_line(fp, fn_len, pm, px_max, rm, r_max, port_ok): i64 {
     _pc_s("  accuracy ");
     _pc_b(fp + 9, fn_len - 9);
     _pc_s(" vs source:");
-    if (px != 0) {
-        var pm, px_max = _par_err_vs(px, src, n);
-        _pc_s(" chitra mean ");
-        _pc_i(pm / 1000);
-        _pc_s(".");
-        if (pm % 1000 < 100) { _pc_s("0"); }
-        if (pm % 1000 < 10) { _pc_s("0"); }
-        _pc_i(pm % 1000);
+    if (port_ok == 1) {
+        _pc_s(" port mean ");
+        _par_milli(pm);
         _pc_s(" max ");
         _pc_i(px_max);
     } else {
-        _pc_s(" chitra refuses");
+        _pc_s(" port refuses");
     }
-    var rm, r_max = _par_err_vs(blob, src, n);
     _pc_s(" | rust mean ");
-    _pc_i(rm / 1000);
-    _pc_s(".");
-    if (rm % 1000 < 100) { _pc_s("0"); }
-    if (rm % 1000 < 10) { _pc_s("0"); }
-    _pc_i(rm % 1000);
+    _par_milli(rm);
     _pc_s(" max ");
     _pc_i(r_max);
     _pc_s("\n");
     return 0;
+}
+
+# Records the outcome of a row whose comparison passed (pass = 1) or not, under the known-defect list.
+fn _par_gate(pass, known, why): i64 {
+    if (pass == 1) {
+        if (known != 0) {
+            return _pc_record(PC_FAILED, "on the known-defect list but passes: remove it from _par_known");
+        }
+        return _pc_record(PC_OK, why);
+    }
+    if (known != 0) { return _pc_record(PC_UPSTREAM, known); }
+    return _pc_record(PC_FAILED, why);
+}
+
+# The value of a hex token's payload (at most 16 digits), or -1.
+fn _par_hex(p, n): i64 {
+    var v = 0;
+    var i = 0;
+    while (i < n) {
+        var d = _pc_hexd(load8(p + i));
+        if (d < 0) { return -1; }
+        v = v * 16 + d;
+        i = i + 1;
+    }
+    return v;
 }
 
 # One decode row.
@@ -158,52 +214,30 @@ fn _par_decode_row(): i64 {
     var tp = 0;
     var tn = 0;
     _pc_tok(2, 0, &tp, &tn);
-    if (tn < 2 || memeq(tp, "p:", 2) != 1) { return _pc_record(PC_FAILED, "malformed input token"); }
+    if (tn < 11 || memeq(tp, "p:fixtures/", 11) != 1) { return _pc_record(PC_FAILED, "malformed input token"); }
     var len = 0;
     var src = _pc_read(tp + 2, tn - 2, &len);
-    if (src == 0) { return _pc_record(PC_FAILED, "fixture unreadable"); }
+    if (src == 0 && len < 0) { return _pc_record(PC_FAILED, "fixture unreadable"); }
+    var adr = _par_adr();
+    var known = _par_known(tp + 11, tn - 11);
 
-    var adr1 = _pc_contains(_pc_f[8], _pc_f[9], "adr=0002#1");
-    var adr2 = _pc_contains(_pc_f[8], _pc_f[9], "adr=0002#2");
-    var miss = PC_MEASURED;
-    if (_PAR_DECODE_GATED == 1) { miss = PC_FAILED; }
-
-    var why = 0;
-    var img = _par_decode_m0(src, len, &why);
+    var d = 0;
+    var t, v = _sl_decode_image(src, len, &d);
+    var port_ok = is_ok(t);
 
     var op = 0;
     var on = 0;
     _pc_tok(3, 0, &op, &on);
-    var oracle_refused = 0;
-    if (on >= 2 && memeq(op, "E:", 2) == 1) { oracle_refused = 1; }
-
-    if (oracle_refused == 1) {
-        if (img == 0) { return _pc_record(PC_OK, "both refuse"); }
-        var w0 = chitra_image_width(img);
-        var h0 = chitra_image_height(img);
-        chitra_image_free(img);
-        return _pc_record(miss, _par_why5("oracle refuses, port decodes ", w0, "x", h0, ""));
-    }
-    if (img == 0) {
-        var wp0 = 0;
-        var wn0 = 0;
-        var hp0 = 0;
-        var hn0 = 0;
-        var bp0 = 0;
-        var bn0 = 0;
-        if (_pc_tok(3, 2, &bp0, &bn0) == 1) {
-            _pc_tok(3, 0, &wp0, &wn0);
-            _pc_tok(3, 1, &hp0, &hn0);
-            var bl0 = 0;
-            var b0 = _pc_read(bp0 + 2, bn0 - 2, &bl0);
-            if (b0 != 0) { _par_accuracy(tp + 2, tn - 2, 0, b0, bl0); }
+    if (on >= 2 && memeq(op, "E:", 2) == 1) {
+        if (port_ok == 1) {
+            var img0: *SlImage = _sl_as_image(v);
+            var w0 = img0.width;
+            var h0 = img0.height;
+            SlImage_free(img0);
+            return _par_gate(0, known, _par_why5("oracle refuses, port decodes ", w0, "x", h0, ""));
         }
-        if (adr1 == 1 || adr2 == 1) { return _pc_record(PC_ACCEPTED, why); }
-        return _pc_record(miss, why);
-    }
-    if (adr1 == 1 || adr2 == 1) {
-        chitra_image_free(img);
-        return _pc_record(miss, "ADR 0002 says refuse, port decodes");
+        if (_par_err_is(op, on, v) == 1) { return _par_gate(1, known, "both refuse"); }
+        return _par_gate(0, known, "both refuse, with different variants");
     }
 
     var wp = 0;
@@ -217,46 +251,407 @@ fn _par_decode_row(): i64 {
     _pc_tok(3, 2, &bp, &bn);
     var ow = _pc_int(wp + 2, wn - 2);
     var oh = _pc_int(hp + 2, hn - 2);
-    var pw = chitra_image_width(img);
-    var ph = chitra_image_height(img);
-    if (pw != ow || ph != oh) {
-        chitra_image_free(img);
-        return _pc_record(PC_FAILED, _par_why5("dimensions differ: port ", pw, "x", ph, ""));
-    }
     var blen = 0;
-    var blob = _pc_read(bp + 2, bn - 2, &blen);
-    if (blob == 0 || blen != ow * oh * 4) {
-        chitra_image_free(img);
-        return _pc_record(PC_FAILED, "oracle RGBA blob unreadable or the wrong size");
+    var blob = 0;
+    if (memeq(bp, "p:", 2) == 1) {
+        blob = _pc_read(bp + 2, bn - 2, &blen);
+        if (blob == 0 || blen != ow * oh * 4) {
+            return _pc_record(PC_FAILED, "oracle RGBA blob unreadable or the wrong size");
+        }
     }
-    var px = chitra_image_pixels(img);
-    _par_accuracy(tp + 2, tn - 2, px, blob, blen);
-    var outcome = PC_OK;
+    var srcpx = 0;
+    if (blob != 0) { srcpx = _par_source(tp + 2, tn - 2, blen); }
+
+    if (port_ok == 0) {
+        if (srcpx != 0) {
+            var rm0, rx0 = _par_err_vs(blob, srcpx, blen);
+            _par_accuracy_line(tp + 2, tn - 2, 0, 0, rm0, rx0, 0);
+        }
+        if (adr != 0) {
+            if (v == SL_ERR_UNSUPPORTED_FORMAT) { return _pc_record(PC_ACCEPTED, _PAR_ADR_OK); }
+            return _pc_record(PC_FAILED, "an ADR 0002 row refused with the wrong variant");
+        }
+        return _par_gate(0, known, "oracle decodes, port refuses");
+    }
+    var img: *SlImage = _sl_as_image(v);
+    if (adr != 0) {
+        SlImage_free(img);
+        return _pc_record(PC_FAILED, _par_why5("ADR 0002 #", adr, " says refuse, port decodes", 0, ""));
+    }
+    if (img.width != ow || img.height != oh) {
+        var pw = img.width;
+        var ph = img.height;
+        SlImage_free(img);
+        return _par_gate(0, known, _par_why5("dimensions differ: port ", pw, "x", ph, ""));
+    }
+    var n = ow * oh * 4;
+    var px = img.pixels;
+
+    if (blob == 0) {
+        # c:<crc32> in place of the blob.
+        crc32_init_table();
+        var want = _par_hex(bp + 2, bn - 2);
+        var got = crc32(px, n);
+        SlImage_free(img);
+        return _par_gate(got == want, known, "pixels' CRC-32 differs");
+    }
+
     var cls = load8(_pc_f[2]);
-    if (memeq(px, blob, blen) != 1) {
-        var diff = 0;
-        var mx = 0;
+    var mx = 0;
+    var diff = 0;
+    if (memeq(px, blob, n) != 1) {
         var i = 0;
-        while (i < blen) {
-            var d = load8(px + i) - load8(blob + i);
-            if (d < 0) { d = -d; }
-            if (d != 0) { diff = diff + 1; }
-            if (d > mx) { mx = d; }
+        while (i < n) {
+            var dd = load8(px + i) - load8(blob + i);
+            if (dd < 0) { dd = -dd; }
+            if (dd != 0) { diff = diff + 1; }
+            if (dd > mx) { mx = dd; }
             i = i + 1;
         }
-        if (cls == 66) {
-            _pc_hist_add(px, blob, blen);
-            if (_PAR_DECODE_GATED == 1 && mx <= _PAR_K_JPEG) { outcome = PC_OK; } else { outcome = miss; }
-        } else {
-            outcome = miss;
-        }
-        chitra_image_free(img);
-        if (outcome == PC_OK) { return _pc_record(PC_OK, "within K_jpeg"); }
-        return _pc_record(outcome, _par_why5("pixels differ: ", diff, " bytes, max |d| ", mx, ""));
     }
-    if (cls == 66) { _pc_hist_add(px, blob, blen); }
-    chitra_image_free(img);
-    return _pc_record(PC_OK, "identical");
+    if (cls == 66) { _pc_hist_add(px, blob, n); }
+    if (cls != 66) {
+        SlImage_free(img);
+        return _par_gate(mx == 0, known, _par_why5("pixels differ: ", diff, " bytes, max |d| ", mx, ""));
+    }
+    # Class B: accuracy against the source, and conformance with Rust.
+    var pass = 1;
+    var why = "within K_jpeg";
+    if (mx > _PAR_K_JPEG) {
+        pass = 0;
+        why = _par_why5("conformance: max |d| ", mx, " over K_jpeg ", _PAR_K_JPEG, "");
+    }
+    if (srcpx != 0) {
+        var pm, pmx = _par_err_vs(px, srcpx, n);
+        var rm, rmx = _par_err_vs(blob, srcpx, n);
+        _par_accuracy_line(tp + 2, tn - 2, pm, pmx, rm, rmx, 1);
+        if (pm > rm + _PAR_ACC_MEAN || pmx > rmx + _PAR_ACC_MAX) {
+            pass = 0;
+            why = _par_why5("accuracy: port mean x1000 ", pm, " vs Rust's ", rm, " (bound +0.050, max +2)");
+        }
+    }
+    SlImage_free(img);
+    return _par_gate(pass, known, why);
+}
+
+# The ImageFormat of an `e:ImageFormat.<T>` token, or -1.
+fn _par_fmt_tok(p, n): i64 {
+    if (n == 17 && memeq(p, "e:ImageFormat.Png", 17) == 1) { return SL_FMT_PNG; }
+    if (n == 18 && memeq(p, "e:ImageFormat.Jpeg", 18) == 1) { return SL_FMT_JPEG; }
+    if (n == 17 && memeq(p, "e:ImageFormat.Bmp", 17) == 1) { return SL_FMT_BMP; }
+    if (n == 18 && memeq(p, "e:ImageFormat.WebP", 18) == 1) { return SL_FMT_WEBP; }
+    return -1;
+}
+
+# One convert_format row: the verdict and the converted image's dimensions (class A).
+fn _par_convert_row(): i64 {
+    var tp = 0;
+    var tn = 0;
+    var fp = 0;
+    var fnn = 0;
+    _pc_tok(2, 0, &tp, &tn);
+    _pc_tok(2, 1, &fp, &fnn);
+    var fmt = _par_fmt_tok(fp, fnn);
+    if (tn < 11 || fmt < 0) { return _pc_record(PC_FAILED, "malformed input tokens"); }
+    var len = 0;
+    var src = _pc_read(tp + 2, tn - 2, &len);
+    if (src == 0 && len < 0) { return _pc_record(PC_FAILED, "fixture unreadable"); }
+    var adr = _par_adr();
+    var on = 0;
+    var t, v = selah_convert_format(src, len, fmt, &on);
+
+    var op = 0;
+    var oln = 0;
+    _pc_tok(3, 0, &op, &oln);
+    if (oln >= 2 && memeq(op, "E:", 2) == 1) {
+        if (is_ok(t) == 1) {
+            selah_bytes_free(v);
+            return _pc_record(PC_FAILED, "oracle refuses, port converts");
+        }
+        if (_par_err_is(op, oln, v) == 1) { return _pc_record(PC_OK, "both refuse"); }
+        return _pc_record(PC_FAILED, "both refuse, with different variants");
+    }
+    if (is_err_result(t) == 1) {
+        if (adr != 0 && v == SL_ERR_UNSUPPORTED_FORMAT) { return _pc_record(PC_ACCEPTED, _PAR_ADR_OK); }
+        return _pc_record(PC_FAILED, "oracle converts, port refuses");
+    }
+    if (adr != 0) {
+        selah_bytes_free(v);
+        return _pc_record(PC_FAILED, _par_why5("ADR 0002 #", adr, " says refuse, port converts", 0, ""));
+    }
+    var hp = 0;
+    var hn = 0;
+    _pc_tok(3, 1, &hp, &hn);
+    var ow = _pc_int(op + 2, oln - 2);
+    var oh = _pc_int(hp + 2, hn - 2);
+    var dt, dv = _sl_decode_image(v, on);
+    selah_bytes_free(v);
+    if (is_err_result(dt) == 1) { return _pc_record(PC_FAILED, "the port cannot decode its own output"); }
+    var img: *SlImage = _sl_as_image(dv);
+    var ok = img.width == ow && img.height == oh;
+    SlImage_free(img);
+    if (ok) { return _pc_record(PC_OK, "dimensions"); }
+    return _pc_record(PC_FAILED, "dimensions differ");
+}
+
+# ---- class R for JPEG: the encoder against the exact mathematics (port plan §4; port-parity.md §5)
+#
+# For given quantisation tables the right coefficients are defined: JFIF's YCbCr (Y = 0.299 R + 0.587 G + 0.114 B,
+# Cb = (B - Y) / 1.772, Cr = (R - Y) / 1.402), level-shifted, T.81's DCT, divided by Q and rounded to nearest (ties
+# away from zero), with the last column and row replicated past the edge. Evaluated here in f64, directly from the
+# definition (no factorisation), and compared with what the encoder writes (_sl_jpeg_coeffs, the encoder's own path).
+# Bound: every coefficient within 1, and at most 1 % of them off by one (set 2026-11-14).
+
+var _par_jm_total = 0;
+var _par_jm_off = 0;
+
+# Returns (coefficients off by one or more, the largest difference); adds to the module totals.
+fn _par_jpeg_math(rgba, w, h, quality): (i64, i64) {
+    var bw = (w + 7) / 8;
+    var bh = (h + 7) / 8;
+    var nco = bw * bh * 192;
+    var mine = alloc(nco * 8);
+    _sl_jpeg_coeffs(rgba, w, h, quality, mine);
+    var ql: i64[64];
+    var qc: i64[64];
+    var dl: i64[64];
+    var dc: i64[64];
+    _sl_jpeg_tables(quality, &ql, &qc, &dl, &dc);
+    # cosm[u * 8 + x] = C(u) / 2 * cos((2x + 1) u pi / 16), C(0) = 1 / sqrt 2.
+    var cosm: i64[64];
+    var pi: f64 = 3.141592653589793;
+    var u = 0;
+    while (u < 8) {
+        var x = 0;
+        while (x < 8) {
+            var arg: f64 = f64_from((2 * x + 1) * u);
+            arg = arg * pi / 16.0;
+            var cv: f64 = f64_cos(arg);
+            var cu: f64 = 0.5;
+            if (u == 0) { cu = 0.35355339059327373; }
+            var val: f64 = cv * cu;
+            store64(&cosm + (u * 8 + x) * 8, val);
+            x = x + 1;
+        }
+        u = u + 1;
+    }
+    var smp: i64[192];
+    var tmp: i64[64];
+    var off = 0;
+    var mx = 0;
+    var k = 0;
+    var by = 0;
+    while (by < h) {
+        var bx = 0;
+        while (bx < w) {
+            var yy = 0;
+            while (yy < 8) {
+                var sy = by + yy;
+                if (sy >= h) { sy = h - 1; }
+                var xx = 0;
+                while (xx < 8) {
+                    var sx = bx + xx;
+                    if (sx >= w) { sx = w - 1; }
+                    var px = rgba + (sy * w + sx) * 4;
+                    var r: f64 = f64_from(load8(px));
+                    var g: f64 = f64_from(load8(px + 1));
+                    var b: f64 = f64_from(load8(px + 2));
+                    var yv: f64 = 0.299 * r + 0.587 * g + 0.114 * b;
+                    var cbv: f64 = (b - yv) / 1.772;
+                    var crv: f64 = (r - yv) / 1.402;
+                    var yl: f64 = yv - 128.0;
+                    var o = yy * 8 + xx;
+                    store64(&smp + o * 8, yl);
+                    store64(&smp + (64 + o) * 8, cbv);
+                    store64(&smp + (128 + o) * 8, crv);
+                    xx = xx + 1;
+                }
+                yy = yy + 1;
+            }
+            var comp = 0;
+            while (comp < 3) {
+                var base = &smp + comp * 512;
+                # Rows: tmp[y * 8 + u] = sum_x cosm[u][x] s[y][x].
+                var y2 = 0;
+                while (y2 < 8) {
+                    var uu = 0;
+                    while (uu < 8) {
+                        var acc: f64 = 0.0;
+                        var x2 = 0;
+                        while (x2 < 8) {
+                            var cw: f64 = load64(&cosm + (uu * 8 + x2) * 8);
+                            var sv: f64 = load64(base + (y2 * 8 + x2) * 8);
+                            acc = acc + cw * sv;
+                            x2 = x2 + 1;
+                        }
+                        store64(&tmp + (y2 * 8 + uu) * 8, acc);
+                        uu = uu + 1;
+                    }
+                    y2 = y2 + 1;
+                }
+                # Columns: F[v * 8 + u] = sum_y cosm[v][y] tmp[y][u]; then quantise and compare.
+                var v = 0;
+                while (v < 8) {
+                    var u2 = 0;
+                    while (u2 < 8) {
+                        var acc2: f64 = 0.0;
+                        var y3 = 0;
+                        while (y3 < 8) {
+                            var cw2: f64 = load64(&cosm + (v * 8 + y3) * 8);
+                            var tv: f64 = load64(&tmp + (y3 * 8 + u2) * 8);
+                            acc2 = acc2 + cw2 * tv;
+                            y3 = y3 + 1;
+                        }
+                        var idx = v * 8 + u2;
+                        var qv = ql[idx];
+                        if (comp > 0) { qv = qc[idx]; }
+                        var qf: f64 = f64_from(qv);
+                        var ratio: f64 = acc2 / qf;
+                        var exact = 0;
+                        if (ratio >= 0.0) {
+                            var fl: f64 = f64_floor(ratio + 0.5);
+                            exact = f64_to(fl);
+                        } else {
+                            var neg: f64 = 0.5 - ratio;
+                            var fl2: f64 = f64_floor(neg);
+                            exact = -f64_to(fl2);
+                        }
+                        var got = load64(mine + (k + comp * 64 + idx) * 8);
+                        var dd = got - exact;
+                        if (dd < 0) { dd = -dd; }
+                        if (dd != 0) { off = off + 1; }
+                        if (dd > mx) { mx = dd; }
+                        u2 = u2 + 1;
+                    }
+                    v = v + 1;
+                }
+                comp = comp + 1;
+            }
+            k = k + 192;
+            bx = bx + 8;
+        }
+        by = by + 8;
+    }
+    _par_jm_total = _par_jm_total + nco;
+    _par_jm_off = _par_jm_off + off;
+    return (off, mx);
+}
+
+# The port's JPEG against Rust's, decoded pixels against the input (measured, not gated: per image, two correct
+# encoders differ by rounding noise; port-parity.md §5): sums of the means, x1000.
+var _par_rj_port = 0;
+var _par_rj_rust = 0;
+var _par_rj_n = 0;
+
+# The reverse oracle's directory (scripts/oracle --reverse): each encoded file beside its pixels and dimensions.
+var _par_rev_ready = 0;
+var _par_rev_worst = -1000000;
+
+# Writes build/reverse/<file>.<ext> with the encoded bytes, and <file>.rgba / <file>.dims once per file.
+fn _par_reverse_write(fp, fn_len, ext, bytes, blen, rgba, n, w, h): i64 {
+    if (_par_rev_ready == 0) {
+        sys_mkdir("build", 493);
+        sys_mkdir("build/reverse", 493);
+        _par_rev_ready = 1;
+    }
+    var base = alloc(fn_len + 32);
+    memcpy(base, "build/reverse/", 14);
+    memcpy(base + 14, fp, fn_len);
+    var e = 14 + fn_len;
+    var el = strlen(ext);
+    memcpy(base + e, ext, el);
+    store8(base + e + el, 0);
+    file_write_all(base, bytes, blen);
+    memcpy(base + e, ".rgba", 5);
+    store8(base + e + 5, 0);
+    file_write_all(base, rgba, n);
+    var dims: u8[48];
+    var dp = &dims;
+    var k = fmt_int_buf(w, dp);
+    store8(dp + k, 32);
+    k = k + 1;
+    k = k + fmt_int_buf(h, dp + k);
+    store8(dp + k, 10);
+    k = k + 1;
+    memcpy(base + e, ".dims", 5);
+    store8(base + e + 5, 0);
+    file_write_all(base, dp, k);
+    return 0;
+}
+
+# One encode row (class R): the oracle's decoded pixels of a fixture through the port's encoder and back.
+fn _par_encode_row(): i64 {
+    var bp = 0;
+    var bn = 0;
+    var wp = 0;
+    var wn = 0;
+    var hp = 0;
+    var hn = 0;
+    var fp = 0;
+    var fnn = 0;
+    _pc_tok(2, 0, &bp, &bn);
+    _pc_tok(2, 1, &wp, &wn);
+    _pc_tok(2, 2, &hp, &hn);
+    _pc_tok(2, 3, &fp, &fnn);
+    var fmt = _par_fmt_tok(fp, fnn);
+    var w = _pc_int(wp + 2, wn - 2);
+    var h = _pc_int(hp + 2, hn - 2);
+    if (bn < 9 || fmt < 0 || w <= 0 || h <= 0) { return _pc_record(PC_FAILED, "malformed input tokens"); }
+    var n = 0;
+    var rgba = _pc_read(bp + 2, bn - 2, &n);
+    if (rgba == 0 || n != w * h * 4) { return _pc_record(PC_FAILED, "input pixels unreadable or the wrong size"); }
+    var img: *SlImage = _sl_as_image(alloc(sizeof(SlImage)));
+    img.width = w;
+    img.height = h;
+    img.pixels = rgba;
+    img.owner = 0;
+    var adr = _par_adr();
+    var on = 0;
+    var t, v = _sl_encode_image(img, fmt, &on);
+    if (is_err_result(t) == 1) {
+        if (adr != 0 && v == SL_ERR_UNSUPPORTED_FORMAT) { return _pc_record(PC_ACCEPTED, _PAR_ADR_OK); }
+        return _pc_record(PC_FAILED, "the port's encoder fails");
+    }
+    if (adr != 0) {
+        selah_bytes_free(v);
+        return _pc_record(PC_FAILED, "ADR 0002 says refuse, port encodes");
+    }
+    # build/reverse/<file without "decode/" and ".rgba">
+    var stem = bp + 9;
+    var stem_n = bn - 9 - 5;
+    var ext = ".png";
+    if (fmt == SL_FMT_BMP) { ext = ".bmp"; }
+    if (fmt == SL_FMT_JPEG) { ext = ".jpg"; }
+    _par_reverse_write(stem, stem_n, ext, v, on, rgba, n, w, h);
+    var dt, dv = _sl_decode_image(v, on);
+    selah_bytes_free(v);
+    if (is_err_result(dt) == 1) { return _pc_record(PC_FAILED, "the port cannot decode its own output"); }
+    var back: *SlImage = _sl_as_image(dv);
+    if (back.width != w || back.height != h) {
+        SlImage_free(back);
+        return _pc_record(PC_FAILED, "round trip changes the dimensions");
+    }
+    if (fmt != SL_FMT_JPEG) {
+        var same = memeq(back.pixels, rgba, n);
+        SlImage_free(back);
+        if (same == 1) { return _pc_record(PC_OK, "lossless"); }
+        return _pc_record(PC_FAILED, "lossless round trip changes pixels");
+    }
+    var pm, pmx = _par_err_vs(back.pixels, rgba, n);
+    SlImage_free(back);
+    var mp = 0;
+    var mn = 0;
+    _pc_tok(3, 0, &mp, &mn);
+    var rm = _pc_int(mp + 2, mn - 2);
+    _par_rj_port = _par_rj_port + pm;
+    _par_rj_rust = _par_rj_rust + rm;
+    _par_rj_n = _par_rj_n + 1;
+    if (pm - rm > _par_rev_worst) { _par_rev_worst = pm - rm; }
+    var off, dmx = _par_jpeg_math(rgba, w, h, SL_JPEG_QUALITY);
+    var total = ((w + 7) / 8) * ((h + 7) / 8) * 192;
+    if (dmx <= 1 && off * 100 <= total) { return _pc_record(PC_OK, "the coefficients agree with the mathematics"); }
+    var why = _par_why5("coefficients vs the mathematics: ", off, " off, largest difference ", dmx, "");
+    return _pc_record(PC_FAILED, why);
 }
 
 # ---------------------------------------------------------------- M1 helpers
@@ -854,6 +1249,7 @@ fn _par_module(name, n): i64 {
     elif (n == 4 && memeq(name, "uuid", 4) == 1) { which = 6; }
     elif (n == 7 && memeq(name, "rfc3339", 7) == 1) { which = 7; }
     elif (n == 2 && memeq(name, "ai", 2) == 1) { which = 8; }
+    elif (n == 5 && memeq(name, "codec", 5) == 1) { which = 9; }
     if (which != 1) { _pc_print_limit = 10; }
     var pos = 0;
     while (pos < len) {
@@ -869,9 +1265,33 @@ fn _par_module(name, n): i64 {
             elif (which == 6) { _par_uuid_row(); }
             elif (which == 7) { _par_rfc3339_row(); }
             elif (which == 8) { _par_ai_row(); }
+            elif (which == 9 && _pc_fn_is("convert_format") == 1) { _par_convert_row(); }
+            elif (which == 9 && _pc_fn_is("encode") == 1) { _par_encode_row(); }
             else { _pc_record(PC_PENDING, "no dispatcher"); }
         }
         pos = e + 1;
+    }
+    if (which == 9 && _par_rj_n > 0) {
+        _pc_s("  encode JPEG: coefficients off the exact mathematics ");
+        _pc_i(_par_jm_off);
+        _pc_s(" of ");
+        _pc_i(_par_jm_total);
+        _pc_s(" (bound: none over 1, at most 1 % per image)\n");
+        _pc_s("  encode JPEG, measured: mean error vs input over ");
+        _pc_i(_par_rj_n);
+        _pc_s(" images, port (chitra decodes) ");
+        _par_milli(_par_rj_port / _par_rj_n);
+        _pc_s(", Rust (image decodes) ");
+        _par_milli(_par_rj_rust / _par_rj_n);
+        _pc_s("; worst image ");
+        if (_par_rev_worst < 0) {
+            _pc_s("-");
+            _par_milli(-_par_rev_worst);
+        } else {
+            _pc_s("+");
+            _par_milli(_par_rev_worst);
+        }
+        _pc_s("; reverse files in build/reverse/\n");
     }
     var modname = alloc(n + 1);
     memcpy(modname, name, n);

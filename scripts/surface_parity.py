@@ -29,9 +29,15 @@ MODULES = {
     "ai": {"enums": set(), "structs": set()},
 }
 
-# Rust files whose milestone has not come yet (port plan §3): counted, not checked. M7 empties this.
+# A pending module's items that an earlier milestone ports: checked now, by the same rules (M3 ports annotate.rs's
+# codec half; M4 the rest).
+PARTIAL = {
+    "annotate": {"convert_format", "const MAX_IMAGE_DIMENSION", "const MAX_DECODE_ALLOC"},
+}
+
+# Rust files whose milestone has not come yet (port plan §3): counted, not checked (bar PARTIAL). M7 empties this.
 PENDING_MODULES = {
-    "annotate": "M3/M4",
+    "annotate": "M4 (the codec half, M3, is checked through PARTIAL)",
     "lib": "M4 (the facade: annotate_image, redact_image, decode_image_data)",
     "fsutil": "M5",
     "http": "M5",
@@ -134,6 +140,22 @@ for module, kinds in MODULES.items():
             missing += 1
             print(f"MISSING  {module}: {label}")
     print(f"{module:<10} {found}/{len(items)} Rust public items have a Cyrius counterpart")
+for module, names in PARTIAL.items():
+    found = 0
+    seen = set()
+    for label, ty, name in rust_items(module):
+        if label not in names:
+            continue
+        seen.add(label)
+        if has_counterpart(label, ty, name, {"enums": set(), "structs": set()}):
+            found += 1
+        else:
+            missing += 1
+            print(f"MISSING  {module}: {label}")
+    for label in sorted(names - seen):
+        missing += 1
+        print(f"UNKNOWN  {module}: {label} is listed in PARTIAL but is not a Rust public item")
+    print(f"{module:<10} {found}/{len(names)} of the items ported early have a Cyrius counterpart")
 known = set(MODULES) | set(PENDING_MODULES) | set(NOT_APPLICABLE_MODULES)
 for path in sorted((root / "rust-old/src").rglob("*.rs")):
     mod = str(path.relative_to(root / "rust-old/src"))[:-3]

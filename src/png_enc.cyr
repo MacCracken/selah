@@ -1,0 +1,220 @@
+# png_enc.cyr — the PNG writer (port plan D1, ledger L6).
+#
+# Transcribed from kii 2.7.0's src/png.cyr (kii ADR 0014). Rust selah wrote PNG through `image`'s PngEncoder, always
+# as 8-bit RGBA (rust-old/src/annotate.rs `encode_image`), and so does this:
+#   - the signature, IHDR (8-bit RGBA, colour type 6, no interlace), one IDAT and IEND, nothing else;
+#   - each row filtered by whichever of the five filters gives the least sum of absolute values, the heuristic the
+#     PNG specification suggests (§ 12.8) and libpng uses, a tie going to the lower filter type;
+#   - the filtered rows compressed as one zlib stream by sankoch's zlib_compress (level 6);
+#   - each chunk's CRC-32 from sankoch's crc32.
+# Integer and deterministic, so every target writes the same bytes. Encoded bytes are never compared with Rust's
+# (port plan §4 class R): the round trip is, under chitra and under Rust's decoder.
+#
+# Differences from kii: the buffers are on the freelist and the working ones are freed (port plan D10), and the
+# size limit is selah's (the caller has already bounded the image by MAX_DECODE_ALLOC).
+
+# Writes v as four big-endian bytes at p.
+fn _sl_be32(p, v): i64 {
+    store8(p, (v >> 24) & 255);
+    store8(p + 1, (v >> 16) & 255);
+    store8(p + 2, (v >> 8) & 255);
+    store8(p + 3, v & 255);
+    return 0;
+}
+
+# Writes the chunk `type` (four ASCII bytes) holding `len` bytes from `data` at out + pos: length, type, data, and
+# the CRC-32 of type and data. Returns the new position.
+fn _sl_png_chunk(out, pos, type, data, len): i64 {
+    _sl_be32(out + pos, len);
+    memcpy(out + pos + 4, type, 4);
+    if (len > 0) { memcpy(out + pos + 8, data, len); }
+    _sl_be32(out + pos + 8 + len, crc32(out + pos + 4, len + 4));
+    return pos + 12 + len;
+}
+
+#must_use
+#pure
+fn _sl_png_paeth(a, b, c): i64 {
+    var p = a + b - c;
+    var pa = p - a;
+    if (pa < 0) { pa = -pa; }
+    var pb = p - b;
+    if (pb < 0) { pb = -pb; }
+    var pc = p - c;
+    if (pc < 0) { pc = -pc; }
+    if (pa <= pb && pa <= pc) { return a; }
+    if (pb <= pc) { return b; }
+    return c;
+}
+
+# The filtered scanlines of the w × h RGBA8 image at `rgba` into `dst` (h × (1 + 4w) bytes), each row by the filter
+# with the least sum of |byte| (a byte read as signed). One pass scores all five filters with the left (a), up (b)
+# and up-left (c) neighbours loaded once a byte; the first row's "row above" is zeros, as the specification defines
+# it. A second pass writes the winner. Returns 0, or -1 when the zero row cannot be allocated.
+fn _sl_png_filter_rows(rgba, w, h, dst): i64 {
+    var stride = w * 4;
+    var zero = fl_calloc(stride);
+    if (zero == 0) { return -1; }
+    var y = 0;
+    while (y < h) {
+        var cur = rgba + y * stride;
+        var prev = zero;
+        if (y > 0) { prev = cur - stride; }
+        var s0 = 0;
+        var s1 = 0;
+        var s2 = 0;
+        var s3 = 0;
+        var s4 = 0;
+        var i = 0;
+        while (i < stride) {
+            var x = load8(cur + i);
+            var b = load8(prev + i);
+            var a = 0;
+            var c = 0;
+            if (i >= 4) {
+                a = load8(cur + i - 4);
+                c = load8(prev + i - 4);
+            }
+            var v = x;
+            if (v >= 128) { v = 256 - v; }
+            s0 = s0 + v;
+            v = (x - a) & 255;
+            if (v >= 128) { v = 256 - v; }
+            s1 = s1 + v;
+            v = (x - b) & 255;
+            if (v >= 128) { v = 256 - v; }
+            s2 = s2 + v;
+            v = (x - ((a + b) >> 1)) & 255;
+            if (v >= 128) { v = 256 - v; }
+            s3 = s3 + v;
+            # Paeth, inline: the neighbour nearest a + b - c.
+            var p = a + b - c;
+            var pa = p - a;
+            if (pa < 0) { pa = -pa; }
+            var pb = p - b;
+            if (pb < 0) { pb = -pb; }
+            var pc = p - c;
+            if (pc < 0) { pc = -pc; }
+            var pr = c;
+            if (pb <= pc) { pr = b; }
+            if (pa <= pb && pa <= pc) { pr = a; }
+            v = (x - pr) & 255;
+            if (v >= 128) { v = 256 - v; }
+            s4 = s4 + v;
+            i = i + 1;
+        }
+        var f = 0;
+        var best = s0;
+        if (s1 < best) {
+            f = 1;
+            best = s1;
+        }
+        if (s2 < best) {
+            f = 2;
+            best = s2;
+        }
+        if (s3 < best) {
+            f = 3;
+            best = s3;
+        }
+        if (s4 < best) {
+            f = 4;
+            best = s4;
+        }
+        var o = dst + y * (stride + 1);
+        store8(o, f);
+        o = o + 1;
+        i = 0;
+        if (f == 0) { memcpy(o, cur, stride); }
+        if (f == 1) {
+            while (i < 4) {
+                store8(o + i, load8(cur + i));
+                i = i + 1;
+            }
+            while (i < stride) {
+                store8(o + i, (load8(cur + i) - load8(cur + i - 4)) & 255);
+                i = i + 1;
+            }
+        }
+        if (f == 2) {
+            while (i < stride) {
+                store8(o + i, (load8(cur + i) - load8(prev + i)) & 255);
+                i = i + 1;
+            }
+        }
+        if (f == 3) {
+            while (i < 4) {
+                store8(o + i, (load8(cur + i) - (load8(prev + i) >> 1)) & 255);
+                i = i + 1;
+            }
+            while (i < stride) {
+                store8(o + i, (load8(cur + i) - ((load8(cur + i - 4) + load8(prev + i)) >> 1)) & 255);
+                i = i + 1;
+            }
+        }
+        if (f == 4) {
+            while (i < 4) {
+                store8(o + i, (load8(cur + i) - load8(prev + i)) & 255);
+                i = i + 1;
+            }
+            while (i < stride) {
+                var pv = _sl_png_paeth(load8(cur + i - 4), load8(prev + i), load8(prev + i - 4));
+                store8(o + i, (load8(cur + i) - pv) & 255);
+                i = i + 1;
+            }
+        }
+        y = y + 1;
+    }
+    fl_free(zero);
+    return 0;
+}
+
+# The PNG of the w × h RGBA8 image at `rgba`, on the freelist (free it with fl_free), its length stored at
+# `len_out`. Returns 0 when the size is out of range, a buffer cannot be allocated, or the compression fails.
+fn _sl_png_encode(rgba, w, h, len_out): i64 {
+    store64(len_out, 0);
+    if (rgba == 0 || w <= 0 || h <= 0) { return 0; }
+    if (w > 2147483647 || h > 2147483647) { return 0; }
+    var raw = h * (1 + w * 4);
+    if (raw > ALLOC_MAX / 2) { return 0; }
+    var filt = fl_alloc(raw);
+    if (filt == 0) { return 0; }
+    if (_sl_png_filter_rows(rgba, w, h, filt) != 0) {
+        fl_free(filt);
+        return 0;
+    }
+    # Deflate's worst case is stored blocks: 5 bytes a 65,535, plus the zlib header and the Adler-32.
+    var cap = raw + (raw / 65535 + 1) * 5 + 64;
+    var z = fl_alloc(cap);
+    if (z == 0) {
+        fl_free(filt);
+        return 0;
+    }
+    var zn = zlib_compress(filt, raw, z, cap);
+    fl_free(filt);
+    if (zn <= 0) {
+        fl_free(z);
+        return 0;
+    }
+    var out = fl_alloc(8 + 25 + 12 + zn + 12);
+    if (out == 0) {
+        fl_free(z);
+        return 0;
+    }
+    crc32_init_table();
+    memcpy(out, "\x89PNG\r\n\x1a\n", 8);
+    var ihdr[16];
+    _sl_be32(&ihdr, w);
+    _sl_be32(&ihdr + 4, h);
+    store8(&ihdr + 8, 8);    # bit depth
+    store8(&ihdr + 9, 6);    # colour type: RGBA
+    store8(&ihdr + 10, 0);   # deflate
+    store8(&ihdr + 11, 0);   # adaptive filtering
+    store8(&ihdr + 12, 0);   # no interlace
+    var pos = _sl_png_chunk(out, 8, "IHDR", &ihdr, 13);
+    pos = _sl_png_chunk(out, pos, "IDAT", z, zn);
+    fl_free(z);
+    pos = _sl_png_chunk(out, pos, "IEND", 0, 0);
+    store64(len_out, pos);
+    return out;
+}

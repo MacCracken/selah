@@ -1,0 +1,592 @@
+# jpeg_enc.cyr — the baseline JPEG writer (port plan D1, ledger L6).
+#
+# Rust selah wrote JPEG through `image` 0.25's JpegEncoder (rust-old/src/annotate.rs `encode_image`): the image's RGB
+# with the alpha dropped, quality 75, three components at 4:4:4, the Annex K tables scaled by libjpeg's quality rule,
+# one baseline sequential scan. This writes the same container, but is held to accuracy (ADR 0003), not to `image`'s
+# bytes: the lossy round trip is judged by its error against the source pixels, and must be no worse than Rust's
+# (port plan §4 class R).
+#
+# Held to the mathematics, not to `image`'s arithmetic: the quantised coefficients are checked against an exact f64
+# evaluation of JFIF's colour transform, T.81's DCT and round-to-nearest (tests/parity.tcyr, port plan §4 class R).
+# So, where `image` 0.25.10 is approximate, this is not:
+#   - colour conversion keeps 6 fraction bits (`image` rounds Y, Cb, Cr to 8 bits before the DCT);
+#   - the RGB → YCbCr weights are JFIF's (Cb = (B − Y) / 1.772, Cr = (R − Y) / 1.402) to 20 bits, each row summing
+#     to 2^20 or 0 so a grey stays exactly grey;
+#   - the FDCT is the Loeffler–Ligtenberg–Moschytz factorisation of libjpeg's jfdctint with 20-bit constants
+#     (jfdctint's are 13-bit), rounding at every descale (`image`'s second pass biases its odd outputs, adding
+#     2^10 where 2^14 rounds);
+#   - quantisation rounds the full-precision coefficient (`image` truncates it to an integer first, then rounds).
+# Integer and deterministic, so every target writes the same bytes.
+#
+# Multi-source: ITU-T T.81 (Annex A for the frame, Annex C and K for the Huffman tables, Annex K for the quantisation
+# tables); JFIF 1.02 for the colour space; libjpeg's jfdctint.c and jcparam.c (quality scaling).
+
+# The quality Rust selah wrote at (`image`'s JpegEncoder default).
+var SL_JPEG_QUALITY = 75;
+
+# T.81 Table K.1 and K.2: the luminance and chrominance quantisation tables, in natural (row-major) order.
+var _SL_JQ_LUMA: u8[64] = {
+    16, 11, 10, 16, 24, 40, 51, 61,
+    12, 12, 14, 19, 26, 58, 60, 55,
+    14, 13, 16, 24, 40, 57, 69, 56,
+    14, 17, 22, 29, 51, 87, 80, 62,
+    18, 22, 37, 56, 68, 109, 103, 77,
+    24, 35, 55, 64, 81, 104, 113, 92,
+    49, 64, 78, 87, 103, 121, 120, 101,
+    72, 92, 95, 98, 112, 100, 103, 99
+};
+var _SL_JQ_CHROMA: u8[64] = {
+    17, 18, 24, 47, 99, 99, 99, 99,
+    18, 21, 26, 66, 99, 99, 99, 99,
+    24, 26, 56, 99, 99, 99, 99, 99,
+    47, 66, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99
+};
+
+# The zig-zag sequence: _SL_JZZ[k] is the natural index of the k-th coefficient (T.81 Figure A.6).
+var _SL_JZZ: u8[64] = {
+    0, 1, 8, 16, 9, 2, 3, 10,
+    17, 24, 32, 25, 18, 11, 4, 5,
+    12, 19, 26, 33, 40, 48, 41, 34,
+    27, 20, 13, 6, 7, 14, 21, 28,
+    35, 42, 49, 56, 57, 50, 43, 36,
+    29, 22, 15, 23, 30, 37, 44, 51,
+    58, 59, 52, 45, 38, 31, 39, 46,
+    53, 60, 61, 54, 47, 55, 62, 63
+};
+
+# T.81 Tables K.3–K.6: code-length counts (BITS) and symbols (HUFFVAL). The DC symbols are 0..11 for both.
+var _SL_JDC_BITS_L: u8[16] = { 0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0 };
+var _SL_JDC_BITS_C: u8[16] = { 0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0 };
+var _SL_JDC_VALS: u8[12] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+var _SL_JAC_BITS_L: u8[16] = { 0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125 };
+var _SL_JAC_VALS_L: u8[162] = {
+    0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07,
+    0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08, 0x23, 0x42, 0xB1, 0xC1, 0x15, 0x52, 0xD1, 0xF0,
+    0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0A, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x25, 0x26, 0x27, 0x28,
+    0x29, 0x2A, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
+    0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69,
+    0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
+    0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
+    0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3, 0xC4, 0xC5,
+    0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xE1, 0xE2,
+    0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
+    0xF9, 0xFA
+};
+var _SL_JAC_BITS_C: u8[16] = { 0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 119 };
+var _SL_JAC_VALS_C: u8[162] = {
+    0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71,
+    0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91, 0xA1, 0xB1, 0xC1, 0x09, 0x23, 0x33, 0x52, 0xF0,
+    0x15, 0x62, 0x72, 0xD1, 0x0A, 0x16, 0x24, 0x34, 0xE1, 0x25, 0xF1, 0x17, 0x18, 0x19, 0x1A, 0x26,
+    0x27, 0x28, 0x29, 0x2A, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
+    0x49, 0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68,
+    0x69, 0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+    0x88, 0x89, 0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5,
+    0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3,
+    0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA,
+    0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
+    0xF9, 0xFA
+};
+
+# The derived code tables (T.81 Annex C): code and length per symbol, for table t at t * 256 + symbol. t is 0 luma
+# DC, 1 luma AC, 2 chroma DC, 3 chroma AC. Built once; two first callers build the same values.
+var _sl_jhuf_code: i64[1024];
+var _sl_jhuf_size: i64[1024];
+var _sl_jhuf_ready = 0;
+
+# Annex C.2: assigns codes in order of length from BITS / HUFFVAL into table t.
+fn _sl_jhuf_build(t, bits, vals): i64 {
+    var code = 0;
+    var k = 0;
+    var len = 1;
+    while (len <= 16) {
+        var n = load8(bits + len - 1);
+        var i = 0;
+        while (i < n) {
+            var sym = load8(vals + k);
+            _sl_jhuf_code[t * 256 + sym] = code;
+            _sl_jhuf_size[t * 256 + sym] = len;
+            code = code + 1;
+            k = k + 1;
+            i = i + 1;
+        }
+        code = code << 1;
+        len = len + 1;
+    }
+    return 0;
+}
+
+fn _sl_jhuf_init(): i64 {
+    if (_sl_jhuf_ready == 1) { return 0; }
+    _sl_jhuf_build(0, &_SL_JDC_BITS_L, &_SL_JDC_VALS);
+    _sl_jhuf_build(1, &_SL_JAC_BITS_L, &_SL_JAC_VALS_L);
+    _sl_jhuf_build(2, &_SL_JDC_BITS_C, &_SL_JDC_VALS);
+    _sl_jhuf_build(3, &_SL_JAC_BITS_C, &_SL_JAC_VALS_C);
+    _sl_jhuf_ready = 1;
+    return 0;
+}
+
+# ---------------------------------------------------------------- the output and bit writer
+#
+# The writer is six slots: data, len, cap, the bit accumulator, its bit count, and a failure flag.
+
+var _SL_JW_DATA = 0;
+var _SL_JW_LEN = 8;
+var _SL_JW_CAP = 16;
+var _SL_JW_ACC = 24;
+var _SL_JW_NBITS = 32;
+var _SL_JW_FAIL = 40;
+
+# Makes room for n more bytes, doubling the buffer. Returns 0, or -1 (and sets the failure flag) when out of memory.
+fn _sl_jw_reserve(bw, n): i64 {
+    var len = load64(bw + _SL_JW_LEN);
+    var cap = load64(bw + _SL_JW_CAP);
+    if (len + n <= cap) { return 0; }
+    var ncap = cap * 2;
+    while (ncap < len + n) { ncap = ncap * 2; }
+    var nb = fl_alloc(ncap);
+    if (nb == 0) {
+        store64(bw + _SL_JW_FAIL, 1);
+        return -1;
+    }
+    memcpy(nb, load64(bw + _SL_JW_DATA), len);
+    fl_free(load64(bw + _SL_JW_DATA));
+    store64(bw + _SL_JW_DATA, nb);
+    store64(bw + _SL_JW_CAP, ncap);
+    return 0;
+}
+
+# Appends one byte (room already reserved).
+fn _sl_jw_byte(bw, b): i64 {
+    var len = load64(bw + _SL_JW_LEN);
+    store8(load64(bw + _SL_JW_DATA) + len, b);
+    store64(bw + _SL_JW_LEN, len + 1);
+    return 0;
+}
+
+# Appends a 16-bit big-endian value (room already reserved).
+fn _sl_jw_u16(bw, v): i64 {
+    _sl_jw_byte(bw, (v >> 8) & 255);
+    _sl_jw_byte(bw, v & 255);
+    return 0;
+}
+
+# Appends the low `size` bits of `code` to the entropy-coded segment, stuffing a zero after every 0xFF byte (T.81
+# F.1.2.3). Room is reserved per block by the caller.
+fn _sl_jw_bits(bw, code, size): i64 {
+    var acc = (load64(bw + _SL_JW_ACC) << size) | code;
+    var n = load64(bw + _SL_JW_NBITS) + size;
+    var d = load64(bw + _SL_JW_DATA);
+    var len = load64(bw + _SL_JW_LEN);
+    while (n >= 8) {
+        n = n - 8;
+        var b = (acc >> n) & 255;
+        store8(d + len, b);
+        len = len + 1;
+        if (b == 255) {
+            store8(d + len, 0);
+            len = len + 1;
+        }
+    }
+    store64(bw + _SL_JW_LEN, len);
+    store64(bw + _SL_JW_ACC, acc & ((1 << n) - 1));
+    store64(bw + _SL_JW_NBITS, n);
+    return 0;
+}
+
+# ---------------------------------------------------------------- transform and coding
+
+# (x + 2^(n-1)) >> n, rounding to nearest with an arithmetic shift (`>>>`): libjpeg's DESCALE.
+#must_use
+#pure
+fn _sl_jdescale(x, n): i64 {
+    return (x + (1 << (n - 1))) >>> n;
+}
+
+# The FDCT of the 64 level-shifted samples at d (i64, natural order), in place: libjpeg's jpeg_fdct_islow structure
+# with every constant at 20 bits (CONST_BITS 20, PASS1_BITS 2, each the exact √2-scaled cosine combination rounded).
+# The output is 8 times the T.81 DCT of the input.
+fn _sl_jpeg_fdct(d): i64 {
+    var pass = 0;
+    while (pass < 2) {
+        var step = 8;
+        var stride = 1;
+        var sh = 18;
+        if (pass == 1) {
+            step = 1;
+            stride = 8;
+            sh = 22;
+        }
+        var r = 0;
+        while (r < 8) {
+            var p = d + r * step * 8;
+            var s = stride * 8;
+            var d0 = load64(p);
+            var d1 = load64(p + s);
+            var d2 = load64(p + 2 * s);
+            var d3 = load64(p + 3 * s);
+            var d4 = load64(p + 4 * s);
+            var d5 = load64(p + 5 * s);
+            var d6 = load64(p + 6 * s);
+            var d7 = load64(p + 7 * s);
+            var tmp0 = d0 + d7;
+            var tmp7 = d0 - d7;
+            var tmp1 = d1 + d6;
+            var tmp6 = d1 - d6;
+            var tmp2 = d2 + d5;
+            var tmp5 = d2 - d5;
+            var tmp3 = d3 + d4;
+            var tmp4 = d3 - d4;
+            var tmp10 = tmp0 + tmp3;
+            var tmp13 = tmp0 - tmp3;
+            var tmp11 = tmp1 + tmp2;
+            var tmp12 = tmp1 - tmp2;
+            if (pass == 0) {
+                store64(p, (tmp10 + tmp11) * 4);
+                store64(p + 4 * s, (tmp10 - tmp11) * 4);
+            } else {
+                store64(p, _sl_jdescale(tmp10 + tmp11, 2));
+                store64(p + 4 * s, _sl_jdescale(tmp10 - tmp11, 2));
+            }
+            var z1 = (tmp12 + tmp13) * 567485;
+            store64(p + 2 * s, _sl_jdescale(z1 + tmp13 * 802545, sh));
+            store64(p + 6 * s, _sl_jdescale(z1 - tmp12 * 1937516, sh));
+            z1 = tmp4 + tmp7;
+            var z2 = tmp5 + tmp6;
+            var z3 = tmp4 + tmp6;
+            var z4 = tmp5 + tmp7;
+            var z5 = (z3 + z4) * 1232995;
+            tmp4 = tmp4 * 313138;
+            tmp5 = tmp5 * 2152852;
+            tmp6 = tmp6 * 3221971;
+            tmp7 = tmp7 * 1574249;
+            z1 = z1 * -943693;
+            z2 = z2 * -2687412;
+            z3 = z3 * -2056856 + z5;
+            z4 = z4 * -409134 + z5;
+            store64(p + 7 * s, _sl_jdescale(tmp4 + z1 + z3, sh));
+            store64(p + 5 * s, _sl_jdescale(tmp5 + z2 + z4, sh));
+            store64(p + 3 * s, _sl_jdescale(tmp6 + z2 + z3, sh));
+            store64(p + s, _sl_jdescale(tmp7 + z1 + z4, sh));
+            r = r + 1;
+        }
+        pass = pass + 1;
+    }
+    return 0;
+}
+
+# The number of bits of |v| (T.81 F.1.2.1's SSSS): 0 for 0.
+#must_use
+#pure
+fn _sl_jbits(v): i64 {
+    if (v < 0) { v = -v; }
+    var n = 0;
+    while (v > 0) {
+        n = n + 1;
+        v = v >> 1;
+    }
+    return n;
+}
+
+# c / dv rounded to nearest, ties away from zero, clamped to what a baseline 8-bit scan can code (T.81 F.1.2):
+# a DC in -1024..1023 (so a difference fits category 11), an AC (k > 0) in -1023..1023 (category 10).
+#must_use
+#pure
+fn _sl_jquant(c, dv, k): i64 {
+    var v = 0;
+    if (c >= 0) {
+        v = (c + (dv >> 1)) / dv;
+    } else {
+        v = -((-c + (dv >> 1)) / dv);
+    }
+    if (v > 1023) { v = 1023; }
+    if (k == 0 && v < -1024) { v = -1024; }
+    if (k > 0 && v < -1023) { v = -1023; }
+    return v;
+}
+
+# Fills the three level-shifted sample blocks (i64[64] each, natural order) of the 8 × 8 block at (bx, by) of the
+# w × h RGBA8 image, replicating the last column and row past the edge (as `image` does), and transforms them. The
+# samples carry 6 fraction bits (× 64): JFIF YCbCr at 20 fraction bits, rounded to 6.
+fn _sl_jpeg_prepare(rgba, w, h, bx, by, yb, cbb, crb): i64 {
+    var stride = w * 4;
+    var yy = 0;
+    while (yy < 8) {
+        var sy = by + yy;
+        if (sy >= h) { sy = h - 1; }
+        var rowp = rgba + sy * stride;
+        var xx = 0;
+        while (xx < 8) {
+            var sx = bx + xx;
+            if (sx >= w) { sx = w - 1; }
+            var px = rowp + sx * 4;
+            var r = load8(px);
+            var g = load8(px + 1);
+            var bl = load8(px + 2);
+            var y20 = 313524 * r + 615514 * g + 119538 * bl;
+            var cb20 = -176932 * r - 347356 * g + 524288 * bl;
+            var cr20 = 524288 * r - 439026 * g - 85262 * bl;
+            var o = (yy * 8 + xx) * 8;
+            store64(yb + o, ((y20 + 8192) >>> 14) - 8192);
+            store64(cbb + o, (cb20 + 8192) >>> 14);
+            store64(crb + o, (cr20 + 8192) >>> 14);
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    _sl_jpeg_fdct(yb);
+    _sl_jpeg_fdct(cbb);
+    _sl_jpeg_fdct(crb);
+    return 0;
+}
+
+# Quantises the FDCT output at d by the divisors at dv (i64, natural order) and codes the block with Huffman tables
+# tdc / tdc + 1 (T.81 F.1.2). Returns the block's DC, the next block's predictor.
+fn _sl_jpeg_block(bw, d, dv, prev_dc, tdc): i64 {
+    var tac = tdc + 1;
+    var dc = _sl_jquant(load64(d), load64(dv), 0);
+    var diff = dc - prev_dc;
+    var nb = _sl_jbits(diff);
+    _sl_jw_bits(bw, _sl_jhuf_code[tdc * 256 + nb], _sl_jhuf_size[tdc * 256 + nb]);
+    if (nb > 0) {
+        var vb = diff;
+        if (vb < 0) { vb = vb - 1; }
+        _sl_jw_bits(bw, vb & ((1 << nb) - 1), nb);
+    }
+    var run = 0;
+    var k = 1;
+    while (k < 64) {
+        var z = _SL_JZZ[k];
+        var v = _sl_jquant(load64(d + z * 8), load64(dv + z * 8), z);
+        if (v == 0) {
+            run = run + 1;
+        } else {
+            while (run > 15) {
+                _sl_jw_bits(bw, _sl_jhuf_code[tac * 256 + 240], _sl_jhuf_size[tac * 256 + 240]);
+                run = run - 16;
+            }
+            var na = _sl_jbits(v);
+            var sym = run * 16 + na;
+            _sl_jw_bits(bw, _sl_jhuf_code[tac * 256 + sym], _sl_jhuf_size[tac * 256 + sym]);
+            var va = v;
+            if (va < 0) { va = va - 1; }
+            _sl_jw_bits(bw, va & ((1 << na) - 1), na);
+            run = 0;
+        }
+        k = k + 1;
+    }
+    if (run > 0) { _sl_jw_bits(bw, _sl_jhuf_code[tac * 256], _sl_jhuf_size[tac * 256]); }
+    return dc;
+}
+
+# The quantisation table for `quality` from base table b (natural order), as libjpeg's jpeg_quality_scaling and
+# jpeg_add_quant_table do it (baseline: clamped to 1..255): into q (i64[64]).
+fn _sl_jpeg_qtable(b, quality, q): i64 {
+    var qs = quality;
+    if (qs < 1) { qs = 1; }
+    if (qs > 100) { qs = 100; }
+    var scale = 200 - qs * 2;
+    if (qs < 50) { scale = 5000 / qs; }
+    var i = 0;
+    while (i < 64) {
+        var v = (load8(b + i) * scale + 50) / 100;
+        if (v < 1) { v = 1; }
+        if (v > 255) { v = 255; }
+        store64(q + i * 8, v);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The quantisation tables for `quality` (ql, qc) and the quantiser's divisors (dl, dc): the FDCT's factor 8 times
+# the samples' 6 fraction bits (64), times q. All i64[64], natural order.
+fn _sl_jpeg_tables(quality, ql, qc, dl, dc): i64 {
+    _sl_jpeg_qtable(&_SL_JQ_LUMA, quality, ql);
+    _sl_jpeg_qtable(&_SL_JQ_CHROMA, quality, qc);
+    var i = 0;
+    while (i < 64) {
+        store64(dl + i * 8, load64(ql + i * 8) * 512);
+        store64(dc + i * 8, load64(qc + i * 8) * 512);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The quantised coefficients the encoder writes for the w × h RGBA8 image at `quality`, into `out`: for each block in
+# raster order, Y, Cb, Cr, 64 each in natural order (i64; 192 × ceil(w / 8) × ceil(h / 8) slots). The parity
+# harness checks them against the exact mathematics (port plan §4 class R). Same code path as _sl_jpeg_encode.
+fn _sl_jpeg_coeffs(rgba, w, h, quality, out): i64 {
+    var ql: i64[64];
+    var qc: i64[64];
+    var dl: i64[64];
+    var dc: i64[64];
+    _sl_jpeg_tables(quality, &ql, &qc, &dl, &dc);
+    var yb: i64[64];
+    var cbb: i64[64];
+    var crb: i64[64];
+    var k = 0;
+    var by = 0;
+    while (by < h) {
+        var bx = 0;
+        while (bx < w) {
+            _sl_jpeg_prepare(rgba, w, h, bx, by, &yb, &cbb, &crb);
+            var i = 0;
+            while (i < 64) {
+                store64(out + (k + i) * 8, _sl_jquant(yb[i], dl[i], i));
+                store64(out + (k + 64 + i) * 8, _sl_jquant(cbb[i], dc[i], i));
+                store64(out + (k + 128 + i) * 8, _sl_jquant(crb[i], dc[i], i));
+                i = i + 1;
+            }
+            k = k + 192;
+            bx = bx + 8;
+        }
+        by = by + 8;
+    }
+    return 0;
+}
+
+# Writes a marker segment's DQT for table `id` from q (i64[64], natural order), in zig-zag order.
+fn _sl_jpeg_dqt(bw, id, q): i64 {
+    _sl_jw_u16(bw, 65499);   # FF DB
+    _sl_jw_u16(bw, 67);
+    _sl_jw_byte(bw, id);
+    var k = 0;
+    while (k < 64) {
+        _sl_jw_byte(bw, load64(q + _SL_JZZ[k] * 8));
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Writes a DHT segment for class/destination byte tc from BITS and HUFFVAL (n symbols).
+fn _sl_jpeg_dht(bw, tc, bits, vals, n): i64 {
+    _sl_jw_u16(bw, 65476);   # FF C4
+    _sl_jw_u16(bw, 19 + n);
+    _sl_jw_byte(bw, tc);
+    var i = 0;
+    while (i < 16) {
+        _sl_jw_byte(bw, load8(bits + i));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < n) {
+        _sl_jw_byte(bw, load8(vals + i));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The JPEG of the w × h RGBA8 image at `rgba` (alpha ignored), at `quality` (1..100), on the freelist (free it with
+# fl_free), its length stored at `len_out`. Returns 0 when a side is outside 1..65535 (the frame header's 16-bit
+# fields) or memory runs out.
+fn _sl_jpeg_encode(rgba, w, h, quality, len_out): i64 {
+    store64(len_out, 0);
+    if (rgba == 0 || w <= 0 || h <= 0 || w > 65535 || h > 65535) { return 0; }
+    _sl_jhuf_init();
+    var ql: i64[64];
+    var qc: i64[64];
+    var dl: i64[64];
+    var dc: i64[64];
+    _sl_jpeg_tables(quality, &ql, &qc, &dl, &dc);
+
+    var bw: i64[6];
+    var cap = 4096 + w * h;
+    var data = fl_alloc(cap);
+    if (data == 0) { return 0; }
+    bw[0] = data;
+    bw[1] = 0;
+    bw[2] = cap;
+    bw[3] = 0;
+    bw[4] = 0;
+    bw[5] = 0;
+    var b = &bw;
+
+    # SOI, APP0 (JFIF 1.01, no units, 1:1 aspect, no thumbnail).
+    _sl_jw_u16(b, 65496);    # FF D8
+    _sl_jw_u16(b, 65504);    # FF E0
+    _sl_jw_u16(b, 16);
+    _sl_jw_byte(b, 74);
+    _sl_jw_byte(b, 70);
+    _sl_jw_byte(b, 73);
+    _sl_jw_byte(b, 70);
+    _sl_jw_byte(b, 0);
+    _sl_jw_byte(b, 1);
+    _sl_jw_byte(b, 1);
+    _sl_jw_byte(b, 0);
+    _sl_jw_u16(b, 1);
+    _sl_jw_u16(b, 1);
+    _sl_jw_byte(b, 0);
+    _sl_jw_byte(b, 0);
+    _sl_jpeg_dqt(b, 0, &ql);
+    _sl_jpeg_dqt(b, 1, &qc);
+    # SOF0: 8-bit, h × w, three components at 1×1, Y on table 0 and Cb, Cr on table 1.
+    _sl_jw_u16(b, 65472);    # FF C0
+    _sl_jw_u16(b, 17);
+    _sl_jw_byte(b, 8);
+    _sl_jw_u16(b, h);
+    _sl_jw_u16(b, w);
+    _sl_jw_byte(b, 3);
+    _sl_jw_byte(b, 1);
+    _sl_jw_byte(b, 17);
+    _sl_jw_byte(b, 0);
+    _sl_jw_byte(b, 2);
+    _sl_jw_byte(b, 17);
+    _sl_jw_byte(b, 1);
+    _sl_jw_byte(b, 3);
+    _sl_jw_byte(b, 17);
+    _sl_jw_byte(b, 1);
+    _sl_jpeg_dht(b, 0, &_SL_JDC_BITS_L, &_SL_JDC_VALS, 12);
+    _sl_jpeg_dht(b, 16, &_SL_JAC_BITS_L, &_SL_JAC_VALS_L, 162);
+    _sl_jpeg_dht(b, 1, &_SL_JDC_BITS_C, &_SL_JDC_VALS, 12);
+    _sl_jpeg_dht(b, 17, &_SL_JAC_BITS_C, &_SL_JAC_VALS_C, 162);
+    # SOS: all three components, Y on DC/AC 0, Cb and Cr on 1, the full spectral range.
+    _sl_jw_u16(b, 65498);    # FF DA
+    _sl_jw_u16(b, 12);
+    _sl_jw_byte(b, 3);
+    _sl_jw_byte(b, 1);
+    _sl_jw_byte(b, 0);
+    _sl_jw_byte(b, 2);
+    _sl_jw_byte(b, 17);
+    _sl_jw_byte(b, 3);
+    _sl_jw_byte(b, 17);
+    _sl_jw_byte(b, 0);
+    _sl_jw_byte(b, 63);
+    _sl_jw_byte(b, 0);
+
+    var yb: i64[64];
+    var cbb: i64[64];
+    var crb: i64[64];
+    var pdy = 0;
+    var pdb = 0;
+    var pdr = 0;
+    var by = 0;
+    while (by < h) {
+        var bx = 0;
+        while (bx < w) {
+            # Worst case for one MCU: three blocks of 11 + 11 DC bits and 63 × 26 AC bits, every byte stuffed.
+            if (_sl_jw_reserve(b, 1536) != 0) {
+                fl_free(bw[0]);
+                return 0;
+            }
+            _sl_jpeg_prepare(rgba, w, h, bx, by, &yb, &cbb, &crb);
+            pdy = _sl_jpeg_block(b, &yb, &dl, pdy, 0);
+            pdb = _sl_jpeg_block(b, &cbb, &dc, pdb, 2);
+            pdr = _sl_jpeg_block(b, &crb, &dc, pdr, 2);
+            bx = bx + 8;
+        }
+        by = by + 8;
+    }
+    if (_sl_jw_reserve(b, 8) != 0) {
+        fl_free(bw[0]);
+        return 0;
+    }
+    # Pad the last byte with 1 bits (T.81 F.1.2.3), then EOI.
+    var nbits = bw[4];
+    if (nbits > 0) { _sl_jw_bits(b, (1 << (8 - nbits)) - 1, 8 - nbits); }
+    _sl_jw_u16(b, 65497);    # FF D9
+    store64(len_out, bw[1]);
+    return bw[0];
+}

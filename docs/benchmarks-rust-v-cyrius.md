@@ -24,3 +24,19 @@ The Cyrius benches (`tests/selah.bcyr`, `cyrius bench`) carry the Rust criterion
 | `render_to_image_64x64` | 16.2 µs | — | | M4 | |
 | `render_to_image_512_bmp` | 1.29 ms | — | | M4 | |
 | `to_svg_100` | 40.0 µs | — | | M4 | |
+
+### M3 codecs (Cyrius-only benches; Rust's numbers from `oracle --bench`)
+
+Rust's criterion suite has no codec benches, so these have no `bench-history.csv` row. `scripts/oracle -- --bench`
+times Rust selah 0.30.0's own paths on the same 512 × 512 RGBA image `tests/selah.bcyr` builds (`(x ^ y, 3x + y,
+5y ^ x, 255) mod 256`), decoding the very files the Cyrius bench wrote (`build/bench/`). Each figure is a mean over
+the iterations shown in the bench, measured 2026-11-14 on the same machine.
+
+| Bench | Rust | Cyrius | Ratio | Notes |
+|---|---|---|---|---|
+| `encode_png_512` | 10.4 ms | 58.9 ms | 5.6× | kii's filter heuristic and sankoch's level-6 deflate (Rust: png 0.18.1's defaults) |
+| `encode_bmp_512` | 2.14 ms | 2.45 ms | 1.1× | |
+| `encode_jpeg_512` | 12.9 ms | 32.5 ms | 2.5× | 4:4:4 q75; the Cyrius encoder computes to the exact mathematics (ADR 0002 #17) |
+| `decode_png_512` | 1.31 ms | 24.9 ms | 19× | chitra 1.3.1; filed (L18) |
+| `decode_jpeg_512` | 2.54 ms | 59.5 ms | 23× | chitra 1.3.1: bit-serial Huffman decoding; filed (L18) |
+| `convert_format_png_to_jpeg_512` | 14.5 ms | 59.8 ms | 4.1× | decode + encode |

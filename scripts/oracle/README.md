@@ -31,14 +31,15 @@ cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --chec
 
 | Module | Milestone | Rows | Emitter | Notes |
 |---|---|---|---|---|
-| `decode` | M0 (baseline), gated at M3 | 63 | `src/m_decode.rs` | the fixtures in `tests/golden/fixtures/`, built by `src/fixtures.rs` |
+| `decode` | M0 (baseline), gated at M3 | 64 | `src/m_decode.rs` | the fixtures in `tests/golden/fixtures/`, built by `src/fixtures.rs` |
 | `error` | M1 | 30 | `src/m_error.rs` | `SelahError`'s Display |
 | `fmtf` | M1 | 24,060 | `src/m_fmtf.rs` | f32 / f64 through Rust's Display and serde_json (zmij): every binade, powers of ten, a seeded sweep |
 | `geometry` | M1 | 8,129 | `src/m_geometry.rs` | `Rect` (rects given as `Rect::new`'s arguments, returned as the layout), its JSON both ways |
 | `core` | M1 | 1,331 | `src/m_core.rs` | the enums, `xml_escape`, `derive_output_path`, `Color`, `RedactionTarget`, `CaptureSource`, `Annotation` JSON |
 | `uuid` | M1 | 144 | `src/m_uuid.rs` | ids written (hyphenated, simple, JSON) and read (`Uuid::parse_str`'s forms) |
 | `rfc3339` | M1 | 1,169 | `src/m_rfc3339.rs` | chrono's `DateTime<Utc>` through serde, both ways |
-| `ai` | M2 | 8,451 | `src/m_ai.rs` | PII detection over Rust's test inputs and a seeded generator; the stub OCR over every fixture; smart crop; the JSON shapes |
+| `ai` | M2 | 8,453 | `src/m_ai.rs` | PII detection over Rust's test inputs and a seeded generator; the stub OCR over every fixture; smart crop; the JSON shapes |
+| `codec` | M3 | 464 | `src/m_codec.rs` | `convert_format`'s verdict and dimensions for every fixture of at most 1 MP against every target; `encode` rows for the encoders' round trips (below) |
 
 ## Fixtures
 
@@ -86,6 +87,7 @@ fn <TAB> class <TAB> inputs <TAB> outputs <TAB> note
 | `s:<text>` | a string; `\\`, `\t`, `\n`, `\r` and `\s` (space) are escaped |
 | `b:0` / `b:1` | a bool |
 | `p:<path>` | a file under `tests/golden/` (a fixture input, or a byte blob such as decoded RGBA) |
+| `c:<8 hex>` | the CRC-32 of an output too big to keep as a blob (decoded RGBA over 4 MiB) |
 | `e:<Enum>.<Variant>` | an enum value |
 | `h:<hex>` | raw bytes (a UUID's 16) |
 | `N` | `None` |
@@ -99,12 +101,39 @@ ImageFormat::Png)` decodes exactly as `render_to_image` does (format guessing, t
 the RGBA8 conversion) and re-encodes losslessly, which `oracle` decodes back. Class A for PNG, BMP and every
 refusal; class B for a decoded JPEG.
 
+### `codec`
+
+- `convert_format A p:fixtures/<file> e:ImageFormat.<T>` → `i:<w> i:<h>` (the converted bytes read back with `image`)
+  or `E:<Variant>`. A WebP target carries `adr=0002#1`; a source refused under ADR 0002 keeps its tag.
+- `encode R p:decode/<file>.rgba i:<w> i:<h> e:ImageFormat.<T>`: the oracle's decoded pixels of a fixture, as the
+  encoders' input on both sides.
+  - PNG, BMP → `b:1`: the port's decode of its own encoding must give the pixels back exactly.
+  - JPEG → `i:<mean x 1000> i:<max>`: Rust selah's own q75 JPEG of the pixels, decoded by `image`, against them. The
+    harness gates the port's JPEG on the exact mathematics, and only reports its accuracy against these figures
+    (port-parity.md §5).
+  - WebP → `b:1` with `adr=0002#1`.
+
+### Modes besides writing and `--check`
+
+- `--reverse [dir]` (default `build/reverse`): class R's other half. `cyrius test` writes every file the port
+  encodes there, beside its input pixels (`.rgba`) and size (`.dims`). Rust must decode each at the right size, and
+  every PNG and BMP to exactly the pixels. JPEG accuracy against Rust's own encoding is printed per file (with
+  `SELAH_REVERSE_VERBOSE=1`) and over the corpus. Exit 1 on a failure.
+- `--bench`: Rust selah's codec paths timed on the image `tests/selah.bcyr` builds, decoding the files it wrote to
+  `build/bench/` (`docs/benchmarks-rust-v-cyrius.md`).
+
 ## Comparison
 
 - **A**: the verdict (ok or refused) must agree; on ok, every output token must be equal, and in `decode` the
   dimensions and every byte of the RGBA. A `g:` / `f:` float token matches bit for bit, except that any NaN matches
   any NaN (NaN payloads are not meaningful, and differ between targets).
-- **B**: the verdict and dimensions must agree; every channel within K_jpeg of the oracle's. K_jpeg is set from the
-  M0 step 7 baseline before the class is gated (`docs/development/port-parity.md`).
-- **`adr=0002#N`**: the port's answer is the one ADR 0002 row N gives (for #1 and #2, a refusal), reported by name
-  as accepted.
+- **B**: the verdict and dimensions must agree, and two gates hold (ADR 0003; bounds in
+  `docs/development/port-parity.md` §5). **Accuracy:** where the fixture has `.source.rgba`, the port's mean and
+  max error against the source are within +0.050 and +2 of Rust's. **Conformance:** every channel is within K_jpeg
+  (2) of the oracle's.
+- **R**: see `codec` above. Lossless means exact under both decoders; the JPEG encoder is held to the exact
+  mathematics.
+- **`adr=0002#N`**: the port refuses with `UnsupportedFormat`, as ADR 0002 row N says (the N is parsed exactly).
+  Reported by name as accepted.
+- **Known defects:** a row on the harness's `_par_known` list (a filed upstream issue) reports `upstream` while it
+  still shows the defect, and fails once it passes, so the list is cut when the fix lands.

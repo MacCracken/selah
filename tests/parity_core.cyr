@@ -8,15 +8,18 @@
 # - measured: the module is not gated yet (a baseline is being taken); the difference is recorded and
 #   printed, but does not fail;
 # - accepted: the row carries an `adr=0002#N` tag and the port answered as that ADR row says;
-# - pending: the row's function has no dispatcher entry yet.
+# - pending: the row's function has no dispatcher entry yet;
+# - upstream: the row is on the known-defect list (tests/parity.tcyr `_par_known`) under a filed upstream issue,
+#   and it still shows that defect. Always printed, never a failure (ADR 0003). A listed row that passes is FAILED,
+#   so the list shrinks when the fix lands.
 
 var _PC_ROOT = "tests/golden/";
 
 # Row outcomes.
-enum PcOutcome { PC_OK = 0; PC_FAILED = 1; PC_MEASURED = 2; PC_ACCEPTED = 3; PC_PENDING = 4; }
+enum PcOutcome { PC_OK = 0; PC_FAILED = 1; PC_MEASURED = 2; PC_ACCEPTED = 3; PC_PENDING = 4; PC_UPSTREAM = 5; }
 
 # Per-module counters, by outcome.
-var _pc_count: i64[5];
+var _pc_count: i64[6];
 var _pc_failed_printed = 0;
 # How many FAILED / measured rows a module prints. A baseline run prints them all.
 var _pc_print_limit = 10;
@@ -138,9 +141,17 @@ fn _pc_tok(f, i, p_out, n_out): i64 {
     return 0;
 }
 
-# Count a row's outcome; print FAILED / measured rows (the first ten per module).
+# Count a row's outcome; print FAILED / measured rows (the first ten per module) and every upstream row.
 fn _pc_record(outcome, why): i64 {
     _pc_count[outcome] = _pc_count[outcome] + 1;
+    if (outcome == PC_UPSTREAM) {
+        _pc_s("  upstream ");
+        _pc_b(_pc_f[4], _pc_f[5]);
+        _pc_s(": ");
+        _pc_s(why);
+        _pc_s("\n");
+        return 0;
+    }
     if (outcome == PC_FAILED || outcome == PC_MEASURED) {
         if (_pc_failed_printed < _pc_print_limit) {
             if (outcome == PC_FAILED) { _pc_s("  FAILED   "); } else { _pc_s("  measured "); }
@@ -159,9 +170,9 @@ fn _pc_record(outcome, why): i64 {
 # Reset the per-module counters.
 fn _pc_reset(): i64 {
     var i = 0;
-    while (i < 5) {
+    while (i < 6) {
         _pc_count[i] = 0;
-        _pc_hist[i] = 0;
+        if (i < 5) { _pc_hist[i] = 0; }
         i = i + 1;
     }
     _pc_hist_max = 0;
@@ -200,6 +211,8 @@ fn _pc_summary(module): i64 {
     _pc_i(_pc_count[PC_MEASURED]);
     _pc_s(", accepted ");
     _pc_i(_pc_count[PC_ACCEPTED]);
+    _pc_s(", upstream ");
+    _pc_i(_pc_count[PC_UPSTREAM]);
     _pc_s(", pending ");
     _pc_i(_pc_count[PC_PENDING]);
     _pc_s("\n");

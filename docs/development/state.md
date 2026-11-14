@@ -21,26 +21,38 @@ reference oracle. Accuracy is the bar, and Rust is the floor ([ADR 0003](../adr/
 | M0 Initialize | ✅ done 2026-11-14 |
 | M1 Foundation | ✅ done 2026-11-14 |
 | M2 PII and smart crop | ✅ done 2026-11-14 |
-| M3–M7 | not started |
+| M3 Codecs | ✅ done 2026-11-14 |
+| M4–M7 | not started |
 
 ## Source
 
 - Rust oracle: `rust-old/` (7,160 lines in `src/`, 289 tests), frozen; green from its new location (2026-11-14).
-- Cyrius: `src/` holds error, log, fmtf, json, uuid, rfc3339, geometry, core, ai and the generated ai_data (about
-  3,100 lines), bundled as
-  `dist/selah.cyr` (`[lib]`); `src/main.cyr` is the build-smoke stub.
-- Surface parity: 37/37 for the ported modules (`scripts/surface_parity.py`); annotate, lib, fsutil, http,
-  history, capture, daimon and mcp are pending their milestones.
+- Cyrius: `src/` holds error, log, fmtf, json, uuid, rfc3339, geometry, core, ai, the generated ai_data, png_enc,
+  bmp_enc, jpeg_enc and codec (about 4,360 lines), bundled as `dist/selah.cyr` (`[lib]`); `src/main.cyr` is the
+  build-smoke stub.
+- Surface parity: 40/40 (`scripts/surface_parity.py`): error, geometry, core and ai whole, and annotate.rs's codec
+  half (`convert_format`, `MAX_IMAGE_DIMENSION`, `MAX_DECODE_ALLOC`). The rest of annotate, and lib, fsutil, http,
+  history, capture, daimon and mcp, are pending their milestones.
+- **Known limits, each filed with chitra:**
+  - every decode's memory stays with the process (L16), which matters for the MCP server;
+  - images over 16.7 MP are refused (L17);
+  - decoding runs about 20× slower than Rust (L18).
 
 ## Tests
 
 - `cyrius test`: `tests/parity.tcyr` (the golden corpus), the ported Rust tests (`error.tcyr`, `geometry.tcyr`,
-  `core.tcyr`, `ai.tcyr`: 103 Rust tests and 8 doctests, 256 assertions), and `selah.tcyr` (the bundle, as a
-  consumer sees it).
-- Golden corpus: 43,377 rows. M1's 34,863 and M2's 8,451 are all class A and all pass, identical on x86_64 ELF,
-  aarch64 (qemu) and x86_64 PE (wine). `decode` (63, not gated until M3): 47 ok, 13 measured, 3 accepted. Findings F1–F5 are measured
-  against the source pixels of the 13 JPEG fixtures and filed with chitra ([`port-parity.md`](port-parity.md) §2).
-- Benches: 10 of 13 ported, recorded against Rust in [`../benchmarks-rust-v-cyrius.md`](../benchmarks-rust-v-cyrius.md).
+  `core.tcyr`, `ai.tcyr`, `codec.tcyr`: 111 Rust tests and 9 doctests, 313 assertions), and `selah.tcyr` (the
+  bundle, as a consumer sees it).
+- Golden corpus: 43,844 rows, every module gated, the harness output identical on x86_64 ELF, aarch64 (qemu) and
+  x86_64 PE (wine).
+  - M1's 34,863 and `ai`'s 8,453 are all class A and all pass.
+  - `decode` (64): 53 ok, 3 accepted (ADR 0002 #1, #2, #16), 8 upstream: the known-defect list, under chitra issues
+    for F1, F3 and the pixel cap.
+  - `codec` (464): 349 ok, 115 accepted (WebP).
+  - `scripts/oracle -- --reverse`: Rust decodes all 159 Cyrius-encoded files.
+  - See [`port-parity.md`](port-parity.md) §2, §5 and §6.
+- Benches: 10 of 13 criterion benches ported, plus 6 codec benches with Rust numbers from `oracle --bench`
+  ([`../benchmarks-rust-v-cyrius.md`](../benchmarks-rust-v-cyrius.md)).
 
 ## Dependencies
 
@@ -70,13 +82,14 @@ taswir, aethersafta, kiran (planned): none is in Cyrius yet. Rust consumers stay
   - rounded sub-8-bit BMP channels (`bmp-sub-8-bit-replication-is-not-the-nearest-value`, F3);
   - opaque 32-bpp `BI_RGB` (`bmp-bi-rgb-32bpp-unused-byte-read-as-alpha`, F4);
   - CMYK samples (`cmyk-ycck-jpeg-refused`, F5);
-  - progressive JPEG (`progressive-jpeg-has-a-consumer`)
+  - progressive JPEG (`progressive-jpeg-has-a-consumer`);
+  - memory (`every-decode-leaks-in-a-long-running-consumer`, L16);
+  - the 16.7 MP cap (`fixed-16-mp-cap-refuses-screenshots`, L17);
+  - decode speed (`decode-throughput-is-about-20x-rust-image`, L18)
 
 ## Next
 
-M3 Codecs, with nothing waiting on a decision. M3:
-- gates `decode` under ADR 0003: class B's accuracy and conformance bounds (port-parity.md §5);
-- puts the F1 and F3 rows on the known-defect list until chitra lands its fixes;
-- adds the F4 opacity guard (L11);
-- refuses CMYK and progressive JPEG (ADR 0002 #16, #2);
-- writes the PNG, BMP and JPEG encoders.
+M4 Annotation (raster, annotate, the selah facade). It draws onto `SlImage` pixels from `src/codec.cyr`, so
+`render_to_image` inherits the codec gates. The open question from M3 is the JPEG encoder's bound
+([`port-parity.md`](port-parity.md) §5): it was replaced after its first comparison, and the maintainer decides
+whether that stands.

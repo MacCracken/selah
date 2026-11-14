@@ -1,0 +1,87 @@
+# bmp_enc.cyr — the BMP writer (port plan D1, ledger L6).
+#
+# Rust selah wrote BMP through `image` 0.25's BmpEncoder as 8-bit RGBA (rust-old/src/annotate.rs `encode_image`), and
+# so does this, in the layout that encoder uses for RGBA:
+#   - BITMAPFILEHEADER (14 bytes), then a BITMAPV4HEADER (108 bytes);
+#   - BI_BITFIELDS with the masks R 0x00FF0000, G 0x0000FF00, B 0x000000FF and A 0xFF000000, so the alpha is
+#     *declared* (a 32-bpp BI_RGB file's fourth byte means nothing; see codec.cyr's F4 note);
+#   - colour space 'sRGB', endpoints and gamma zero;
+#   - bottom-up rows of B, G, R, A (32-bpp rows need no padding).
+# Encoded bytes are never compared with Rust's (port plan §4 class R): the round trip is, under chitra and Rust.
+
+# Writes v as four little-endian bytes at p.
+fn _sl_le32(p, v): i64 {
+    store8(p, v & 255);
+    store8(p + 1, (v >> 8) & 255);
+    store8(p + 2, (v >> 16) & 255);
+    store8(p + 3, (v >> 24) & 255);
+    return 0;
+}
+
+# Writes v as two little-endian bytes at p.
+fn _sl_le16(p, v): i64 {
+    store8(p, v & 255);
+    store8(p + 1, (v >> 8) & 255);
+    return 0;
+}
+
+# The BMP of the w × h RGBA8 image at `rgba`, on the freelist (free it with fl_free), its length stored at
+# `len_out`. Returns 0 when the size does not fit the format's 32-bit fields or the buffer cannot be allocated.
+fn _sl_bmp_encode(rgba, w, h, len_out): i64 {
+    store64(len_out, 0);
+    if (rgba == 0 || w <= 0 || h <= 0) { return 0; }
+    if (w > 2147483647 || h > 2147483647) { return 0; }
+    var row = w * 4;
+    var image_size = row * h;
+    var offset = 14 + 108;
+    var file_size = offset + image_size;
+    if (file_size > 4294967295) { return 0; }
+    var out = fl_alloc(file_size);
+    if (out == 0) { return 0; }
+    # BITMAPFILEHEADER
+    store8(out, 66);
+    store8(out + 1, 77);
+    _sl_le32(out + 2, file_size);
+    _sl_le32(out + 6, 0);
+    _sl_le32(out + 10, offset);
+    # BITMAPV4HEADER
+    var d = out + 14;
+    _sl_le32(d, 108);
+    _sl_le32(d + 4, w);
+    _sl_le32(d + 8, h);
+    _sl_le16(d + 12, 1);          # planes
+    _sl_le16(d + 14, 32);         # bits per pixel
+    _sl_le32(d + 16, 3);          # BI_BITFIELDS
+    _sl_le32(d + 20, image_size);
+    _sl_le32(d + 24, 0);          # horizontal pixels per metre
+    _sl_le32(d + 28, 0);          # vertical pixels per metre
+    _sl_le32(d + 32, 0);          # palette colours
+    _sl_le32(d + 36, 0);          # all colours important
+    _sl_le32(d + 40, 16711680);   # red mask 0x00FF0000
+    _sl_le32(d + 44, 65280);      # green mask 0x0000FF00
+    _sl_le32(d + 48, 255);        # blue mask 0x000000FF
+    _sl_le32(d + 52, 4278190080); # alpha mask 0xFF000000
+    _sl_le32(d + 56, 1934772034); # colour space 'sRGB' (0x73524742)
+    var k = 60;
+    while (k < 108) {
+        store8(d + k, 0);          # endpoints (9 words) and gamma (3 words)
+        k = k + 1;
+    }
+    # Pixels, bottom-up, B G R A.
+    var y = 0;
+    while (y < h) {
+        var src = rgba + (h - 1 - y) * row;
+        var dst = out + offset + y * row;
+        var x = 0;
+        while (x < row) {
+            store8(dst + x, load8(src + x + 2));
+            store8(dst + x + 1, load8(src + x + 1));
+            store8(dst + x + 2, load8(src + x));
+            store8(dst + x + 3, load8(src + x + 3));
+            x = x + 4;
+        }
+        y = y + 1;
+    }
+    store64(len_out, file_size);
+    return out;
+}

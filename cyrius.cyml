@@ -71,4 +71,8 @@ modules = [
     "src/core.cyr",
     "src/ai_data.cyr",
     "src/ai.cyr",
+    "src/png_enc.cyr",
+    "src/bmp_enc.cyr",
+    "src/jpeg_enc.cyr",
+    "src/codec.cyr",
 ]

@@ -9,7 +9,7 @@ fn _s_is(s, text): i64 {
     return s != 0 && str_len(s) == n && memeq(str_data(s), text, n) == 1;
 }
 
-# Smoke-tests the bundle: geometry, core, errors, JSON.
+# Smoke-tests the bundle: geometry, core, errors, JSON, codecs.
 fn main(): i64 {
     alloc_init();
     test_group("bundle");
@@ -27,6 +27,12 @@ fn main(): i64 {
     var j = str_builder_build(sb);
     var t2, b = SlAnnotation_from_json(str_data(j), str_len(j));
     assert(is_ok(t2), "Annotation JSON round trip");
+    var img: *SlImage = SlImage_new(2, 2);
+    var pn = 0;
+    var pt, png = _sl_encode_image(img, SL_FMT_PNG, &pn);
+    var bn = 0;
+    var ct, bmp = selah_convert_format(png, pn, SL_FMT_BMP, &bn);
+    assert(is_ok(ct) == 1 && load8(bmp) == 66 && load8(bmp + 1) == 77, "convert_format PNG -> BMP");
     return assert_summary();
 }
 

@@ -4,9 +4,15 @@
 //! ```sh
 //! cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml             # write
 //! cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --check  # verify; exit 1 on any difference
+//! cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --reverse build/reverse
+//!     # class R's reverse oracle: Rust decodes what the Cyrius encoders wrote (cyrius test writes the directory)
+//! cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --bench
+//!     # Rust's numbers for the codec benches (after `cyrius bench`, which writes build/bench/)
 //! ```
 
+mod b_codec;
 mod fixtures;
+mod m_codec;
 mod m_core;
 mod m_decode;
 mod m_error;
@@ -126,7 +132,17 @@ fn walk(dir: &Path, base: &Path, acc: &mut Vec<String>) {
 }
 
 fn main() {
-    let check = std::env::args().any(|a| a == "--check");
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--bench") {
+        b_codec::run(&repo_root());
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--reverse") {
+        let dir = args.get(i + 1).map(PathBuf::from).unwrap_or_else(|| repo_root().join("build/reverse"));
+        let bad = m_codec::reverse(&dir);
+        std::process::exit(i32::from(bad > 0));
+    }
+    let check = args.iter().any(|a| a == "--check");
     let golden = repo_root().join("tests/golden");
 
     let mut out = Out::new();
@@ -149,6 +165,8 @@ fn main() {
     modules.push("rfc3339");
     m_ai::emit(&mut out, &fixtures);
     modules.push("ai");
+    m_codec::emit(&mut out, &fixtures);
+    modules.push("codec");
     let mut src_out = SrcOut::new();
     t_ai::emit(&mut src_out);
     out.insert("modules.txt".to_string(), format!("{}\n", modules.join("\n")).into_bytes());

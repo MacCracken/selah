@@ -98,6 +98,41 @@ The Rust crate stays at 0.30.x on crates.io.
 - **Benches**: the four M2 benches, at 5.6× to 7.2× Rust.
 - **Surface parity**: 37/37.
 
+### Port — M3 (codecs)
+
+- **`src/codec.cyr`:**
+  - `SlImage` (RGBA8, pixels owned by selah or by chitra), `selah_convert_format`, `selah_bytes_free`, and
+    `SL_MAX_IMAGE_DIMENSION` / `SL_MAX_DECODE_ALLOC`.
+  - **Decoding:** the signature is sniffed (GIF stays refused). A header probe enforces Rust's limits, the larger of
+    the native and RGBA buffers included, before chitra allocates. chitra's errors map to `AnnotationError`, and
+    progressive and CMYK JPEG to `UnsupportedFormat`.
+  - A 32-bpp `BI_RGB` BMP decodes opaque, as the format defines it (L11).
+- **Encoders:**
+  - `src/png_enc.cyr`: kii's PNG writer on the freelist.
+  - `src/bmp_enc.cyr`: a V4 header, BI_BITFIELDS with alpha, the layout `image` writes for RGBA.
+  - `src/jpeg_enc.cyr`: baseline, 4:4:4, quality 75 like Rust. Its coefficients are computed to the mathematics:
+    20-bit FDCT constants, 6 fraction bits of YCbCr, round to nearest. 0.008 % of them differ from an exact f64
+    evaluation, against 0.56 % for `image` 0.25.10, whose FDCT biases its odd outputs (ADR 0002 #17).
+- **Gates:**
+  - `decode` is gated under ADR 0003: class A, plus class B accuracy and conformance.
+  - New in the harness: the `upstream` outcome and its known-defect list, exact `adr=0002#N` parsing with the error
+    variant checked, and `c:` CRC tokens.
+  - New `codec` module: 252 `convert_format` and 212 `encode` rows. PNG and BMP are lossless under both decoders.
+    `scripts/oracle -- --reverse` has Rust decode every Cyrius-encoded file, and `-- --bench` gives Rust's codec
+    numbers.
+- **The JPEG encoder's bound changed after its first comparison.** It started per image, "no worse than Rust's own
+  JPEG + 0.050 mean / + 2 max", and 7 synthetic-noise images failed it. Two correct encoders differ there by
+  rounding noise: −1.28 to +0.55 dB per image, while the port is ahead over the corpus, 28.542 against 28.531 dB.
+  It now gates on the exact mathematics instead. The history is in port-parity.md §5, and it is flagged for the
+  maintainer.
+- **Tests:** `tests/codec.tcyr`: 8 Rust tests and the `convert_format` doctest, plus round trips, the F4 guard and
+  the refusal codes (57 assertions). The bundle smoke test converts PNG to BMP.
+- **Benches:** six codec benches. Encoders run at 1.1–5.6× Rust; chitra's decoding at 19–23× (L18).
+- **Filed with chitra:**
+  - every decode's memory is kept for the life of the process (L16);
+  - a fixed 16.7 MP cap below selah's limits (L17; a 16.8 MP fixture added);
+  - decode throughput (L18).
+
 ### Port — accuracy policy (before M3)
 
 - **[ADR 0003](docs/adr/0003-accuracy-is-the-bar.md): accuracy is the bar.**

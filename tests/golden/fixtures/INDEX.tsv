@@ -27,6 +27,7 @@ png-truncated.png	png	1164	png-rgba8-33x17.png cut in half (mid-IDAT)
 png-idat-badcrc.png	png	2329	png-rgba8-33x17.png with the IDAT CRC corrupted
 png-too-wide-40000x1.png	png	68	IHDR 40000x1 (over MAX_IMAGE_DIMENSION 32768), one-row IDAT
 png-too-big-20000x20000.png	png	68	IHDR 20000x20000 RGBA8 (1.6 GB, over MAX_DECODE_ALLOC 512 MiB), tiny IDAT
+png-gray1-4100x4100.png	png	10212	png 0.18.1 gray 1-bit, 4100x4100 (16.8 MP) 64-px tiles: inside selah's limits, over chitra's 16.7 MP cap
 bmp-image-rgb8-33x17.bmp	bmp	1754	image 0.25.10 BmpEncoder, RGB8
 bmp-image-rgba8-33x17.bmp	bmp	2366	image 0.25.10 BmpEncoder, RGBA8
 bmp-image-l8-33x17.bmp	bmp	1690	image 0.25.10 BmpEncoder, L8

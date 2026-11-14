@@ -9,7 +9,7 @@
   toolchain probes, the golden generator, the parity harness, decode baselines
 - [x] **M1 Foundation** (2026-11-14): error, log, fmtf, json, geometry, core, uuid, rfc3339
 - [x] **M2 PII and smart crop** (2026-11-14): ai
-- [ ] **M3 Codecs**: chitra decode; PNG, BMP and baseline JPEG encoders; WebP refused (ADR 0002)
+- [x] **M3 Codecs** (2026-11-14): codec, png_enc, bmp_enc, jpeg_enc; decode gated under ADR 0003; WebP, progressive and CMYK refused (ADR 0002)
 - [ ] **M4 Annotation**: raster, annotate, the facade
 - [ ] **M5 System and clients**: fsutil, history, clipboard, HTTP; daimon and hoosh clients retargeted (ADR 0002)
 - [ ] **M6 MCP profile**: the five tools on bote

@@ -393,6 +393,12 @@ pub fn build() -> Vec<Fixture> {
     add("png-idat-badcrc.png", "png", badcrc, "png-rgba8-33x17.png with the IDAT CRC corrupted", None);
     add("png-too-wide-40000x1.png", "png", png_header_only(40000, 1), "IHDR 40000x1 (over MAX_IMAGE_DIMENSION 32768), one-row IDAT", None);
     add("png-too-big-20000x20000.png", "png", png_header_only(20000, 20000), "IHDR 20000x20000 RGBA8 (1.6 GB, over MAX_DECODE_ALLOC 512 MiB), tiny IDAT", None);
+    // Inside selah's limits but over chitra 1.3.1's fixed 16,777,216-pixel cap (chitra issue
+    // 2026-11-14-fixed-16-mp-cap-refuses-screenshots): 64-pixel tiles, so it compresses to a few KB. Its decode row
+    // carries the RGBA's CRC-32, not the 67 MB of pixels.
+    let big = 4100usize;
+    let tiles: Vec<u8> = (0..big * big).map(|i| (((i % big) / 64 + (i / big) / 64) % 2) as u8).collect();
+    add("png-gray1-4100x4100.png", "png", png_enc(big as u32, big as u32, C::Grayscale, D::One, &pack(&tiles, big, big, 1), None, None), "png 0.18.1 gray 1-bit, 4100x4100 (16.8 MP) 64-px tiles: inside selah's limits, over chitra's 16.7 MP cap", None);
 
     // BMP through image (what selah 0.30.0 writes).
     add("bmp-image-rgb8-33x17.bmp", "bmp", image_enc("bmp", w, h, &noise(n * 3, 60), ExtendedColorType::Rgb8, 0), "image 0.25.10 BmpEncoder, RGB8", None);

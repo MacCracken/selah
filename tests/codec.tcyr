@@ -1,0 +1,368 @@
+# codec.tcyr — the codec half of rust-old/src/annotate.rs's tests, the codec integration tests and the
+# `convert_format` doctest, ported (port plan M3); plus Cyrius-only round trips. Golden parity: tests/golden/decode.tsv
+# and codec.tsv. The render_to_image tests wait for M4.
+
+include "tests/selah_src.cyr"
+include "tests/support.cyr"
+
+# A w × h image filled with one RGBA colour.
+fn _t_solid(w, h, r, g, b, a): *SlImage {
+    var img: *SlImage = SlImage_new(w, h);
+    var i = 0;
+    while (i < w * h * 4) {
+        store8(img.pixels + i, r);
+        store8(img.pixels + i + 1, g);
+        store8(img.pixels + i + 2, b);
+        store8(img.pixels + i + 3, a);
+        i = i + 4;
+    }
+    return img;
+}
+
+# The PNG of a solid w × h image (Rust's solid_png / make_png helpers), its length at len_out.
+fn _t_solid_png(w, h, r, g, b, a, len_out): i64 {
+    var img: *SlImage = _t_solid(w, h, r, g, b, a);
+    var png = _sl_png_encode(img.pixels, w, h, len_out);
+    SlImage_free(img);
+    return png;
+}
+
+# tests/golden/fixtures/<name>, its length at len_out.
+fn _t_fixture(name, len_out): i64 {
+    var nl = strlen(name);
+    var path = alloc(23 + nl);
+    memcpy(path, "tests/golden/fixtures/", 22);
+    memcpy(path + 22, name, nl);
+    store8(path + 22 + nl, 0);
+    return file_read_whole_max(path, 16777216, len_out);
+}
+
+# The error code of a decode of `src`, or 0 when it decodes (the image is freed).
+fn _t_decode_err(src, n): i64 {
+    var t, v = _sl_decode_image(src, n);
+    if (is_err_result(t) == 1) { return v; }
+    SlImage_free(v);
+    return 0;
+}
+
+# The error code of a decode of a fixture, or 0.
+fn _t_fixture_err(name): i64 {
+    var n = 0;
+    var src = _t_fixture(name, &n);
+    return _t_decode_err(src, n);
+}
+
+# A deterministic w × h RGBA image of noise, alpha included (xorshift64).
+fn _t_noise(w, h, seed): *SlImage {
+    var img: *SlImage = SlImage_new(w, h);
+    var x = seed;
+    var i = 0;
+    while (i < w * h * 4) {
+        x = x ^ (x << 13);
+        x = x ^ (x >> 7);
+        x = x ^ (x << 17);
+        store8(img.pixels + i, x & 255);
+        i = i + 1;
+    }
+    return img;
+}
+
+# 1 when encoding `img` as fmt and decoding the result with chitra gives back exactly its pixels.
+fn _t_lossless_roundtrip(img: *SlImage, fmt): i64 {
+    var n = 0;
+    var et, ev = _sl_encode_image(img, fmt, &n);
+    if (is_err_result(et) == 1) { return 0; }
+    var dt, dv = _sl_decode_image(ev, n);
+    selah_bytes_free(ev);
+    if (is_err_result(dt) == 1) { return 0; }
+    var back: *SlImage = _sl_as_image(dv);
+    var ok = 0;
+    if (back.width == img.width && back.height == img.height) {
+        ok = memeq(back.pixels, img.pixels, img.width * img.height * 4);
+    }
+    SlImage_free(back);
+    return ok;
+}
+
+# ---------------------------------------------------------------- rust-old/src/annotate.rs
+
+fn _t_convert_format_png_to_bmp(): i64 {
+    test_group("test_convert_format_png_to_bmp");
+    var n = 0;
+    var png = _t_solid_png(1, 1, 255, 0, 0, 255, &n);
+    var bn = 0;
+    var t, bmp = selah_convert_format(png, n, SL_FMT_BMP, &bn);
+    assert(is_ok(t) == 1 && bn > 0, "converted");
+    assert(load8(bmp) == 66 && load8(bmp + 1) == 77, "BM");
+    return 0;
+}
+
+# Rust converts to WebP too; the port refuses it (ADR 0002 #1).
+fn _t_convert_format_all_targets(): i64 {
+    test_group("test_convert_format_all_targets");
+    var n = 0;
+    var src = _t_solid_png(3, 3, 1, 2, 3, 255, &n);
+    var fmts: i64[3];
+    fmts[0] = SL_FMT_PNG;
+    fmts[1] = SL_FMT_JPEG;
+    fmts[2] = SL_FMT_BMP;
+    var k = 0;
+    while (k < 3) {
+        var on = 0;
+        var t, out = selah_convert_format(src, n, fmts[k], &on);
+        assert(is_ok(t) == 1, "converted");
+        var dt, dv = _sl_decode_image(out, on);
+        assert(is_ok(dt) == 1, "decodes");
+        var img: *SlImage = _sl_as_image(dv);
+        assert(img.width == 3 && img.height == 3, "3x3");
+        k = k + 1;
+    }
+    var wn = 0;
+    var wt, wv = selah_convert_format(src, n, SL_FMT_WEBP, &wn);
+    assert(is_err_result(wt) == 1 && wv == SL_ERR_UNSUPPORTED_FORMAT, "WebP refused (ADR 0002 #1)");
+    return 0;
+}
+
+fn _t_decode_rejects_invalid_data(): i64 {
+    test_group("test_decode_rejects_invalid_data");
+    var d = 0;
+    var on = 0;
+    var t, v = selah_convert_format("definitely not an image", 23, SL_FMT_PNG, &on, &d);
+    assert(is_err_result(t) == 1, "refused");
+    var msg = selah_error_display(v, d);
+    assert(_t_str_has(msg, "failed to load image") == 1, "message");
+    return 0;
+}
+
+fn _t_decode_limits_enforced(): i64 {
+    test_group("test_decode_limits_enforced");
+    var n = 0;
+    var src = _t_solid_png(8, 8, 255, 255, 255, 255, &n);
+    var t, v = _sl_decode_image_with_limits(src, n, 4, SL_MAX_DECODE_ALLOC);
+    assert(is_err_result(t) == 1, "max side 4 refuses 8x8");
+    assert(_t_decode_err(src, n) == 0, "the default limits decode it");
+    return 0;
+}
+
+fn _t_decode_rejects_oversized_header(): i64 {
+    test_group("test_decode_rejects_oversized_header");
+    # A 54-byte BMP claiming 40000 x 40000 RGBA (6.4 GB): refused from the header alone.
+    var bmp[64];
+    var p = &bmp;
+    var i = 0;
+    while (i < 64) {
+        store8(p + i, 0);
+        i = i + 1;
+    }
+    store8(p, 66);
+    store8(p + 1, 77);
+    _sl_le32(p + 2, 54);
+    _sl_le32(p + 10, 54);
+    _sl_le32(p + 14, 40);
+    _sl_le32(p + 18, 40000);
+    _sl_le32(p + 22, 40000);
+    _sl_le16(p + 26, 1);
+    _sl_le16(p + 28, 32);
+    var d = 0;
+    var t, v = _sl_decode_image(p, 54, &d);
+    assert(is_err_result(t) == 1 && v == SL_ERR_ANNOTATION, "refused");
+    assert(_t_str_has(selah_error_display(v, d), "failed to load image") == 1, "message");
+    return 0;
+}
+
+# Rust's 64 x 64 grey PNG becomes the 33 x 17 grey fixture: native 561 bytes fits, the RGBA copy's 2,244 does not.
+fn _t_decode_budgets_rgba_expansion(): i64 {
+    test_group("test_decode_budgets_rgba_expansion");
+    var n = 0;
+    var src = _t_fixture("png-gray8-33x17.png", &n);
+    var d = 0;
+    var t, v = _sl_decode_image_with_limits(src, n, SL_MAX_IMAGE_DIMENSION, 2243, &d);
+    assert(is_err_result(t) == 1, "refused at 2243");
+    assert(_t_str_has(selah_error_display(v, d), "needs 2244 bytes") == 1, "message");
+    var t2, v2 = _sl_decode_image_with_limits(src, n, SL_MAX_IMAGE_DIMENSION, 2244);
+    assert(is_ok(t2) == 1, "decodes at 2244");
+    return 0;
+}
+
+# ---------------------------------------------------------------- rust-old/tests/integration.rs
+
+fn _t_convert_format_roundtrip(): i64 {
+    test_group("test_convert_format_roundtrip");
+    var n = 0;
+    var png = _t_solid_png(2, 2, 0, 255, 0, 255, &n);
+    var bn = 0;
+    var t, bmp = selah_convert_format(png, n, SL_FMT_BMP, &bn);
+    assert(is_ok(t) == 1 && bn > 0, "converted");
+    assert(load8(bmp) == 66 && load8(bmp + 1) == 77, "BM");
+    return 0;
+}
+
+# Rust's test goes through annotate_image (M4); the decode underneath is the same.
+fn _t_unsupported_input_format_rejected(): i64 {
+    test_group("test_unsupported_input_format_rejected");
+    var on = 0;
+    var t, v = selah_convert_format("GIF89a\x01\x00\x01\x00\x00\x00\x00;", 14, SL_FMT_PNG, &on);
+    assert(is_err_result(t) == 1, "GIF refused");
+    return 0;
+}
+
+# The `convert_format` doctest: a 2 x 2 PNG becomes a JPEG starting with SOI.
+fn _t_doctest_convert_format(): i64 {
+    test_group("doctest convert_format");
+    var n = 0;
+    var png = _t_solid_png(2, 2, 0, 0, 0, 0, &n);
+    var jn = 0;
+    var t, jpg = selah_convert_format(png, n, SL_FMT_JPEG, &jn);
+    assert(is_ok(t) == 1, "converted");
+    assert(load8(jpg) == 255 && load8(jpg + 1) == 216, "SOI");
+    return 0;
+}
+
+# ---------------------------------------------------------------- Cyrius-only
+
+fn _t_lossless_roundtrips(): i64 {
+    test_group("png and bmp round trips are exact (chitra)");
+    var sizes: i64[8];
+    sizes[0] = 1;
+    sizes[1] = 1;
+    sizes[2] = 7;
+    sizes[3] = 3;
+    sizes[4] = 37;
+    sizes[5] = 23;
+    sizes[6] = 64;
+    sizes[7] = 64;
+    var k = 0;
+    while (k < 4) {
+        var img: *SlImage = _t_noise(sizes[k * 2], sizes[k * 2 + 1], 88172645463325252 + k);
+        assert(_t_lossless_roundtrip(img, SL_FMT_PNG) == 1, "png");
+        assert(_t_lossless_roundtrip(img, SL_FMT_BMP) == 1, "bmp");
+        SlImage_free(img);
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn _t_jpeg_roundtrip_close(): i64 {
+    test_group("jpeg round trip of a gradient stays close (chitra)");
+    var w = 64;
+    var h = 48;
+    var img: *SlImage = SlImage_new(w, h);
+    var y = 0;
+    while (y < h) {
+        var x = 0;
+        while (x < w) {
+            var p = img.pixels + (y * w + x) * 4;
+            store8(p, x * 4);
+            store8(p + 1, y * 5);
+            store8(p + 2, 255 - x * 2);
+            store8(p + 3, 255);
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    var n = 0;
+    var et, ev = _sl_encode_image(img, SL_FMT_JPEG, &n);
+    assert(is_ok(et) == 1, "encoded");
+    var dt, dv = _sl_decode_image(ev, n);
+    assert(is_ok(dt) == 1, "decodes");
+    var back: *SlImage = _sl_as_image(dv);
+    assert(back.width == w && back.height == h, "size");
+    var sum = 0;
+    var mx = 0;
+    var i = 0;
+    while (i < w * h * 4) {
+        if ((i & 3) != 3) {
+            var dd = load8(back.pixels + i) - load8(img.pixels + i);
+            if (dd < 0) { dd = -dd; }
+            sum = sum + dd;
+            if (dd > mx) { mx = dd; }
+        }
+        i = i + 1;
+    }
+    # A smooth gradient at quality 75: well under one level on average.
+    assert(sum * 1000 / (w * h * 3) < 1500, "mean error under 1.5");
+    assert(mx <= 12, "max error");
+    return 0;
+}
+
+fn _t_bmp_rgb32_is_opaque(): i64 {
+    test_group("32-bpp BI_RGB BMP decodes opaque (F4)");
+    var n = 0;
+    var src = _t_fixture("bmp-32-rgb-33x17.bmp", &n);
+    var t, v = _sl_decode_image(src, n);
+    assert(is_ok(t) == 1, "decodes");
+    var img: *SlImage = _sl_as_image(v);
+    var opaque = 1;
+    var i = 3;
+    while (i < img.width * img.height * 4) {
+        if (load8(img.pixels + i) != 255) { opaque = 0; }
+        i = i + 4;
+    }
+    assert(opaque == 1, "every alpha is 255");
+    # A declared alpha mask is kept.
+    var n2 = 0;
+    var src2 = _t_fixture("bmp-32-v4-alpha-33x17.bmp", &n2);
+    var t2, v2 = _sl_decode_image(src2, n2);
+    var img2: *SlImage = _sl_as_image(v2);
+    var translucent = 0;
+    i = 3;
+    while (i < img2.width * img2.height * 4) {
+        if (load8(img2.pixels + i) != 255) { translucent = 1; }
+        i = i + 4;
+    }
+    assert(is_ok(t2) == 1 && translucent == 1, "V4 alpha kept");
+    return 0;
+}
+
+fn _t_refusal_codes(): i64 {
+    test_group("refusal codes");
+    assert(_t_fixture_err("webp-lossless-rgba8-7x3.webp") == SL_ERR_UNSUPPORTED_FORMAT, "WebP (ADR 0002 #1)");
+    assert(_t_fixture_err("jpeg-enc-progressive-64x64.jpg") == SL_ERR_UNSUPPORTED_FORMAT, "progressive (#2)");
+    assert(_t_fixture_err("jpeg-enc-cmyk-33x17.jpg") == SL_ERR_UNSUPPORTED_FORMAT, "CMYK (#16)");
+    assert(_t_fixture_err("gif-1x1.gif") == SL_ERR_ANNOTATION, "GIF (#3)");
+    assert(_t_fixture_err("other-empty.bin") == SL_ERR_ANNOTATION, "empty");
+    assert(_t_fixture_err("png-truncated.png") == SL_ERR_ANNOTATION, "truncated");
+    assert(_t_fixture_err("png-too-wide-40000x1.png") == SL_ERR_ANNOTATION, "too wide");
+    var n = 0;
+    var src = _t_fixture("png-too-big-20000x20000.png", &n);
+    var d = 0;
+    var t, v = _sl_decode_image(src, n, &d);
+    var msg = selah_error_display(v, d);
+    assert(_t_str_has(msg, "20000x20000 needs 1600000000 bytes, limit 536870912") == 1, "bomb message");
+    return 0;
+}
+
+fn _t_sniff(): i64 {
+    test_group("signature sniffing");
+    assert(_sl_sniff("\x89PNG\r\n\x1a\n", 8) == SL_SNIFF_PNG, "png");
+    assert(_sl_sniff("\xff\xd8\xff", 3) == SL_SNIFF_JPEG, "jpeg");
+    assert(_sl_sniff("\xff\xd8", 2) == SL_SNIFF_UNKNOWN, "short jpeg");
+    assert(_sl_sniff("BM", 2) == SL_SNIFF_BMP, "bmp");
+    assert(_sl_sniff("GIF87a", 6) == SL_SNIFF_GIF, "gif87a");
+    assert(_sl_sniff("RIFF\x00\x00\x00\x00WEBP", 12) == SL_SNIFF_WEBP, "webp");
+    assert(_sl_sniff("RIFF\x00\x00\x00\x00WAVE", 12) == SL_SNIFF_UNKNOWN, "wav");
+    return 0;
+}
+
+# Runs the suite; the exit code is the failure count, clamped.
+fn main(): i64 {
+    _t_convert_format_png_to_bmp();
+    _t_convert_format_all_targets();
+    _t_decode_rejects_invalid_data();
+    _t_decode_limits_enforced();
+    _t_decode_rejects_oversized_header();
+    _t_decode_budgets_rgba_expansion();
+    _t_convert_format_roundtrip();
+    _t_unsupported_input_format_rejected();
+    _t_doctest_convert_format();
+    _t_lossless_roundtrips();
+    _t_jpeg_roundtrip_close();
+    _t_bmp_rgb32_is_opaque();
+    _t_refusal_codes();
+    _t_sniff();
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);
