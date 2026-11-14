@@ -14,7 +14,9 @@ stay on 0.30.x; there is no Rust 1.0.
 
 ### Changed
 
-- **Toolchain**: MSRV 1.89 → **1.100** (edition 2024 remains the latest edition); CI MSRV job updated
+- **Toolchain**: MSRV 1.89 → **1.100** (edition 2024 remains the latest edition). The CI MSRV job now sets
+  `RUSTUP_TOOLCHAIN=1.100`: `rust-toolchain.toml`'s `stable` channel outranked the toolchain the job installed, so
+  the job ran the runner's preinstalled 1.99.1 and failed
 - **ranga** 0.29 → 1.0 — `PixelBuffer` accessors; highlight blending now uses row-wise SIMD `blend_row`
 - **bote** 0.50 → 0.92 — `selah_ocr` and `selah_history` carry MCP read-only tool annotations
 - **reqwest** 0.12 → 0.13 (`rustls` feature, aws-lc-rs provider; `ring` no longer in the tree)

@@ -57,6 +57,11 @@ jobs:
   msrv:
     name: MSRV (1.100)
     runs-on: ubuntu-latest
+    # rust-toolchain.toml pins channel "stable", which outranks the default toolchain the
+    # action sets, so without this the job ran the runner's preinstalled stable (1.99.1).
+    # RUSTUP_TOOLCHAIN outranks rust-toolchain.toml.
+    env:
+      RUSTUP_TOOLCHAIN: "1.100"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
