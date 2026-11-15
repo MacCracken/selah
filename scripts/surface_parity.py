@@ -11,6 +11,8 @@ defines the Cyrius name the porting rules give (port plan D9):
 - `impl Struct { pub const X: T }`    -> `var SL_<SNAKE(Struct)>_<X>` (Color::RED -> SL_COLOR_RED)
 - `pub const X` at module level       -> `SL_<X>` (a var or const)
 - `SelahError::Variant`               -> its `SL_ERR_*` member in enum SlError
+- `pub struct T` / `pub enum T`       -> `struct SlT` or `enum SlT` (SelahError -> enum SlError)
+- in lib.rs, `pub use m::f as g`      -> f's name (`run_mcp_server` -> `selah_run_server`); `pub use krate::T` -> SlT
 Anything else needs an entry in EXCEPTIONS with its reason (usually an ADR 0002 row). Every file under rust-old/src
 must be in MODULES, PENDING_MODULES or NOT_APPLICABLE_MODULES. Exits 1 on any item missing or any file unaccounted.
 """
@@ -84,6 +86,15 @@ def rust_items(module):
                 items.append((f"{impl[0]}::{fm.group(1)}", impl[0], fm.group(1)))
             elif depth == 0:
                 items.append((fm.group(1), None, fm.group(1)))
+        tm = re.match(r"pub (?:struct|enum) (\w+)", s)
+        if tm and depth == 0:
+            items.append((f"type {tm.group(1)}", None, f"type {tm.group(1)}"))
+        um = re.match(r"pub use (\w+)::(\w+) as (\w+);", s)
+        if um and depth == 0:
+            items.append((um.group(3), None, um.group(2)))
+        xm = re.match(r"pub use (\w+)::([A-Z]\w*);", s)
+        if xm and depth == 0 and not (root / f"rust-old/src/{xm.group(1)}.rs").exists():
+            items.append((f"type {xm.group(2)}", None, f"type {xm.group(2)}"))
         cm = re.match(r"pub const ([A-Z][A-Z0-9_]*)\s*:", s)
         if cm:
             if impl and depth >= 1:
@@ -110,6 +121,9 @@ def impl_methods(struct):
 
 
 def has_counterpart(label, ty, name, kinds):
+    if name.startswith("type "):
+        t = "Error" if name[5:] == "SelahError" else name[5:]
+        return re.search(rf"^(?:struct|enum) Sl{t}\b", cyr, re.M) is not None
     if ty == "SelahError":
         return re.search(rf"\b{ERROR_NAMES.get(name, '?')} =", cyr) is not None
     if name.startswith("const "):

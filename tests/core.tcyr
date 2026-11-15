@@ -601,6 +601,30 @@ fn _t_json_str_swar(): i64 {
     return 0;
 }
 
+# Cyrius-only (M7): SlScreenshot holds Rust's Screenshot fields, its capture source nested by value.
+fn _t_screenshot_fields(): i64 {
+    test_group("SlScreenshot holds Rust's fields");
+    var shot: SlScreenshot;
+    shot.id_a = 1;
+    shot.id_b = 2;
+    shot.data = "PNG";
+    shot.len = 3;
+    shot.width = 1920;
+    shot.height = 1080;
+    shot.secs = 1763164800;
+    shot.nanos = 500;
+    shot.source.kind = SL_SOURCE_WINDOW;
+    shot.source.window = str_from("7");
+    shot.format = SL_FMT_PNG;
+    assert(shot.width == 1920 && shot.height == 1080 && shot.secs == 1763164800 && shot.nanos == 500, "fields");
+    assert(shot.source.kind == SL_SOURCE_WINDOW && shot.format == SL_FMT_PNG && shot.id_b == 2, "nested source");
+    var sb = str_builder_new();
+    shot.source.fmt(sb);
+    var t = str_builder_build(sb);
+    assert(str_len(t) == 8 && memeq(str_data(t), "window 7", 8) == 1, "the source's Display");
+    return 0;
+}
+
 # Runs the suite; the exit code is the failure count, clamped.
 fn main(): i64 {
     alloc_init();
@@ -643,6 +667,7 @@ fn main(): i64 {
     _t_redaction_target_display_all_variants();
     _t_annotation_kind_display_all();
     _t_json_str_swar();
+    _t_screenshot_fields();
     _t_image_format_bmp_and_webp_mime();
     _t_doctests();
     _t_uuid_v4();

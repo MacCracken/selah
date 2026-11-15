@@ -14,6 +14,8 @@ profile (`dist/selah-mcp.cyr`), on bote 3.8.15; its consumer declares bote itsel
 - `selah_mcp_set_hoosh_config(cfg)` sets the hoosh endpoint and model that `selah_ocr`'s `hoosh` engine uses. hoosh
   needs a model, and the default configuration has none, so the engine refuses until one is set.
 - `serverInfo` is `{"name":"selah","version":<selah's version>}`.
+- Targets: x86_64 and aarch64. The profile does not build for Windows (PE): bote's dependency majra does not target
+  it.
 - A request line over 128 KiB is refused with `-32700 parse error: line too long`, about 1,950 bare annotations in
   one `selah_annotate` call (bote's limit, filed; ADR 0002 #25).
 

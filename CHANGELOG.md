@@ -6,97 +6,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-**selah is becoming a Cyrius library.** 1.0.0 ports the Rust crate 0.30.0, which is frozen in `rust-old/` as the
-reference oracle ([port plan](docs/development/selah-port-plan.md), [ADR 0001](docs/adr/0001-cyrius-port-with-rust-oracle.md)).
+## [1.0.0] - 2026-11-14
+
+**selah is a Cyrius library.** 1.0.0 ports the Rust crate 0.30.0, which is frozen in `rust-old/` as the reference
+oracle ([port plan](docs/development/selah-port-plan.md), [ADR 0001](docs/adr/0001-cyrius-port-with-rust-oracle.md)).
 Accuracy is the bar, and Rust is the floor, not behaviour to imitate ([ADR 0003](docs/adr/0003-accuracy-is-the-bar.md)).
-The Rust crate stays at 0.30.x on crates.io.
+The Rust crate stays at 0.30.x on crates.io for Rust consumers.
 
-### Port — M0 (initialize)
+### Breaking
 
-- **Oracle frozen**: 0.30.0 (tag `0.30.0`, `1a494b4`) moved to `rust-old/` by `cyrius port` on Cyrius 6.7.18. It is
-  green from there: 289 tests. `rust-old/Cargo.lock` is tracked (`.gitignore` ignores only `/Cargo.lock`), so the
-  oracle builds against its released dependency versions. The Rust CI, scripts, development guide and architecture
-  overview moved to `rust-old/`.
-- **Scaffold repaired** (cyrius issue `2026-11-08-cyrius-port-clobbers-project-docs-and-omits-bench`):
-  - `CLAUDE.md` merged from the Rust rules and the scaffold's Cyrius rules;
-  - the roadmap restored, with the port milestones on top;
-  - `state.md` written for the real version;
-  - `cyrius.cyml` takes `version = "${file:VERSION}"`, and `[test] stdlib` has `bench`;
-  - the six stub functions are documented, so `cyrius audit` passes.
-- **Manifest**:
-  - chitra 1.3.1 and ranga 2.4.0;
-  - bote 3.8.15, optional behind `[features] mcp`;
-  - sankoch through chitra's zlib profile, not the full fold.
-  - `lib/` and `cyrius.lock` are vendored by `cyrius deps --features mcp`.
-- **CI**: the scaffold's Cyrius workflow, extended with `test --bounds`, both `deps --locked` profiles, `audit`, and
-  a no-`@unsafe` check on `src/`.
-- **ADRs**: [0001](docs/adr/0001-cyrius-port-with-rust-oracle.md) (the port and its oracle) and
-  [0002](docs/adr/0002-port-api-divergences.md) (the API changes, each with its parity comparison).
-- **Toolchain probes**: f32 rect arithmetic is bit-identical to Rust; small values through `Result`; chitra,
-  sankoch and bayan in one unit; bote's dispatcher; sandhi against a mock server; the error-detail design. Results
-  are in the port plan §2. Upstream:
-  - daimon and hoosh issues filed for the routes selah needs;
-  - a data point appended to sandhi's `total_ms` issue.
-- **Golden generator** (`scripts/oracle/`):
-  - a Rust crate on `rust-old/` by path, with its lock seeded from `rust-old/Cargo.lock` (every shared crate at the
-    oracle's version);
-  - deterministic output, with `--check`;
-  - format 1 is specified in its README;
-  - the first module, `decode`: 63 fixtures (PNG in every colour type and depth, Adam7, tRNS; BMP in palette, RLE,
-    bitfield, top-down and V4 forms; JPEG baseline at every subsampling, with restart intervals, progressive and
-    CMYK; WebP; GIF; malformed and oversized inputs), with Rust 0.30.0's verdict and RGBA through `annotate_image`.
-- **Parity harness** (`tests/parity.tcyr`, `tests/parity_core.cyr`): replays `tests/golden/modules.txt`. Each row
-  ends ok, FAILED, measured, accepted (ADR 0002) or pending; the exit code is the number of failing modules.
-- **Decode baseline** ([port-parity.md](docs/development/port-parity.md)), chitra 1.3.1 against Rust's decoders:
-  - every PNG and most BMPs bit-identical, and every refusal agrees;
-  - JPEG within 2 without chroma subsampling;
-  - five findings for M3 to settle: chroma upsampling (up to 36), 16-bit BMP expansion (±1), 32-bit `BI_RGB` alpha,
-    CMYK refused, and K_jpeg = 2.
-  - Identical on x86_64 ELF, aarch64 (qemu) and x86_64 PE (wine).
+Every change from Rust 0.30.0's API and behaviour is a row of [ADR 0002](docs/adr/0002-port-api-divergences.md), with
+how parity still compares it. In short:
 
-### Port — M1 (foundation)
+- **A Cyrius API.** `selah_<name>` functions, `Sl<Name>` types with `Sl<Name>_<method>`, `SL_*` constants and enum
+  members (#11). Errors are `SL_ERR_*` codes in a `Result`, with the text through an optional `detail_out` (#10).
+  The clients are blocking with deadlines, not `async` (#8). Consumers include `dist/selah.cyr`, or
+  `dist/selah-mcp.cyr` for the MCP server.
+- **The clients speak to the live Cyrius services** (#4, #6, #7): daimon's `POST /v1/agents`, and hoosh's chat
+  completions for OCR, which needs a model. `heartbeat` (#5) and `with_client` (#9) are gone.
+- **Refused for now, each filed upstream:** WebP (#1), progressive JPEG (#2), CMYK JPEG (#16), images over 16.7 MP.
+- **Fixed where Rust was wrong:** JPEG encoding to the exact mathematics (#17), a layer with a non-finite region
+  is refused rather than saved unreadable (#19), JSON defects serde ignored are refused (#21).
+- **Files are written atomically and private** (#18): layers, screenshots and the MCP outputs.
+- **The MCP server** (#24, #25): annotations in `tools/list`, schema violations as `isError` results, `serverInfo`
+  is selah's, and a 128 KiB request line over stdio.
 
-- **Modules** (`src/`), bundled as `dist/selah.cyr` through `[lib]`:
-  - `error`: `SlError` codes; fallible functions take a trailing `detail_out = 0` for the message (port plan D7);
-  - `log`: sakshi, bote's contract;
-  - `fmtf`: the shortest round-trip digits of f32 and f64 in Rust's Display and serde_json's forms (impetus's
-    Burger & Dybvig printer, generalised as pravash's);
-  - `json`: serde_json's string escaping, and readers on bayan that accept and refuse what serde does (both of
-    serde's enum forms, and the array form of a struct);
-  - `uuid`: v4 ids, written hyphenated or simple, read in all four of `Uuid::parse_str`'s forms;
-  - `rfc3339`: chrono's AutoSi writer and its relaxed parser, item by item;
-  - `geometry`: `SlRect` in hisab's `{min, max}` f32 layout, so every operation rounds as Rust's does;
-  - `core`: the enums, `xml_escape`, `derive_output_path`, `SlColor`, `SlRedactionTarget`, `SlCaptureSource`,
-    `SlAnnotation`, each with its Display and serde JSON.
-- **Golden corpus**: six new oracle modules (`error`, `fmtf`, `geometry`, `core`, `uuid`, `rfc3339`), 34,863 rows,
-  every one class A and every one equal, on x86_64 ELF, aarch64 and x86_64 PE.
-- **Ported Rust tests**: `tests/error.tcyr`, `tests/geometry.tcyr`, `tests/core.tcyr` (64 tests and 7 doctests, plus
-  three Cyrius-only); `tests/selah.tcyr` includes `dist/selah.cyr` the way a consumer does.
-- **Benches**: the six M1 benches against Rust in `docs/benchmarks-rust-v-cyrius.md` (5.2× to 32×).
-- **Surface parity**: `scripts/surface_parity.py`, 34/34 for the ported modules; in CI with `distlib --check`.
-- **ADR 0002** rows #14 (serde_json's error text is not reproduced; the verdict is) and #15 (rect accessors return the
-  f32's exact f64, since Cyrius has no f32 return type).
-- **Filed upstream**: cyrius `2026-11-14-chrono-rfc3339-has-no-fraction-or-offset` (ledger L5).
+### Verified
 
-### Port — M2 (PII detection and smart crop)
+- **Golden corpus:** 48,095 rows in 12 modules, generated from Rust 0.30.0 and replayed on every `cyrius test`; the
+  harness output is identical on x86_64 ELF, aarch64 and x86_64 PE, and the MCP harness's on x86_64 and aarch64
+  (the MCP profile does not build for Windows: bote's dependency majra does not target it)
+  ([port-parity.md](docs/development/port-parity.md)).
+  Rust decodes all 165 images the port encodes, loads all 45 layers it writes and lists its history files
+  (`oracle --reverse`).
+- **Rust's tests:** all 289 accounted for, 288 ported and one not applicable
+  ([rust-test-ledger.md](docs/development/rust-test-ledger.md), `scripts/rust_test_ledger.py --check` in CI).
+- **Surface:** all 113 public items of the Rust crate (functions, methods, types, constants, re-exports) have a
+  counterpart (`scripts/surface_parity.py`).
+- **Benchmarks:** the 13 criterion benches and 15 Cyrius-only ones beside Rust's numbers
+  ([benchmarks-rust-v-cyrius.md](docs/benchmarks-rust-v-cyrius.md)); the series starts in `bench-history.csv`.
+- **Gates:** a warning-free build and test, `test --bounds`, `cyrius audit`, `distlib --check` for both bundles,
+  `deps --locked` for both profiles, no `@unsafe` and nothing that aborts in `src/`.
 
-- **`src/ai.cyr`**:
-  - `selah_suggest_redactions`: emails, Luhn-checked cards (plain, dashed or space-grouped), IPv4 addresses and
-    phones, each token reported once, in text order;
-  - `selah_extract_text_regions`: the stub OCR;
-  - `selah_suggest_smart_crop`: in f32, as Rust computes it;
-  - the three result types with serde's JSON.
+### Port — M7 (release)
 
-  Each list-returning function has an `_a` form that takes the allocator first, so a caller can keep a call's
-  results in an arena (port plan D10).
-- **`src/ai_data.cyr`, generated by the oracle**: Rust's `char::is_alphanumeric` as 858 code-point ranges. rustc
-  1.100 carries Unicode 18.0.0 and the stdlib's `lib/unicode` 17.0.0, so only a table from Rust matches the email
-  trim exactly.
-- **Golden corpus**: `ai`, 8,451 rows (Rust's test inputs, a seeded PII generator, every image fixture through the
-  OCR stub, crops up to `u32::MAX`), every one class A and equal on x86_64 ELF, aarch64 and x86_64 PE.
-- **Ported Rust tests**: `tests/ai.tcyr` (39 tests and the doctest, plus one Cyrius-only test of the `_a` forms).
-- **Benches**: the four M2 benches, at 5.6× to 7.2× Rust.
-- **Surface parity**: 37/37.
+- **The Rust-test ledger** (`scripts/rust_test_ledger.py`, after tanmatra's): each `#[test]` and doc test of
+  `rust-old/` matched to its Cyrius test group, or a reason; `docs/development/rust-test-ledger.md` is generated, and
+  CI checks it. Two group titles were corrected so the match is exact.
+- **Full surface parity:** `scripts/surface_parity.py` now checks public types and `lib.rs`'s re-exports too. It
+  found Rust's `Screenshot` missing: `SlScreenshot` is added to `core.cyr` (its serde derives stay uncarried; nothing
+  reads or writes one).
+- **Docs rewritten for Cyrius:** the README (its example is compiled and run in `tests/selah.tcyr`, and
+  `scripts/check_readme_example.py` keeps the two equal), `docs/development.md`, `docs/architecture/overview.md` and
+  the getting-started guide. `docs/mcp-tools.md` came with M6.
+- **`scripts/bench-history.sh`** (ranga's), appending every Cyrius bench to `bench-history.csv`.
+- **CI:** the ledger, the README example, and a check that `src/` has nothing that aborts.
+- **`VERSION` 1.0.0**, and `SL_VERSION` with it (the User-Agent and the MCP `serverInfo`).
+- A suspected codec regression was measured away: M4's tree and this one give the same codec times back to back;
+  the doubled figures of one run were another process's load.
 
 ### Port — M6 (MCP profile)
 
@@ -288,6 +255,93 @@ The Rust crate stays at 0.30.x on crates.io.
   - progressive JPEG, of which selah is now the consumer.
 - **ADR 0002 #16:** CMYK refused, temporarily. Ledger rows L11–L15 track the chitra filings, including the F4
   opacity guard selah adds at M3.
+
+### Port — M2 (PII detection and smart crop)
+
+- **`src/ai.cyr`**:
+  - `selah_suggest_redactions`: emails, Luhn-checked cards (plain, dashed or space-grouped), IPv4 addresses and
+    phones, each token reported once, in text order;
+  - `selah_extract_text_regions`: the stub OCR;
+  - `selah_suggest_smart_crop`: in f32, as Rust computes it;
+  - the three result types with serde's JSON.
+
+  Each list-returning function has an `_a` form that takes the allocator first, so a caller can keep a call's
+  results in an arena (port plan D10).
+- **`src/ai_data.cyr`, generated by the oracle**: Rust's `char::is_alphanumeric` as 858 code-point ranges. rustc
+  1.100 carries Unicode 18.0.0 and the stdlib's `lib/unicode` 17.0.0, so only a table from Rust matches the email
+  trim exactly.
+- **Golden corpus**: `ai`, 8,451 rows (Rust's test inputs, a seeded PII generator, every image fixture through the
+  OCR stub, crops up to `u32::MAX`), every one class A and equal on x86_64 ELF, aarch64 and x86_64 PE.
+- **Ported Rust tests**: `tests/ai.tcyr` (39 tests and the doctest, plus one Cyrius-only test of the `_a` forms).
+- **Benches**: the four M2 benches, at 5.6× to 7.2× Rust.
+- **Surface parity**: 37/37.
+
+### Port — M1 (foundation)
+
+- **Modules** (`src/`), bundled as `dist/selah.cyr` through `[lib]`:
+  - `error`: `SlError` codes; fallible functions take a trailing `detail_out = 0` for the message (port plan D7);
+  - `log`: sakshi, bote's contract;
+  - `fmtf`: the shortest round-trip digits of f32 and f64 in Rust's Display and serde_json's forms (impetus's
+    Burger & Dybvig printer, generalised as pravash's);
+  - `json`: serde_json's string escaping, and readers on bayan that accept and refuse what serde does (both of
+    serde's enum forms, and the array form of a struct);
+  - `uuid`: v4 ids, written hyphenated or simple, read in all four of `Uuid::parse_str`'s forms;
+  - `rfc3339`: chrono's AutoSi writer and its relaxed parser, item by item;
+  - `geometry`: `SlRect` in hisab's `{min, max}` f32 layout, so every operation rounds as Rust's does;
+  - `core`: the enums, `xml_escape`, `derive_output_path`, `SlColor`, `SlRedactionTarget`, `SlCaptureSource`,
+    `SlAnnotation`, each with its Display and serde JSON.
+- **Golden corpus**: six new oracle modules (`error`, `fmtf`, `geometry`, `core`, `uuid`, `rfc3339`), 34,863 rows,
+  every one class A and every one equal, on x86_64 ELF, aarch64 and x86_64 PE.
+- **Ported Rust tests**: `tests/error.tcyr`, `tests/geometry.tcyr`, `tests/core.tcyr` (64 tests and 7 doctests, plus
+  three Cyrius-only); `tests/selah.tcyr` includes `dist/selah.cyr` the way a consumer does.
+- **Benches**: the six M1 benches against Rust in `docs/benchmarks-rust-v-cyrius.md` (5.2× to 32×).
+- **Surface parity**: `scripts/surface_parity.py`, 34/34 for the ported modules; in CI with `distlib --check`.
+- **ADR 0002** rows #14 (serde_json's error text is not reproduced; the verdict is) and #15 (rect accessors return the
+  f32's exact f64, since Cyrius has no f32 return type).
+- **Filed upstream**: cyrius `2026-11-14-chrono-rfc3339-has-no-fraction-or-offset` (ledger L5).
+
+### Port — M0 (initialize)
+
+- **Oracle frozen**: 0.30.0 (tag `0.30.0`, `1a494b4`) moved to `rust-old/` by `cyrius port` on Cyrius 6.7.18. It is
+  green from there: 289 tests. `rust-old/Cargo.lock` is tracked (`.gitignore` ignores only `/Cargo.lock`), so the
+  oracle builds against its released dependency versions. The Rust CI, scripts, development guide and architecture
+  overview moved to `rust-old/`.
+- **Scaffold repaired** (cyrius issue `2026-11-08-cyrius-port-clobbers-project-docs-and-omits-bench`):
+  - `CLAUDE.md` merged from the Rust rules and the scaffold's Cyrius rules;
+  - the roadmap restored, with the port milestones on top;
+  - `state.md` written for the real version;
+  - `cyrius.cyml` takes `version = "${file:VERSION}"`, and `[test] stdlib` has `bench`;
+  - the six stub functions are documented, so `cyrius audit` passes.
+- **Manifest**:
+  - chitra 1.3.1 and ranga 2.4.0;
+  - bote 3.8.15, optional behind `[features] mcp`;
+  - sankoch through chitra's zlib profile, not the full fold.
+  - `lib/` and `cyrius.lock` are vendored by `cyrius deps --features mcp`.
+- **CI**: the scaffold's Cyrius workflow, extended with `test --bounds`, both `deps --locked` profiles, `audit`, and
+  a no-`@unsafe` check on `src/`.
+- **ADRs**: [0001](docs/adr/0001-cyrius-port-with-rust-oracle.md) (the port and its oracle) and
+  [0002](docs/adr/0002-port-api-divergences.md) (the API changes, each with its parity comparison).
+- **Toolchain probes**: f32 rect arithmetic is bit-identical to Rust; small values through `Result`; chitra,
+  sankoch and bayan in one unit; bote's dispatcher; sandhi against a mock server; the error-detail design. Results
+  are in the port plan §2. Upstream:
+  - daimon and hoosh issues filed for the routes selah needs;
+  - a data point appended to sandhi's `total_ms` issue.
+- **Golden generator** (`scripts/oracle/`):
+  - a Rust crate on `rust-old/` by path, with its lock seeded from `rust-old/Cargo.lock` (every shared crate at the
+    oracle's version);
+  - deterministic output, with `--check`;
+  - format 1 is specified in its README;
+  - the first module, `decode`: 63 fixtures (PNG in every colour type and depth, Adam7, tRNS; BMP in palette, RLE,
+    bitfield, top-down and V4 forms; JPEG baseline at every subsampling, with restart intervals, progressive and
+    CMYK; WebP; GIF; malformed and oversized inputs), with Rust 0.30.0's verdict and RGBA through `annotate_image`.
+- **Parity harness** (`tests/parity.tcyr`, `tests/parity_core.cyr`): replays `tests/golden/modules.txt`. Each row
+  ends ok, FAILED, measured, accepted (ADR 0002) or pending; the exit code is the number of failing modules.
+- **Decode baseline** ([port-parity.md](docs/development/port-parity.md)), chitra 1.3.1 against Rust's decoders:
+  - every PNG and most BMPs bit-identical, and every refusal agrees;
+  - JPEG within 2 without chroma subsampling;
+  - five findings for M3 to settle: chroma upsampling (up to 36), 16-bit BMP expansion (±1), 32-bit `BI_RGB` alpha,
+    CMYK refused, and K_jpeg = 2.
+  - Identical on x86_64 ELF, aarch64 (qemu) and x86_64 PE (wine).
 
 ## [0.30.0] - 2026-11-14
 

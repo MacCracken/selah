@@ -66,11 +66,26 @@ jobs:
         run: |
           if grep -rn '@unsafe' src/; then echo "src/ must not use @unsafe"; exit 1; fi
 
+      - name: No aborts in src/ (the Rust crate's no unwrap / panic)
+        # `+?`, `-?` and `*?` exit the process on overflow; assert_fatal and result_unwrap abort. Comments are skipped.
+        run: |
+          if grep -HnE '[-+*]\?|assert_fatal|result_unwrap' src/*.cyr | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#'; then
+            echo "src/ must not abort"; exit 1
+          fi
+
       - name: Bundle is current (dist/)
         run: cyrius distlib --check
 
       - name: Surface parity against rust-old/
         run: python3 -I -B scripts/surface_parity.py .
 
-      # Joining at M6: the `mcp` profile's bundle. Joining at M7: scripts/rust_test_ledger.py --check. The golden
-      # corpus is regenerated locally from rust-old/ (scripts/oracle), so CI has no Rust job.
+      - name: Rust-test ledger is closed
+        # Every test of rust-old/ ported or recorded with a reason (docs/development/rust-test-ledger.md, generated).
+        run: python3 -I -B scripts/rust_test_ledger.py . --check
+
+      - name: README example is the tested one
+        # The README's code is tests/selah.tcyr's, compiled and run by `cyrius test` above.
+        run: python3 -I -B scripts/check_readme_example.py .
+
+      # `cyrius distlib --check` covers both bundles, dist/selah.cyr and the mcp profile's dist/selah-mcp.cyr. The
+      # golden corpus is regenerated locally from rust-old/ (scripts/oracle), so CI has no Rust job.

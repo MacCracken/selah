@@ -5,9 +5,10 @@
 
 ## Version
 
-**0.30.0** in `VERSION`: the final Rust release (tag `0.30.0`, commit `1a494b4`), frozen in `rust-old/` as the
-reference oracle. Accuracy is the bar, and Rust is the floor ([ADR 0003](../adr/0003-accuracy-is-the-bar.md)). The Cyrius port is in progress and ships as **1.0.0** at M7. Plan of record:
-[`selah-port-plan.md`](selah-port-plan.md).
+**1.0.0** in `VERSION`: the Cyrius port, complete (M0–M7), ready for the maintainer's tag. The Rust crate's final
+release, 0.30.0 (tag `0.30.0`, commit `1a494b4`), stays frozen in `rust-old/` as the reference oracle until WebP is
+ported or dropped (port plan §7). Accuracy is the bar, and Rust is the floor
+([ADR 0003](../adr/0003-accuracy-is-the-bar.md)). Plan of record: [`selah-port-plan.md`](selah-port-plan.md).
 
 ## Toolchain
 
@@ -25,7 +26,7 @@ reference oracle. Accuracy is the bar, and Rust is the floor ([ADR 0003](../adr/
 | M4 Annotation | ✅ done 2026-11-14 |
 | M5 System and clients | ✅ done 2026-11-14 |
 | M6 MCP profile | ✅ done 2026-11-14 |
-| M7 Release 1.0.0 | not started |
+| M7 Release 1.0.0 | ✅ done 2026-11-14 (the tag is the maintainer's) |
 
 ## Source
 
@@ -35,8 +36,10 @@ reference oracle. Accuracy is the bar, and Rust is the floor ([ADR 0003](../adr/
   facade, history, http, spawn, capture and daimon, bundled as `dist/selah.cyr` (`[lib]`), and mcp, which the
   `[lib.mcp]` profile adds as `dist/selah-mcp.cyr` (about 11,000 lines in all, 470 of them generated tables);
   `src/main.cyr` is the build-smoke stub.
-- Surface parity: 86/86 (`scripts/surface_parity.py .`): every module whole (`heartbeat` and `with_client` removed
-  by ADR 0002 #5 and #9).
+- Surface parity: 113/113 public items, functions, methods, types, constants and re-exports
+  (`scripts/surface_parity.py .`; `heartbeat` and `with_client` removed by ADR 0002 #5 and #9).
+- Rust-test ledger: closed. 289 tests, 288 ported and one not applicable
+  ([`rust-test-ledger.md`](rust-test-ledger.md), `scripts/rust_test_ledger.py . --check`).
 - **Known limits, each filed upstream:**
   - every decode's memory stays with the process (chitra, L16), which matters for the MCP server, and so does every
     base64 decode (bayan, L19);
@@ -46,11 +49,13 @@ reference oracle. Accuracy is the bar, and Rust is the floor ([ADR 0003](../adr/
   - reading JSON (the history, a capture answer) is bound by bayan's parser, 14–25 ns a byte (bayan, L21);
   - sandhi reserves a request's whole response cap, so selah hands it a freelist arena (sandhi, L22);
   - the MCP server's stdio refuses a request line over 128 KiB, about 1,950 annotations in one call (bote, L23);
-  - the freelist maps every block over 4 KiB afresh, so the arenas keep one spare chunk (cyrius, L24).
+  - the freelist maps every block over 4 KiB afresh, so the arenas keep one spare chunk (cyrius, L24);
+  - the MCP profile does not build for x86_64 PE: bote's dependency majra does not target Windows (majra's own
+    state.md). The `[lib]` bundle does.
 
 ## Tests
 
-- `cyrius test` (16 suites, 794 assertions): `tests/parity.tcyr` (the golden corpus), the ported Rust tests (`error`,
+- `cyrius test` (16 suites): `tests/parity.tcyr` (the golden corpus), the ported Rust tests (`error`,
   `geometry`, `core`, `ai`, `codec`, `annotate`, `fsutil`, `integration`, `history`, `http`, `capture`, `daimon` and
   `mcp`: 274 Rust tests and 14 doctests), and `selah.tcyr` (the bundle, as a consumer sees it). The HTTP tests run
   against a loopback mock server on a thread (`tests/mock_http.cyr`).
@@ -120,6 +125,7 @@ taswir, aethersafta, kiran (planned): none is in Cyrius yet. Rust consumers stay
 
 ## Next
 
-M7 Release 1.0.0: the Rust-test ledger closed (289 tests: ported, folded into golden rows, or n/a), full surface
-parity, README, `docs/development.md` and the architecture doc rewritten for Cyrius, the CHANGELOG `1.0.0` entry and
-`VERSION` 1.0.0. The tag is the maintainer's. Live capture still waits on daimon's routes (L9).
+The maintainer tags `1.0.0`. After it (port plan §7): WebP, capture against a live daimon once its routes ship (L9),
+OCR on more providers (L8), extracting the encoders into a shared package, and the Rust roadmap's open items (OCR
+boxes mapped to PII matches, a format-aware metadata scan, MCP path confinement, a per-call render budget). Each
+ledger row leaves when its upstream fix lands.

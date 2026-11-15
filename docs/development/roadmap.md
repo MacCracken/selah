@@ -3,7 +3,7 @@
 > Volatile state lives in [`state.md`](state.md). The Cyrius port's plan of record, with each milestone's scope,
 > gates and golden grid, is [`selah-port-plan.md`](selah-port-plan.md).
 
-## 1.0.0 — Cyrius port (in progress)
+## 1.0.0 — Cyrius port (done 2026-11-14; the tag is the maintainer's)
 
 - [x] **M0 Initialize** (2026-11-14): freeze the 0.30.0 oracle, `cyrius port`, repair the scaffold, the manifest,
   toolchain probes, the golden generator, the parity harness, decode baselines
@@ -15,7 +15,8 @@
   retargeted (ADR 0002)
 - [x] **M6 MCP profile** (2026-11-14): the five tools on bote 3.8.15, `dist/selah-mcp.cyr`, gated against Rust's
   own stdio server
-- [ ] **M7 Release 1.0.0**: Rust-test ledger, full surface parity, benches against Rust, `dist/` bundles
+- [x] **M7 Release 1.0.0** (2026-11-14): Rust-test ledger closed (288 of 289 ported, one n/a), full surface
+  parity (113 items), benches against Rust, both `dist/` bundles, the docs rewritten for Cyrius
 
 ### Waiting on other repos
 

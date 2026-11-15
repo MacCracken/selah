@@ -9,6 +9,42 @@ fn _s_is(s, text): i64 {
     return s != 0 && str_len(s) == n && memeq(str_data(s), text, n) == 1;
 }
 
+# The README's example, verbatim between the markers: it is compiled and run here, against the bundle.
+# README example begins
+# vec_get returns an untyped word; a typed pointer comes back through a function's return type.
+fn as_suggestion(p): *SlRedactionSuggestion {
+    return p;
+}
+
+# Prints the PII found in `text`, then draws a red box and a black redaction onto the image png[0..n) (PNG, JPEG or
+# BMP) and returns it as JPEG: the bytes (free them with selah_bytes_free) and their length at `out_len`, or 0.
+fn readme_example(text, png, n, out_len): i64 {
+    var found = selah_suggest_redactions(text, strlen(text));
+    var i = 0;
+    while (i < vec_len(found)) {
+        var s: *SlRedactionSuggestion = as_suggestion(vec_get(found, i));
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, SlRedactionTarget_key(s.target));
+        str_builder_add_cstr(sb, ": ");
+        str_builder_add(sb, s.matched_text);
+        str_println(str_builder_build(sb));
+        i = i + 1;
+    }
+    var anns = vec_new();
+    var box = SlRect_new(f32_from(10.0), f32_from(10.0), f32_from(200.0), f32_from(80.0));
+    vec_push(anns, SlAnnotation_new(SL_KIND_RECTANGLE, box, SL_COLOR_RED));
+    var bar = SlRect_new(f32_from(40.0), f32_from(120.0), f32_from(160.0), f32_from(24.0));
+    vec_push(anns, SlAnnotation_new(SL_KIND_REDACTION, bar, SL_COLOR_BLACK));
+    var detail = 0;
+    var t, out = selah_annotate_image(png, n, anns, SL_FMT_JPEG, out_len, &detail);
+    if (is_err_result(t) == 1) {
+        str_println(selah_error_display(out, detail));
+        return 0;
+    }
+    return out;
+}
+# README example ends
+
 # Smoke-tests the bundle: geometry, core, errors, JSON, codecs, annotation, the clients and the history.
 fn main(): i64 {
     alloc_init();
@@ -49,6 +85,14 @@ fn main(): i64 {
     var hs: *SlHistoryStore = SlHistoryStore_open("/tmp/selah_bundle_smoke.jsonl");
     var lt, lv = SlHistoryStore_list(hs, 10);
     assert(is_ok(lt) == 1 && vec_len(lv) == 0, "HistoryStore::list on a missing file");
+    # The README's example, on a 256 x 160 PNG.
+    var img2: *SlImage = SlImage_new(256, 160);
+    var pn2 = 0;
+    var pt2, png2 = _sl_encode_image(img2, SL_FMT_PNG, &pn2);
+    var jn = 0;
+    var jpg = readme_example("mail admin@example.com, card 4111 1111 1111 1111", png2, pn2, &jn);
+    assert(jpg != 0 && jn > 2 && load8(jpg) == 255 && load8(jpg + 1) == 216, "the README example gives a JPEG");
+    selah_bytes_free(jpg);
     # SL_VERSION (src/version_str.cyr, the User-Agent's) must be VERSION's text.
     var vn = 0;
     var vf = file_read_whole_max("VERSION", 64, &vn);

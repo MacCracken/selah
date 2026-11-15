@@ -6,6 +6,8 @@ The Cyrius benches (`tests/selah.bcyr`, `cyrius bench`) carry the Rust criterion
 - **Rust:** criterion medians from `rust-old/bench-history.csv` at `c0da3e1` (2026-11-14, rustc 1.100.0, release
   profile), the 0.30.0 baseline taken at M0 step 0.
 - **Cyrius:** `cyrius bench` on the same machine (Cyrius 6.7.18, x86_64), per-op mean.
+- **History:** `scripts/bench-history.sh` appends every Cyrius bench to `bench-history.csv`. The series starts at
+  1.0.0 (2026-11-14, load average 3.5–5.2 on 16 cores); `rust-old/bench-history.csv` is Rust's, frozen.
 - Cyrius does not inline, and every call is a real call, so tiny operations show the largest ratios. The sibling ports
   measure the same shape: kimiya's median is 7.7×, tanmatra's 2–20×.
 

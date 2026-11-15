@@ -74,7 +74,8 @@ cyrius deps --features mcp                     # resolve dependencies (vendors l
 cyrius build src/main.cyr build/selah          # compile
 cyrius test                                    # tests/*.tcyr and tests/mcp/: parity + ported Rust tests
                                                # (tests/mcp/test.cyml prepends bote; never add --features mcp)
-cyrius bench                                   # tests/*.bcyr
+cyrius bench                                   # tests/*.bcyr and tests/mcp/*.bcyr
+./scripts/bench-history.sh                     # the same, appended to bench-history.csv
 cargo test --manifest-path rust-old/Cargo.toml --all-features            # the Rust oracle, read-only
 cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --check   # golden corpus up to date
 cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --reverse # after cyrius test: Rust decodes the Cyrius-encoded files
@@ -107,8 +108,10 @@ cyrius test --bounds
 cyrius bench
 cyrius distlib --all && cyrius distlib --check
 cyrius deps --locked && cyrius deps --locked --features mcp
-cyrius audit                # fmt, lint, docs (every fn in src/ and tests/ documented), test, bench
-python3 scripts/surface_parity.py .
+cyrius audit                # fmt, lint, docs (every public fn in src/ and tests/ documented), test, bench
+python3 -I scripts/surface_parity.py .
+python3 -I scripts/rust_test_ledger.py . --check
+python3 -I scripts/check_readme_example.py .
 ```
 
 `cyrius test` and `cyrius build` must be **warning-free**. Every float type diagnostic is a bug: integer arithmetic
@@ -184,7 +187,10 @@ tables (sandhi's TLS stack with any compression tables), printed for any unit th
 
 ## Documentation
 
+- [`docs/development.md`](docs/development.md) — building, testing, the oracle, other targets, releasing
 - [`docs/development/selah-port-plan.md`](docs/development/selah-port-plan.md) — the port plan of record
+- [`docs/development/rust-test-ledger.md`](docs/development/rust-test-ledger.md) — every Rust test's port (generated)
+- [`docs/architecture/overview.md`](docs/architecture/overview.md) — modules, data flow, limits, memory
 - [`docs/development/state.md`](docs/development/state.md) — live state
 - [`docs/development/roadmap.md`](docs/development/roadmap.md) — milestones and backlog
 - [`docs/development/port-parity.md`](docs/development/port-parity.md) — measured baselines and tolerance bounds

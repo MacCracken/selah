@@ -196,7 +196,7 @@ fn _t_register_agent_missing_id(): i64 {
 # Rust's heartbeat tests, recast (heartbeat is dropped, D2): an encoded path reaches the server as it is, and an error
 # status carries daimon's text.
 fn _t_encoded_path_reaches_the_server(): i64 {
-    test_group("test_heartbeat_encodes_agent_id_and_omits_auth (as an encoded path)");
+    test_group("test_heartbeat_encodes_agent_id_and_omits_auth / _error_status (recast: heartbeat is dropped)");
     var m = _mock_serve(404, "no such agent");
     var segs = vec_new();
     vec_push(segs, "v1");

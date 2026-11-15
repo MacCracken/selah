@@ -314,3 +314,15 @@ the verdict: Rust's bote answers a schema violation with JSON-RPC −32602 and b
 Two mutation probes confirmed the gates bite: accepting a `..` component failed 5 rows (and the capture probe wrote
 its `../x.png` outside the session directory, which is what the check prevents), and shortening chrono's `premature
 end of input` failed 5 rows.
+
+## 10. M7 (2026-11-14): the release run
+
+The whole corpus, 48,095 rows, at `VERSION` 1.0.0:
+
+| Harness | x86_64 ELF | aarch64 (qemu) | x86_64 PE (wine) |
+|---|---|---|---|
+| `tests/parity.tcyr`, 11 modules, 47,985 rows | 0 failed | identical | identical |
+| `tests/mcp/parity_mcp.tcyr`, 110 rows | 106 ok, 4 accepted | identical | does not build |
+
+The MCP profile does not build for PE: bote's dependency majra uses the futex syscalls, and its own `state.md` says
+Windows is not a majra target. Everything outside the MCP profile builds and passes there.

@@ -719,6 +719,25 @@ impl SlCaptureSource {
     }
 }
 
+# ── Screenshot ────────────────────────────────────────────────────────────────────────
+
+# A captured screenshot (Rust: core::Screenshot): its id (a UUID's 16 bytes in id_a, id_b, as SlAnnotation holds
+# one), the encoded image data[0..len), its size, when it was taken (secs and nanos since the Unix epoch, UTC), where
+# it came from and its format (an SlImageFormat). Rust's serde derives on it are not carried: nothing in selah reads or
+# writes one (port plan §1).
+struct SlScreenshot {
+    id_a: i64;
+    id_b: i64;
+    data: i64;
+    len: i64;
+    width: i64;
+    height: i64;
+    secs: i64;
+    nanos: i64;
+    source: SlCaptureSource;
+    format: i64;
+}
+
 # ── Annotation ────────────────────────────────────────────────────────────────────────
 
 # An annotation: a 16-byte id (RFC 4122 byte order, in id_a then id_b), its kind, its position, its colour, and its
