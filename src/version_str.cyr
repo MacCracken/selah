@@ -4,4 +4,4 @@
 # HTTP User-Agent is `selah/<version>`, as Rust's `concat!("selah/", env!("CARGO_PKG_VERSION"))`.
 # CYRIUS_PKG_VERSION would not do: inside a consumer's build it is the consumer's version.
 
-var SL_VERSION = "1.0.0";
+var SL_VERSION = "1.0.1";

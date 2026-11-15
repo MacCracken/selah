@@ -6,6 +6,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-14
+
+chitra 1.4.1. chitra 1.4.0 and 1.4.1 answered the decoder issues selah filed at M3, and this release takes them up:
+more files decode, they decode more accurately and faster, and a decode's memory goes back.
+
+### Changed
+
+- **chitra 1.3.1 → 1.4.1** (`cyrius.cyml`, `cyrius.lock`). It brings no new dependency, and sankoch stays at 2.8.9.
+- **Progressive JPEG decodes** (ADR 0002 #2 closed, ledger L15). It was refused with `SL_ERR_UNSUPPORTED_FORMAT`.
+  The fixture decodes to exactly the pixels of the baseline file with the same coefficients, and more accurately
+  than Rust (mean error 1.724 against 1.808).
+- **Subsampled JPEG is upsampled as libjpeg does** (L12): interpolated, not box. On the 4:2:0 fixtures the mean error
+  against the source fell from 2.345 to 1.724, now ahead of Rust's 1.808.
+- **5- and 6-bit BMP channels round to the nearest level** (L13). The 16-bpp fixtures now match the format's values
+  exactly.
+- **Images over 16.7 megapixels decode** (L17). selah's own limits are the only ones that apply: 32,768 px a side,
+  and 512 MiB for the decoded buffer.
+- **A decode's memory goes back** (L16). chitra decodes through the freelist (`chitra_image_decode_budget_via`), and
+  `SlImage_free` returns the image. Through chitra 1.3.1 every decode stayed with the process, which mattered for
+  the MCP server.
+- **A 32-bpp `BI_RGB` BMP is opaque by chitra's own decode** (L11), so selah's guard is gone.
+- **Faster decoding** (L18). In an interleaved A/B against 1.0.0, the 512 × 512 JPEG went from 48.9 ms to 14.8 ms
+  and the PNG from 19.3 ms to 15.5 ms. Against Rust measured at the same moment, they are 11× and 17×, from 38× and
+  21×. What is left of a PNG decode is mostly sankoch's inflate, filed there.
+- **Still refused:** WebP (ADR 0002 #1), and CMYK JPEG (#16). chitra 1.4.0 now returns CMYK samples, and the
+  conversion to RGB is selah's, scheduled for 1.1.0.
+
+### Verified
+
+- **Golden corpus:** the oracle stops marking the progressive fixture as a refusal. The known-defect list reported
+  each fix as a failure until its row came off.
+  - `decode`: 64 ok, 2 accepted, 0 upstream (was 55 / 3 / 8). The known-defect list is empty.
+  - `codec`: 364 ok, 116 accepted.
+  - `annotate`: 3,453 ok, 4 accepted.
+  - The harness output is identical on x86_64 ELF, aarch64 and x86_64 PE.
+- **Subsampled JPEG is gated on accuracy over a pair**, with the maintainer's approval
+  ([port-parity.md §11](docs/development/port-parity.md)).
+  - chitra matches libjpeg byte for byte. zune-jpeg, Rust's decoder, rounds its upsampling differently, so on a
+    gradient one of them leads by direction: mirroring the image reverses the lead.
+  - Each subsampled fixture now has a partner turned 180°. The row passes when the port's mean error over the pair is
+    within 0.050 of Rust's, and its worst pixel within 2 of Rust's worst.
+  - Conformance with Rust (K_jpeg) applies without subsampling only.
+  - Every subsampled row passes. The new gate run against 1.0.0's box upsampling fails all of them.
+- **Tests:** `tests/codec.tcyr` checks that progressive decodes, and that 1,000 decodes leave resident memory within
+  4 MiB.
+  - Through the freelist, resident memory grows by nothing.
+  - Through the bump heap it grows by 66 MiB, which fails the check.
+  - Returning the memory costs about 1 ms of a 512 × 512 decode.
+- **Benchmarks:** Rust's codec numbers were re-measured. The M3 figures had been taken under load and were about
+  2× slow, which made the ratios look better than they were. On a quiet machine selah encodes PNG at 9.7× Rust,
+  BMP at 1.8× and JPEG at 4.5×
+  ([benchmarks-rust-v-cyrius.md](docs/benchmarks-rust-v-cyrius.md)).
+
+### Filed
+
+- **sankoch:** inflate runs 12–49× slower than fdeflate on the same streams, and is now most of a PNG decode
+  (`sankoch/docs/development/issues/2026-11-14-inflate-is-most-of-a-png-decode.md`).
+- **chitra:** the decode-throughput issue, still open, gained the same-moment numbers: JPEG 11× Rust and PNG 17×.
+
+### Docs
+
+- The roadmap now holds only open work, scheduled by version: 1.0.x as upstream fixes land, 1.1.0 for the
+  selah-side items, 1.2.0 for the live services, 1.3.0 for WebP and retiring `rust-old/`, and later work carried
+  from the Rust roadmap.
+- ADR 0002 #2 is closed and #16 updated. The ledger rows L11–L17 are closed or handed to selah, and L18 updated.
+
 ## [1.0.0] - 2026-11-14
 
 **selah is a Cyrius library.** 1.0.0 ports the Rust crate 0.30.0, which is frozen in `rust-old/` as the reference

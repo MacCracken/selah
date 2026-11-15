@@ -7,7 +7,8 @@ The Cyrius benches (`tests/selah.bcyr`, `cyrius bench`) carry the Rust criterion
   profile), the 0.30.0 baseline taken at M0 step 0.
 - **Cyrius:** `cyrius bench` on the same machine (Cyrius 6.7.18, x86_64), per-op mean.
 - **History:** `scripts/bench-history.sh` appends every Cyrius bench to `bench-history.csv`. The series starts at
-  1.0.0 (2026-11-14, load average 3.5–5.2 on 16 cores); `rust-old/bench-history.csv` is Rust's, frozen.
+  1.0.0 (2026-11-14, load average 3.5–5.2 on 16 cores); 1.0.1's rows follow (chitra 1.4.1: `decode_jpeg_512`
+  55.8 → 14.5 ms, `mcp_annotate_8x8` 281 → 248 µs). `rust-old/bench-history.csv` is Rust's, frozen.
 - Cyrius does not inline, and every call is a real call, so tiny operations show the largest ratios. The sibling ports
   measure the same shape: kimiya's median is 7.7×, tanmatra's 2–20×.
 
@@ -31,17 +32,27 @@ The Cyrius benches (`tests/selah.bcyr`, `cyrius bench`) carry the Rust criterion
 
 Rust's criterion suite has no codec benches, so these have no `bench-history.csv` row. `scripts/oracle -- --bench`
 times Rust selah 0.30.0's own paths on the same 512 × 512 RGBA image `tests/selah.bcyr` builds (`(x ^ y, 3x + y,
-5y ^ x, 255) mod 256`), decoding the very files the Cyrius bench wrote (`build/bench/`). Each figure is a mean over
-the iterations shown in the bench, measured 2026-11-14 on the same machine.
+5y ^ x, 255) mod 256`), decoding the very files the Cyrius bench wrote (`build/bench/`).
 
-| Bench | Rust | Cyrius | Ratio | Notes |
-|---|---|---|---|---|
-| `encode_png_512` | 10.4 ms | 48.7 ms | 4.7× | kii's filter heuristic and sankoch's level-6 deflate (Rust: png 0.18.1's defaults). M4 tightened the filter loop (59 → 49 ms); about 21 ms is sankoch's deflate, at about the same time on every level (L20) |
-| `encode_bmp_512` | 2.14 ms | 2.45 ms | 1.1× | |
-| `encode_jpeg_512` | 12.9 ms | 32.5 ms | 2.5× | 4:4:4 q75; the Cyrius encoder computes to the exact mathematics (ADR 0002 #17) |
-| `decode_png_512` | 1.31 ms | 24.9 ms | 19× | chitra 1.3.1; filed (L18) |
-| `decode_jpeg_512` | 2.54 ms | 59.5 ms | 23× | chitra 1.3.1: bit-serial Huffman decoding; filed (L18) |
-| `convert_format_png_to_jpeg_512` | 14.5 ms | 59.8 ms | 4.1× | decode + encode |
+**Re-measured for 1.0.1** (2026-11-14), both sides back to back on one machine at load average 2.4–3.8 on 16 cores.
+Each figure is the fastest of three runs: three `oracle --bench` runs (stable to 0.3 % on decode), and three
+`cyrius bench` runs interleaved with 1.0.0's. The M3 measurement had taken Rust's column under load, about 2× slow
+(encode PNG 10.4 ms, decode JPEG 2.54 ms), so every M3 ratio looked better than it was.
+
+| Bench | Rust | Cyrius 1.0.1 | Ratio | Cyrius 1.0.0 | Notes |
+|---|---|---|---|---|---|
+| `encode_png_512` | 4.91 ms | 47.6 ms | 9.7× | 47.4 ms | kii's filter heuristic and sankoch's level-6 deflate (Rust: png 0.18.1's defaults). M4 tightened the filter loop (59 → 49 ms); about 21 ms is sankoch's deflate, at about the same time on every level (L20) |
+| `encode_bmp_512` | 1.21 ms | 2.19 ms | 1.8× | 2.22 ms | |
+| `encode_jpeg_512` | 6.36 ms | 28.5 ms | 4.5× | 28.1 ms | 4:4:4 q75; the Cyrius encoder computes to the exact mathematics (ADR 0002 #17) |
+| `decode_png_512` | 0.92 ms | 15.5 ms | 17× | 19.3 ms | chitra 1.4.1 (1.0.0: chitra 1.3.1). 5.7 ms of it is sankoch's inflate, 12× fdeflate's on the same stream (filed with sankoch, L18) |
+| `decode_jpeg_512` | 1.29 ms | 14.8 ms | 11× | 48.9 ms | chitra 1.4.1: a Huffman lookahead table, an inlined IDCT, the DC-only block path (L18) |
+| `convert_format_png_to_jpeg_512` | 7.14 ms | 44.4 ms | 6.2× | 47.0 ms | decode + encode |
+
+- **The allocator's share:** about 1 ms of each decode is the price of the memory coming back
+  ([port-parity §11](development/port-parity.md)). Through the bump heap the same decodes take 14.85 ms (PNG) and
+  14.08 ms (JPEG).
+- **A 1080p screenshot PNG** decodes in 47.5 ms, against Rust's 1.30 ms. Of that, 31.4 ms is sankoch's inflate,
+  49× fdeflate's 0.64 ms (`sankoch/docs/development/issues/2026-11-14-inflate-is-most-of-a-png-decode.md`).
 
 ### M5 history and the HTTP layer (Cyrius-only benches; Rust's numbers from `oracle --bench`)
 

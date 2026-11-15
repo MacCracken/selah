@@ -10,7 +10,7 @@ annotation and redaction drawn onto the pixels, PII detection, OCR through hoosh
 tools that expose all of it. It is a Cyrius library; the GUI and CLI live in
 [taswir](https://github.com/MacCracken/taswir).
 
-selah 1.0.0 is a port of the Rust crate 0.30.0, which stays on crates.io for Rust consumers and is frozen in
+selah 1.x is a port of the Rust crate 0.30.0, which stays on crates.io for Rust consumers and is frozen in
 `rust-old/` as the reference oracle. The port is held to the Rust crate's behaviour where Rust's behaviour is the
 contract (JSON, layer and history files, SVG, the MCP answers), and to ground truth where there is one (pixels, the
 formats' specifications): accuracy is the bar, and Rust is the floor ([ADR 0003](docs/adr/0003-accuracy-is-the-bar.md)).
@@ -36,7 +36,7 @@ In your `cyrius.cyml`:
 ```toml
 [deps.selah]
 git = "https://github.com/MacCracken/selah.git"
-tag = "1.0.0"
+tag = "1.0.1"
 modules = ["dist/selah.cyr"]
 ```
 
@@ -45,7 +45,7 @@ For the MCP server, take the `mcp` profile's bundle instead, and declare bote yo
 ```toml
 [deps.selah]
 git = "https://github.com/MacCracken/selah.git"
-tag = "1.0.0"
+tag = "1.0.1"
 modules = ["dist/selah-mcp.cyr"]
 
 [deps.bote]
@@ -128,7 +128,8 @@ fn readme_example(text, png, n, out_len): i64 {
 Each is filed with the library that owns it, and tracked in [state.md](docs/development/state.md):
 
 - Capture against a live daimon waits on daimon's `/v1/screen/*` routes; the client is tested against a mock server.
-- WebP, progressive JPEG and CMYK JPEG are refused; images over 16.7 megapixels are refused (chitra's cap).
+- WebP and CMYK JPEG are refused (CMYK: chitra returns the samples since 1.4.0, and the conversion to RGB is on the
+  roadmap).
 - OCR through hoosh reaches OpenAI-compatible vision models only.
 - One MCP request line over stdio is at most 128 KiB, about 1,950 annotations (bote's limit).
 - The MCP bundle does not build for Windows (PE): bote's dependency majra does not target it. The library itself

@@ -58,7 +58,7 @@ selah/src/
 
 | Need | Use | NOT |
 |------|-----|-----|
-| Image decode | chitra (PNG, baseline JPEG, BMP; GIF refused by selah) | hand-rolled decoders |
+| Image decode | chitra (PNG, baseline and progressive JPEG, BMP; GIF refused by selah) | hand-rolled decoders |
 | Image encode | selah's own `png_enc` / `bmp_enc` / `jpeg_enc` (chitra is decode-only by policy) | — |
 | Pixel blending | ranga (`blend_row`) | manual blend math |
 | MCP protocol | bote (`dist/bote.cyr`, optional) | custom JSON-RPC |

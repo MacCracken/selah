@@ -29,6 +29,16 @@ pub struct Fixture {
     /// For a lossy fixture, the pixels it was encoded from, as RGBA8: the ground truth a decoder's accuracy is
     /// measured against (not another decoder's output).
     pub source: Option<Vec<u8>>,
+    /// For a JPEG with chroma subsampling, its partner: the same source turned 180° and encoded the same way, and
+    /// that source as RGBA8, written as `<file>.rot180.jpg`. Decoders round their upsampling differently, and a
+    /// rounding bias helps on a slope one way and hurts the other; the decode row is gated on accuracy over the
+    /// pair (port-parity.md §11).
+    pub turned: Option<(Vec<u8>, Vec<u8>)>,
+}
+
+/// Interleaved pixels of `ch` channels turned 180°: the pixel order reversed, which mirrors both axes.
+fn rot180(px: &[u8], ch: usize) -> Vec<u8> {
+    px.chunks(ch).rev().flatten().copied().collect()
 }
 
 /// RGB8 or L8 samples as RGBA8 (opaque), the form a decoder's output is compared in.
@@ -347,7 +357,7 @@ pub fn build() -> Vec<Fixture> {
     use png::{BitDepth as D, ColorType as C};
     let mut v: Vec<Fixture> = Vec::new();
     let mut add = |file: &str, kind: &'static str, bytes: Vec<u8>, how: &str, adr: Option<&'static str>| {
-        v.push(Fixture { file: file.to_string(), kind, bytes, how: how.to_string(), adr, source: None });
+        v.push(Fixture { file: file.to_string(), kind, bytes, how: how.to_string(), adr, source: None, turned: None });
     };
     let (w, h) = (33u32, 17u32);
     let n = (w * h) as usize;
@@ -458,7 +468,7 @@ pub fn build() -> Vec<Fixture> {
     add("jpeg-enc-420-1x1.jpg", "jpeg", jpeg(1, 1, &[10, 200, 90], J::Rgb, 85, S::F_2_2, false, 0), "jpeg-encoder 0.6.1 q85, 4:2:0, 1x1", None);
     add("jpeg-enc-restart-64x64.jpg", "jpeg", jpeg(64, 64, &g64, J::Rgb, 85, S::F_2_2, false, 2), "jpeg-encoder 0.6.1 q85, 4:2:0, restart interval 2 MCUs", None);
     add("jpeg-enc-gray-64x64.jpg", "jpeg", jpeg(64, 64, &grad(64, 64, 1), J::Luma, 85, S::F_1_1, false, 0), "jpeg-encoder 0.6.1 q85, grayscale", None);
-    add("jpeg-enc-progressive-64x64.jpg", "jpeg", jpeg(64, 64, &g64, J::Rgb, 85, S::F_2_2, true, 0), "jpeg-encoder 0.6.1 q85, 4:2:0, progressive (SOF2)", Some("0002#2"));
+    add("jpeg-enc-progressive-64x64.jpg", "jpeg", jpeg(64, 64, &g64, J::Rgb, 85, S::F_2_2, true, 0), "jpeg-encoder 0.6.1 q85, 4:2:0, progressive (SOF2)", None);
     add("jpeg-enc-cmyk-33x17.jpg", "jpeg", jpeg(33, 17, &grad(w, h, 4), J::Cmyk, 85, S::F_1_1, false, 0), "jpeg-encoder 0.6.1 q85, CMYK (Adobe APP14)", Some("0002#16"));
     let good_jpeg = jpeg(64, 64, &g64, J::Rgb, 85, S::F_2_2, false, 0);
     add("jpeg-truncated.jpg", "jpeg", good_jpeg[..good_jpeg.len() / 2].to_vec(), "jpeg-enc-420-64x64 cut in half (mid-scan)", None);
@@ -492,6 +502,23 @@ pub fn build() -> Vec<Fixture> {
             f.source = Some(src);
         }
     }
+    // The partners of the subsampled JPEGs: each source turned 180°, encoded with the same settings.
+    let g33 = grad(w, h, 3);
+    let turned: Vec<(&str, u16, u16, &[u8], S, bool, u16)> = vec![
+        ("jpeg-enc-420-64x64.jpg", 64, 64, &g64, S::F_2_2, false, 0),
+        ("jpeg-enc-422-64x64.jpg", 64, 64, &g64, S::F_2_1, false, 0),
+        ("jpeg-enc-440-64x64.jpg", 64, 64, &g64, S::F_1_2, false, 0),
+        ("jpeg-enc-420-33x17.jpg", 33, 17, &g33, S::F_2_2, false, 0),
+        ("jpeg-enc-420-1x1.jpg", 1, 1, &[10, 200, 90], S::F_2_2, false, 0),
+        ("jpeg-enc-restart-64x64.jpg", 64, 64, &g64, S::F_2_2, false, 2),
+        ("jpeg-enc-progressive-64x64.jpg", 64, 64, &g64, S::F_2_2, true, 0),
+    ];
+    for (file, tw, th, data, s, progressive, restart) in turned {
+        let t = rot180(data, 3);
+        let bytes = jpeg(tw, th, &t, J::Rgb, 85, s, progressive, restart);
+        let f = v.iter_mut().find(|f| f.file == file).expect("subsampled fixture");
+        f.turned = Some((bytes, to_rgba(&t, 3)));
+    }
     v
 }
 
@@ -501,6 +528,10 @@ pub fn emit(out: &mut Out, fixtures: &[Fixture]) {
         out.insert(format!("fixtures/{}", f.file), f.bytes.clone());
         if let Some(src) = &f.source {
             out.insert(format!("fixtures/{}.source.rgba", f.file), src.clone());
+        }
+        if let Some((bytes, src)) = &f.turned {
+            out.insert(format!("fixtures/{}.rot180.jpg", f.file), bytes.clone());
+            out.insert(format!("fixtures/{}.rot180.jpg.source.rgba", f.file), src.clone());
         }
         index.push_str(&format!("{}\t{}\t{}\t{}\n", f.file, f.kind, f.bytes.len(), f.how));
     }

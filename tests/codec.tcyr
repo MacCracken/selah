@@ -286,7 +286,7 @@ fn _t_jpeg_roundtrip_close(): i64 {
 }
 
 fn _t_bmp_rgb32_is_opaque(): i64 {
-    test_group("32-bpp BI_RGB BMP decodes opaque (F4)");
+    test_group("32-bpp BI_RGB BMP decodes opaque (F4, fixed in chitra 1.4.0)");
     var n = 0;
     var src = _t_fixture("bmp-32-rgb-33x17.bmp", &n);
     var t, v = _sl_decode_image(src, n);
@@ -314,10 +314,83 @@ fn _t_bmp_rgb32_is_opaque(): i64 {
     return 0;
 }
 
+fn _t_progressive_decodes(): i64 {
+    test_group("progressive JPEG decodes (chitra 1.4.0; ADR 0002 #2 closed)");
+    var n = 0;
+    var src = _t_fixture("jpeg-enc-progressive-64x64.jpg", &n);
+    var t, v = _sl_decode_image(src, n);
+    assert(is_ok(t) == 1, "decodes");
+    if (is_ok(t) != 1) { return 0; }
+    var img: *SlImage = _sl_as_image(v);
+    # The baseline file holds the same quantised coefficients (jpeg-encoder, the same pixels, q85, 4:2:0), so the
+    # progressive one must decode to exactly its pixels.
+    var bn = 0;
+    var bsrc = _t_fixture("jpeg-enc-420-64x64.jpg", &bn);
+    var bt, bv = _sl_decode_image(bsrc, bn);
+    assert(img.width == 64 && img.height == 64 && is_ok(bt) == 1, "64x64, and the baseline decodes");
+    if (is_ok(bt) == 1) {
+        var base: *SlImage = _sl_as_image(bv);
+        assert(memeq(img.pixels, base.pixels, 64 * 64 * 4) == 1, "the baseline file's pixels");
+        SlImage_free(base);
+    }
+    SlImage_free(img);
+    return 0;
+}
+
+# Resident pages of this process (the second field of /proc/self/statm), or -1 where there is none.
+fn _t_resident_pages(): i64 {
+    var buf: u8[128];
+    var fd = sys_open("/proc/self/statm", 0, 0);
+    if (fd < 0) { return -1; }
+    var r = sys_read(fd, &buf, 127);
+    sys_close(fd);
+    if (r <= 0) { return -1; }
+    var i = 0;
+    while (i < r && load8(&buf + i) != 32) { i = i + 1; }
+    i = i + 1;
+    var v = 0;
+    while (i < r && load8(&buf + i) >= 48 && load8(&buf + i) <= 57) {
+        v = v * 10 + load8(&buf + i) - 48;
+        i = i + 1;
+    }
+    return v;
+}
+
+fn _t_decode_memory_returned(): i64 {
+    test_group("a decode's memory goes back (L16, chitra 1.4.0's allocator form)");
+    var n = 0;
+    var src = _t_fixture("jpeg-enc-progressive-64x64.jpg", &n);
+    var k = 0;
+    while (k < 20) {
+        var t0, v0 = _sl_decode_image(src, n);
+        if (is_ok(t0) == 1) { SlImage_free(_sl_as_image(v0)); }
+        k = k + 1;
+    }
+    var before = _t_resident_pages();
+    k = 0;
+    var ok = 1;
+    while (k < 1000) {
+        var t, v = _sl_decode_image(src, n);
+        if (is_ok(t) == 1) {
+            SlImage_free(_sl_as_image(v));
+        } else {
+            ok = 0;
+        }
+        k = k + 1;
+    }
+    var after = _t_resident_pages();
+    assert(ok == 1, "1,000 decodes");
+    # On the bump heap each decode keeps about 68 KiB (the image, the coefficient planes, the tables): 1,000 of them
+    # grew the process by 66 MiB (measured), and through the freelist by none.
+    if (before >= 0 && after >= 0) {
+        assert(after - before < 1024, "resident memory grows by less than 4 MiB");
+    }
+    return 0;
+}
+
 fn _t_refusal_codes(): i64 {
     test_group("refusal codes");
     assert(_t_fixture_err("webp-lossless-rgba8-7x3.webp") == SL_ERR_UNSUPPORTED_FORMAT, "WebP (ADR 0002 #1)");
-    assert(_t_fixture_err("jpeg-enc-progressive-64x64.jpg") == SL_ERR_UNSUPPORTED_FORMAT, "progressive (#2)");
     assert(_t_fixture_err("jpeg-enc-cmyk-33x17.jpg") == SL_ERR_UNSUPPORTED_FORMAT, "CMYK (#16)");
     assert(_t_fixture_err("gif-1x1.gif") == SL_ERR_ANNOTATION, "GIF (#3)");
     assert(_t_fixture_err("other-empty.bin") == SL_ERR_ANNOTATION, "empty");
@@ -358,6 +431,8 @@ fn main(): i64 {
     _t_lossless_roundtrips();
     _t_jpeg_roundtrip_close();
     _t_bmp_rgb32_is_opaque();
+    _t_progressive_decodes();
+    _t_decode_memory_returned();
     _t_refusal_codes();
     _t_sniff();
     return assert_summary();

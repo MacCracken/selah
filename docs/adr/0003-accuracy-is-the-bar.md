@@ -67,9 +67,9 @@ dependencies behind questions for the maintainer.
 - **Positive**
   - The port can be more accurate than Rust, and the harness shows where it is.
   - Upstream defects are filed with data, by the port, as they are found. That happened for chitra on 2026-11-14:
-    F1, F3, F4, CMYK, and progressive JPEG.
+    F1, F3, F4, CMYK, and progressive JPEG. chitra 1.4.0 answered all five (selah 1.0.1).
   - The known-defect list cannot rot, because a fix that lands makes a listed row fail until the row is removed
-    from the list.
+    from the list. With chitra 1.4.1 the fixed rows failed in exactly that way (port-parity §11).
 - **Negative**
   - The oracle now carries ground truth beside Rust's outputs (the `.source.rgba` fixtures), and in time some
     corrected expectations. Those are more generator code to keep deterministic under `--check`.

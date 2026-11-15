@@ -4,7 +4,7 @@
 # so does this, in the layout that encoder uses for RGBA:
 #   - BITMAPFILEHEADER (14 bytes), then a BITMAPV4HEADER (108 bytes);
 #   - BI_BITFIELDS with the masks R 0x00FF0000, G 0x0000FF00, B 0x000000FF and A 0xFF000000, so the alpha is
-#     *declared* (a 32-bpp BI_RGB file's fourth byte means nothing; see codec.cyr's F4 note);
+#     *declared* (a 32-bpp BI_RGB file's fourth byte means nothing: BITMAPINFOHEADER calls it unused);
 #   - colour space 'sRGB', endpoints and gamma zero;
 #   - bottom-up rows of B, G, R, A (32-bpp rows need no padding).
 # Encoded bytes are never compared with Rust's (port plan §4 class R): the round trip is, under chitra and Rust.

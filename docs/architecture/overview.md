@@ -57,7 +57,6 @@ declares bote.
 |---|---|---|
 | Decoded image side | 32,768 px | `SL_MAX_IMAGE_DIMENSION` (`annotate`) |
 | Decoded buffer (native and RGBA copy, from the header) | 512 MiB | `SL_MAX_DECODE_ALLOC` (`annotate`) |
-| Decoded pixels | 16,777,216 | chitra's cap (ledger L17) |
 | Annotation layer file | 64 MiB | `SL_MAX_LAYER_FILE_BYTES` (`annotate`) |
 | MCP input file | 256 MiB | `SL_MAX_INPUT_FILE_BYTES` (`mcp`) |
 | MCP annotations per call | 10,000 | `SL_MAX_ANNOTATIONS` (`mcp`) |
@@ -74,15 +73,19 @@ declares bote.
 - Each HTTP request and each JSON parse runs in a scratch arena, freed when the call ends. The arena never frees a
   block early, because sandhi and bayan may read a block they have freed; one spare 64 KiB chunk outlives the
   arenas (ledger L24).
-- chitra's decoders and bayan's base64 allocate from the bump heap, which never frees, so a long-running consumer
-  such as the MCP server grows with each decode (ledger L16, L19; filed).
+- chitra decodes through the freelist (`_sl_chitra_allocator` in `codec`, chitra 1.4.0's allocator form): a
+  decode's working buffers go back before it returns, and `SlImage_free` returns the image through
+  `chitra_image_free`.
+- bayan's base64 allocates from the bump heap, which never frees, so a long-running consumer such as the MCP server
+  grows with each base64 decode (ledger L19; filed).
 
 ## Concurrency
 
 The library keeps no locks of its own. The history file is shared between processes through `flock` on
 `<history>.lock`. The MCP server's API URL, history store and hoosh configuration are module state, set by
 `selah_mcp_dispatcher`, because bote's handlers take no context: one server per process. The scratch arena's spare
-chunk is the only state threads could race on, and it is taken and given back with `atomic_cas`.
+chunk is the only state threads could race on, and it is taken and given back with `atomic_cas`. chitra's allocator
+vtable is rewritten on every decode with the same five values, so two threads writing it at once agree.
 
 ## External services
 

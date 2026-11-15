@@ -7,7 +7,7 @@ In your project's `cyrius.cyml`:
 ```toml
 [deps.selah]
 git = "https://github.com/MacCracken/selah.git"
-tag = "1.0.0"
+tag = "1.0.1"
 modules = ["dist/selah.cyr"]
 ```
 

@@ -9,6 +9,11 @@
 //! of the blob when the RGBA is over 4 MiB), or
 //! `→ E:<SelahError variant>` with the message in the note. Class A for PNG, BMP and every refusal;
 //! class B for a decoded JPEG (the IDCTs differ; port plan §4).
+//!
+//! A JPEG with chroma subsampling carries its partner turned 180° (`Fixture::turned`): a second input
+//! `p:fixtures/<file>.rot180.jpg` and a fourth output `p:decode/<file>.rot180.jpg.rgba`, Rust's pixels for it. The
+//! harness gates such a row on accuracy against the source over the pair, not on conformance with Rust
+//! (port-parity.md §11).
 
 use crate::fixtures::Fixture;
 
@@ -43,11 +48,24 @@ pub fn emit(out: &mut Out, fixtures: &[Fixture]) {
                     out.insert(blob.clone(), rgba);
                     format!("p:{blob}")
                 };
+                let mut inputs = vec![input];
+                let mut outputs = vec![format!("i:{w}"), format!("i:{h}"), pixels];
+                if let Some((bytes, _)) = &f.turned {
+                    let png = selah::annotate_image(bytes, &[], selah::ImageFormat::Png).expect("the turned partner decodes");
+                    let turned = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+                        .expect("selah's own PNG output decodes")
+                        .to_rgba8()
+                        .into_raw();
+                    let blob = format!("decode/{}.rot180.jpg.rgba", f.file);
+                    out.insert(blob.clone(), turned);
+                    inputs.push(format!("p:fixtures/{}.rot180.jpg", f.file));
+                    outputs.push(format!("p:{blob}"));
+                }
                 rows.push(Row {
                     func: "decode".into(),
                     class: if f.kind == "jpeg" { "B" } else { "A" },
-                    inputs: vec![input],
-                    outputs: vec![format!("i:{w}"), format!("i:{h}"), pixels],
+                    inputs,
+                    outputs,
                     note: format!("{}: {}{adr}", f.kind, f.how),
                 });
             }

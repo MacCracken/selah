@@ -5,7 +5,8 @@
 
 ## Version
 
-**1.0.0** in `VERSION`: the Cyrius port, complete (M0–M7), ready for the maintainer's tag. The Rust crate's final
+**1.0.1** in `VERSION`, ready for the maintainer's tag: 1.0.0 (the Cyrius port, M0–M7) on chitra 1.4.1, which fixed
+the decoder defects and limits selah filed (port-parity §11). The Rust crate's final
 release, 0.30.0 (tag `0.30.0`, commit `1a494b4`), stays frozen in `rust-old/` as the reference oracle until WebP is
 ported or dropped (port plan §7). Accuracy is the bar, and Rust is the floor
 ([ADR 0003](../adr/0003-accuracy-is-the-bar.md)). Plan of record: [`selah-port-plan.md`](selah-port-plan.md).
@@ -26,7 +27,7 @@ ported or dropped (port plan §7). Accuracy is the bar, and Rust is the floor
 | M4 Annotation | ✅ done 2026-11-14 |
 | M5 System and clients | ✅ done 2026-11-14 |
 | M6 MCP profile | ✅ done 2026-11-14 |
-| M7 Release 1.0.0 | ✅ done 2026-11-14 (the tag is the maintainer's) |
+| M7 Release 1.0.0 | ✅ done 2026-11-14, tagged `1.0.0` |
 
 ## Source
 
@@ -41,11 +42,10 @@ ported or dropped (port plan §7). Accuracy is the bar, and Rust is the floor
 - Rust-test ledger: closed. 289 tests, 288 ported and one not applicable
   ([`rust-test-ledger.md`](rust-test-ledger.md), `scripts/rust_test_ledger.py . --check`).
 - **Known limits, each filed upstream:**
-  - every decode's memory stays with the process (chitra, L16), which matters for the MCP server, and so does every
-    base64 decode (bayan, L19);
-  - images over 16.7 MP are refused (chitra, L17);
-  - decoding runs about 20× slower than Rust (chitra, L18), and every PNG compression pays about 110 µs up front
-    (sankoch, L20);
+  - every base64 decode's memory stays with the process (bayan, L19), which matters for the MCP server; decodes
+    return theirs since 1.0.1 (chitra 1.4.0's allocator form);
+  - decoding runs about 11× (JPEG) and 17× (PNG) slower than Rust (L18): what is left of a PNG decode is mostly
+    sankoch's inflate (filed there), and every PNG compression pays about 110 µs up front (sankoch, L20);
   - reading JSON (the history, a capture answer) is bound by bayan's parser, 14–25 ns a byte (bayan, L21);
   - sandhi reserves a request's whole response cap, so selah hands it a freelist arena (sandhi, L22);
   - the MCP server's stdio refuses a request line over 128 KiB, about 1,950 annotations in one call (bote, L23);
@@ -63,11 +63,12 @@ ported or dropped (port plan §7). Accuracy is the bar, and Rust is the floor
   under a plain `cyrius test`: its `test.cyml` prepends bote. Under `--features mcp` every bote symbol would be
   defined twice.
 - Golden corpus: 48,095 rows, every module gated, the harness output identical on x86_64 ELF, aarch64 (qemu) and
-  x86_64 PE (wine); the MCP harness on x86_64 and aarch64.
+  x86_64 PE (wine); the MCP harness on x86_64 and aarch64. Re-run for 1.0.1 on chitra 1.4.1 (port-parity §11).
   - M1's 34,863 and `ai`'s 8,457 are all class A and all pass.
-  - `decode` (66): 55 ok, 3 accepted (ADR 0002 #1, #2, #16), 8 upstream (F1, F3 and the pixel cap, filed with chitra).
-  - `codec` (480): 361 ok, 119 accepted (WebP).
-  - `annotate` (3,457): 3,445 ok, 4 accepted (WebP), 8 upstream (the 16-bpp BMPs under F3).
+  - `decode` (66): 64 ok, 2 accepted (WebP under ADR 0002 #1, CMYK under #16). A subsampled JPEG is gated on accuracy
+    over the fixture and its partner turned 180° (port-parity §11); the known-defect list is empty.
+  - `codec` (480): 364 ok, 116 accepted (WebP).
+  - `annotate` (3,457): 3,453 ok, 4 accepted (WebP).
   - `system` (662): 654 ok, 8 accepted (WebP captures, and the ADR 0002 #21 JSON rows).
   - `mcp` (110): 106 ok, 4 accepted (WebP under ADR 0002 #1, the hoosh engine under #24), through Rust's real stdio
     server.
@@ -83,7 +84,7 @@ Declared in `cyrius.cyml`, vendored in `lib/` and pinned in `cyrius.lock`:
 
 - stdlib: syscalls, string, alloc, str, fmt, io, fs, vec, hashmap, math, tagged, result, freelist, chrono, random,
   process, thread, bayan, sandhi, sakshi
-- chitra 1.3.1 (brings sankoch 2.8.9's zlib profile), ranga 2.4.0
+- chitra 1.4.1 (brings sankoch 2.8.9's zlib profile), ranga 2.4.0
 - optional, feature `mcp`: bote 3.8.15 (brings libro 2.11.3, majra 2.13.0, patra 1.16.6, sigil 3.13.15)
 - test scope: assert, bench
 
@@ -100,15 +101,10 @@ taswir, aethersafta, kiran (planned): none is in Cyrius yet. Rust consumers stay
   (`hoosh/docs/development/issues/2026-11-14-selah-vision-image-parts-reach-only-openai-shaped-providers.md`)
 - sandhi: `total_ms` and a blocked read (`sandhi/docs/development/issues/2026-11-11-total-ms-does-not-bound-a-blocked-first-read.md`)
 - cyrius: RFC 3339 with fractions and offsets in `lib/chrono.cyr` (`cyrius/docs/development/issues/2026-11-14-chrono-rfc3339-has-no-fraction-or-offset.md`)
-- chitra (all `chitra/docs/development/issues/2026-11-14-*`):
-  - interpolated chroma upsampling (`box-chroma-upsampling-loses-accuracy`, F1);
-  - rounded sub-8-bit BMP channels (`bmp-sub-8-bit-replication-is-not-the-nearest-value`, F3);
-  - opaque 32-bpp `BI_RGB` (`bmp-bi-rgb-32bpp-unused-byte-read-as-alpha`, F4);
-  - CMYK samples (`cmyk-ycck-jpeg-refused`, F5);
-  - progressive JPEG (`progressive-jpeg-has-a-consumer`);
-  - memory (`every-decode-leaks-in-a-long-running-consumer`, L16);
-  - the 16.7 MP cap (`fixed-16-mp-cap-refuses-screenshots`, L17);
-  - decode speed (`decode-throughput-is-about-20x-rust-image`, L18)
+- chitra: decode speed (`chitra/docs/development/issues/2026-11-14-decode-throughput-is-about-20x-rust-image.md`, L18),
+  open for PNG; its other seven selah issues closed in chitra 1.4.0 and 1.4.1
+- sankoch: inflate throughput, most of a PNG decode
+  (`sankoch/docs/development/issues/2026-11-14-inflate-is-most-of-a-png-decode.md`, L18)
 - bayan: base64 decoding and encoding with an allocator
   (`bayan/docs/development/issues/2026-11-14-base64-decode-has-no-allocator-form.md`, L19), and the JSON parser's
   throughput (`bayan/docs/development/issues/2026-11-14-json-value-parse-is-15-to-25-ns-per-byte.md`, L21)
@@ -125,7 +121,7 @@ taswir, aethersafta, kiran (planned): none is in Cyrius yet. Rust consumers stay
 
 ## Next
 
-The maintainer tags `1.0.0`. After it (port plan §7): WebP, capture against a live daimon once its routes ship (L9),
-OCR on more providers (L8), extracting the encoders into a shared package, and the Rust roadmap's open items (OCR
-boxes mapped to PII matches, a format-aware metadata scan, MCP path confinement, a per-call render budget). Each
-ledger row leaves when its upstream fix lands.
+The maintainer tags `1.0.1`.
+[`roadmap.md`](roadmap.md) schedules the rest: 1.0.x patches as upstream fixes land, 1.1.0 for the selah-side items
+unblocked now (CMYK conversion, a format-aware metadata scan, MCP path confinement and a render budget), 1.2.0 for
+the live services, 1.3.0 for WebP and retiring `rust-old/`. Each ledger row leaves when its upstream fix lands.

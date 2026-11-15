@@ -29,7 +29,8 @@ All tools apply the same rules to client-supplied paths:
   configs) are refused before any processing. A WebP input is recognised and refused (ADR 0002 #1).
 - Outputs must have an image extension (`png`, `jpg`, `jpeg`, `bmp`; `webp` is refused) and may not be an existing
   symlink, directory or device. The output format follows the extension.
-- Images are decoded with limits: at most 32,768 px a side, and at most 16,777,216 pixels in all (chitra's cap, filed).
+- Images are decoded with limits: at most 32,768 px a side, and at most 512 MiB for the decoded buffer (the larger of
+  the decoder's native buffer and the RGBA copy), both checked from the header before anything is allocated.
 - Default outputs are written **next to the input file** (`<stem>_<suffix>.<ext>`, `.png` if the input has no image
   extension).
 - Outputs are written atomically and private (0600): a temp file beside the target, renamed over it.

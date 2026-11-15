@@ -38,7 +38,9 @@ include "src/daimon.cyr"
 # M3 gates these under ADR 0003 (port plan §4; the bounds are docs/development/port-parity.md §5):
 # - class A rows must match exactly (PNG and BMP pixels, every verdict and its error variant);
 # - class B rows (a JPEG decoded by both) must pass two gates: accuracy against the fixture's source pixels (port
-#   mean <= Rust's + 0.050 and max <= Rust's + 2) and conformance with Rust (per channel |d| <= K_jpeg);
+#   mean <= Rust's + 0.050 and max <= Rust's + 2) and conformance with Rust (per channel |d| <= K_jpeg). Since 1.0.1
+#   a JPEG with chroma subsampling instead passes on accuracy over the fixture and its partner turned 180°
+#   (_par_pair_gate; port-parity.md §11);
 # - an `adr=0002#N` row passes when the port refuses with UnsupportedFormat, as ADR 0002 row N says;
 # - a row on the known-defect list (`_par_known`) reports `upstream` while it shows its defect, and FAILS once it
 #   passes, so the list is cut when the upstream fix lands.
@@ -48,11 +50,10 @@ var _PAR_K_JPEG = 2;
 var _PAR_ACC_MEAN = 50;   # thousandths
 var _PAR_ACC_MAX = 2;
 
-# The known-defect list: a decode fixture (exact file name) and the filed upstream issue it waits on (ADR 0003, port
-# plan §6). A listed row reports `upstream` while it shows the defect and FAILS once it passes.
-var _PAR_F1 = "chitra 2026-11-14-box-chroma-upsampling-loses-accuracy (L12)";
-var _PAR_F3 = "chitra 2026-11-14-bmp-sub-8-bit-replication-is-not-the-nearest-value (L13)";
-var _PAR_CAP = "chitra 2026-11-14-fixed-16-mp-cap-refuses-screenshots (L17)";
+# The known-defect list: a decode fixture (exact file name) and what it waits on, a filed upstream issue or an open
+# parity question (ADR 0003, port plan §6). A listed row reports `upstream` while it fails and FAILS once it passes.
+# Empty since 1.0.1: chitra 1.4.0 fixed every chitra row, and the subsampled-JPEG gate (port-parity §11) took the
+# last two.
 
 # 1 when file[0..n) is exactly the NUL-terminated name.
 fn _par_is(file, n, name): i64 {
@@ -61,14 +62,6 @@ fn _par_is(file, n, name): i64 {
 }
 
 fn _par_known(file, n): i64 {
-    if (_par_is(file, n, "jpeg-enc-420-64x64.jpg") == 1) { return _PAR_F1; }
-    if (_par_is(file, n, "jpeg-enc-420-33x17.jpg") == 1) { return _PAR_F1; }
-    if (_par_is(file, n, "jpeg-enc-422-64x64.jpg") == 1) { return _PAR_F1; }
-    if (_par_is(file, n, "jpeg-enc-440-64x64.jpg") == 1) { return _PAR_F1; }
-    if (_par_is(file, n, "jpeg-enc-restart-64x64.jpg") == 1) { return _PAR_F1; }
-    if (_par_is(file, n, "bmp-16-555-33x17.bmp") == 1) { return _PAR_F3; }
-    if (_par_is(file, n, "bmp-16-565-33x17.bmp") == 1) { return _PAR_F3; }
-    if (_par_is(file, n, "png-gray1-4100x4100.png") == 1) { return _PAR_CAP; }
     return 0;
 }
 
@@ -221,6 +214,47 @@ fn _par_hex(p, n): i64 {
     return v;
 }
 
+# The gate of a JPEG with chroma subsampling (port-parity §11, approved 2026-11-14): the port's pixels `px` and Rust's
+# `blob` (n bytes) for the fixture at fp, against its source `srcpx`, and the same for its partner turned 180° at tp2,
+# whose Rust pixels are the row's fourth output. Over the pair the port's mean error must be within _PAR_ACC_MEAN of
+# Rust's, and its worst pixel within _PAR_ACC_MAX of Rust's worst. Returns 0 when it passes, else why it does not.
+fn _par_pair_gate(fp, fn_len, px, blob, srcpx, n, tp2, tn2): i64 {
+    if (srcpx == 0) { return "a subsampled row without its source pixels"; }
+    var pm1, px1 = _par_err_vs(px, srcpx, n);
+    var rm1, rx1 = _par_err_vs(blob, srcpx, n);
+    _par_accuracy_line(fp, fn_len, pm1, px1, rm1, rx1, 1);
+    var len2 = 0;
+    var src2 = _pc_read(tp2, tn2, &len2);
+    if (src2 == 0) { return "the turned partner is unreadable"; }
+    var t, v = _sl_decode_image(src2, len2);
+    if (is_ok(t) != 1) { return "the port refuses the turned partner"; }
+    var img2: *SlImage = _sl_as_image(v);
+    var w2 = img2.width * img2.height * 4;
+    var sp2 = _par_source(tp2, tn2, n);
+    var bp = 0;
+    var bn = 0;
+    var blob2 = 0;
+    var blen2 = 0;
+    if (_pc_tok(3, 3, &bp, &bn) == 1 && bn > 2 && memeq(bp, "p:", 2) == 1) { blob2 = _pc_read(bp + 2, bn - 2, &blen2); }
+    if (w2 != n || sp2 == 0 || blob2 == 0 || blen2 != n) {
+        SlImage_free(img2);
+        return "the turned partner's size, source or Rust pixels do not match the fixture";
+    }
+    var pm2, px2 = _par_err_vs(img2.pixels, sp2, n);
+    var rm2, rx2 = _par_err_vs(blob2, sp2, n);
+    SlImage_free(img2);
+    _par_accuracy_line(tp2, tn2, pm2, px2, rm2, rx2, 1);
+    var pworst = px1;
+    if (px2 > pworst) { pworst = px2; }
+    var rworst = rx1;
+    if (rx2 > rworst) { rworst = rx2; }
+    if (pm1 + pm2 > rm1 + rm2 + 2 * _PAR_ACC_MEAN || pworst > rworst + _PAR_ACC_MAX) {
+        return _par_why5("pair accuracy: port mean x1000 ", (pm1 + pm2) / 2, " vs Rust's ", (rm1 + rm2) / 2,
+            " (bound +0.050, max +2)");
+    }
+    return 0;
+}
+
 # One decode row.
 fn _par_decode_row(): i64 {
     var tp = 0;
@@ -326,7 +360,17 @@ fn _par_decode_row(): i64 {
         SlImage_free(img);
         return _par_gate(mx == 0, known, _par_why5("pixels differ: ", diff, " bytes, max |d| ", mx, ""));
     }
-    # Class B: accuracy against the source, and conformance with Rust.
+    # Class B. A JPEG with chroma subsampling carries its partner turned 180°, and is gated on accuracy over the pair
+    # (_par_pair_gate): decoders round their upsampling differently, so its conformance with Rust is not a bound.
+    var tp2 = 0;
+    var tn2 = 0;
+    if (_pc_tok(2, 1, &tp2, &tn2) == 1 && tn2 > 2) {
+        var pg = _par_pair_gate(tp + 2, tn - 2, px, blob, srcpx, n, tp2 + 2, tn2 - 2);
+        SlImage_free(img);
+        if (pg == 0) { return _par_gate(1, known, "subsampled: accuracy over the pair"); }
+        return _par_gate(0, known, pg);
+    }
+    # Every other JPEG: accuracy against the source, and conformance with Rust.
     var pass = 1;
     var why = "within K_jpeg";
     if (mx > _PAR_K_JPEG) {

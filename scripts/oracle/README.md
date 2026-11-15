@@ -104,6 +104,11 @@ ImageFormat::Png)` decodes exactly as `render_to_image` does (format guessing, t
 the RGBA8 conversion) and re-encodes losslessly, which `oracle` decodes back. Class A for PNG, BMP and every
 refusal; class B for a decoded JPEG.
 
+A JPEG with chroma subsampling also carries its partner: the same source turned 180° and encoded with the same
+settings (`fixtures/<file>.rot180.jpg`, with its `.source.rgba`). The row names it as a second input and Rust's
+pixels for it as a fourth output, `p:decode/<file>.rot180.jpg.rgba`. The harness gates such a row on accuracy over
+the pair, not on conformance with Rust (`docs/development/port-parity.md` §11).
+
 ### `codec`
 
 - `convert_format A p:fixtures/<file> e:ImageFormat.<T>` → `i:<w> i:<h>` (the converted bytes read back with `image`)

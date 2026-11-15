@@ -1,5 +1,5 @@
 commit	1503109df263d74006ae16f76a4c4209b680a49d	bote	https://github.com/MacCracken/bote.git	3.8.15
-commit	39630de0e793903aeca3b6585d7d95d6185cb684	chitra	https://github.com/MacCracken/chitra.git	1.3.1
+commit	0320010dc6310de318959e84a09c92b801149b18	chitra	https://github.com/MacCracken/chitra.git	1.4.1
 commit	f4a31a450a112587d6fcc46a946e1b6061878e6f	libro	https://github.com/MacCracken/libro	2.11.3
 commit	40b827f275c452f592e0735b19b0cb47448c2794	majra	https://github.com/MacCracken/majra	2.13.0
 commit	efa2e34aefcb1dc65a01e734b2b19bfe18b10c7f	patra	https://github.com/MacCracken/patra.git	1.16.6
@@ -23,7 +23,7 @@ eba2079d68fe37db226c7d6803e8a35fe822dd906f4be22f3760e468da441e38  lib/async_agno
 cd9321d9400401cd8895d1f488d969ea391a1194b327f7a1fa60b99912b73cf2  lib/bench.cyr
 8f527416923797d05feabcd7a8d62a5bb3ea7e91a7b6774d3f8e39f270b52f89  lib/bote.cyr
 b99081e633d572569ee63c6a915fe4aa39b3ac4ff5665c08cc4c9416ed2f6928  lib/boxed.cyr
-57d59a82a02dca3650ffa3ac677df7b0a766259156868eb26e90374d0273ab08  lib/chitra.cyr
+2dceb04dedf74a0adbdf61416bf44ec0381ab9289f6716d2b8389ff02f8dc130  lib/chitra.cyr
 2e2e802085112d781225c517fca853b4adbf29850a96b21b6ff32469f0736516  lib/chrono.cyr
 096eabc580c807f3e378fbe56058780a28cdf95b9c70b44672bca0a71cf969f6  lib/ct.cyr
 263ba39de07857c917211756c549463f8c8115ed22c892631fac474e3ed2c5d5  lib/dynlib.cyr

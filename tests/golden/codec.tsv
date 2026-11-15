@@ -231,9 +231,9 @@ convert_format	A	p:fixtures/jpeg-enc-gray-64x64.jpg e:ImageFormat.Png	i:64 i:64	
 convert_format	A	p:fixtures/jpeg-enc-gray-64x64.jpg e:ImageFormat.Jpeg	i:64 i:64	jpeg-enc-gray-64x64.jpg -> Jpeg
 convert_format	A	p:fixtures/jpeg-enc-gray-64x64.jpg e:ImageFormat.Bmp	i:64 i:64	jpeg-enc-gray-64x64.jpg -> Bmp
 convert_format	A	p:fixtures/jpeg-enc-gray-64x64.jpg e:ImageFormat.WebP	i:64 i:64	jpeg-enc-gray-64x64.jpg -> WebP adr=0002#1
-convert_format	A	p:fixtures/jpeg-enc-progressive-64x64.jpg e:ImageFormat.Png	i:64 i:64	jpeg-enc-progressive-64x64.jpg -> Png adr=0002#2
-convert_format	A	p:fixtures/jpeg-enc-progressive-64x64.jpg e:ImageFormat.Jpeg	i:64 i:64	jpeg-enc-progressive-64x64.jpg -> Jpeg adr=0002#2
-convert_format	A	p:fixtures/jpeg-enc-progressive-64x64.jpg e:ImageFormat.Bmp	i:64 i:64	jpeg-enc-progressive-64x64.jpg -> Bmp adr=0002#2
+convert_format	A	p:fixtures/jpeg-enc-progressive-64x64.jpg e:ImageFormat.Png	i:64 i:64	jpeg-enc-progressive-64x64.jpg -> Png
+convert_format	A	p:fixtures/jpeg-enc-progressive-64x64.jpg e:ImageFormat.Jpeg	i:64 i:64	jpeg-enc-progressive-64x64.jpg -> Jpeg
+convert_format	A	p:fixtures/jpeg-enc-progressive-64x64.jpg e:ImageFormat.Bmp	i:64 i:64	jpeg-enc-progressive-64x64.jpg -> Bmp
 convert_format	A	p:fixtures/jpeg-enc-progressive-64x64.jpg e:ImageFormat.WebP	i:64 i:64	jpeg-enc-progressive-64x64.jpg -> WebP adr=0002#1
 convert_format	A	p:fixtures/jpeg-enc-cmyk-33x17.jpg e:ImageFormat.Png	i:33 i:17	jpeg-enc-cmyk-33x17.jpg -> Png adr=0002#16
 convert_format	A	p:fixtures/jpeg-enc-cmyk-33x17.jpg e:ImageFormat.Jpeg	i:33 i:17	jpeg-enc-cmyk-33x17.jpg -> Jpeg adr=0002#16

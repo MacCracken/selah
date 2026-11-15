@@ -68,7 +68,7 @@ Without subsampling the two decoders are equally accurate: the largest gap in th
 fixture), and chitra is the closer of the two on grayscale. With subsampling chitra is 0.13–1.34 worse on the mean
 and up to 24 worse at the worst pixel. All of that gap is the upsampler.
 
-### F1: JPEG chroma upsampling, box (chitra) against interpolated (Rust): chitra defect, filed
+### F1: JPEG chroma upsampling, box (chitra) against interpolated (Rust): chitra defect, fixed in chitra 1.4.0 (§11)
 
 - **Measured:** the table above. On the 4:2:0 fixtures chitra's mean error is about 30 % higher, and its worst
   pixel is 78 levels off against Rust's 54. Against Rust directly the difference is at most 36 per channel (§1).
@@ -88,7 +88,7 @@ and up to 24 worse at the worst pixel. All of that gap is the upsampler.
 - **Bound:** **K_jpeg = 2** is class B's conformance bound between two correct decoders, not a "match Rust"
   allowance. Class B's accuracy gate is the one that catches F1.
 
-### F3: BMP channels narrower than 8 bits: chitra defect, filed
+### F3: BMP channels narrower than 8 bits: chitra defect, fixed in chitra 1.4.0 (§11)
 
 - **Measured:**
   - the 5-5-5 and 5-6-5 fixtures differ by 1 on 204 and 235 bytes;
@@ -101,7 +101,7 @@ and up to 24 worse at the worst pixel. All of that gap is the upsampler.
 - **Filed:** `chitra/docs/development/issues/2026-11-14-bmp-sub-8-bit-replication-is-not-the-nearest-value.md`.
 - **Meanwhile:** these are class A rows against the correctly rounded value, on the known-defect list (L13).
 
-### F4: 32-bpp `BI_RGB` BMP, the fourth byte read as alpha: chitra defect, filed
+### F4: 32-bpp `BI_RGB` BMP, the fourth byte read as alpha: chitra defect, fixed in chitra 1.4.0 (§11)
 
 - **Measured:** max \|d\| 254, all in alpha. 559 of 561 pixels decode non-opaque.
 - **Which is right:** opaque. In Microsoft's `BITMAPINFOHEADER` definition, the high byte of each `BI_RGB` DWORD
@@ -111,7 +111,7 @@ and up to 24 worse at the worst pixel. All of that gap is the upsampler.
 - **Meanwhile:** selah decodes these files opaque itself, in `src/codec.cyr` at M3 (ledger L11), so the row is
   class A and `ok`. The guard leaves when chitra lands the fix.
 
-### F5: CMYK and YCCK JPEG: chitra gap, filed
+### F5: CMYK and YCCK JPEG: chitra gap, filed; chitra 1.4.0 returns the samples, and the conversion is selah's (§11)
 
 - **What happens:** Rust decodes them and converts to RGB. chitra refuses them (its ADR 0009 declines to guess a
   colour conversion).
@@ -121,7 +121,7 @@ and up to 24 worse at the worst pixel. All of that gap is the upsampler.
   - ICC as the accurate path to RGB.
 - **Meanwhile:** selah refuses these files, as ADR 0002 #16 records (ledger L14).
 
-### Progressive JPEG: chitra deferral, now with a consumer, filed
+### Progressive JPEG: chitra deferral, now with a consumer, filed; decodes since chitra 1.4.0 (§11)
 
 - chitra's roadmap defers SOF2 "until a consumer demonstrably needs it", and selah is that consumer.
 - **Filed:** `chitra/docs/development/issues/2026-11-14-progressive-jpeg-has-a-consumer.md`.
@@ -152,15 +152,16 @@ taught:
 
 ## 5. Bounds
 
-Each bound is set before the first gated comparison, and none is ever widened. The one exception, the JPEG encoder's
-bound, is recorded below with its history and the maintainer's approval.
+Each bound is set before the first gated comparison, and none is ever widened. Two changes were made after a
+comparison, each recorded with its history and the maintainer's approval: the JPEG encoder's bound (below), and the
+subsampled-JPEG gate (§11, 1.0.1).
 
 | Bound | Value | Set | Gates from |
 |---|---|---|---|
-| Class B accuracy, mean | port mean abs error vs source ≤ reference's + **0.05** | 2026-11-14, from §2: the largest IDCT-only excess is 0.007, and the upsampling defect it must catch is 0.13–1.34 | M3 |
-| Class B accuracy, max | port max abs error vs source ≤ reference's + **2** | 2026-11-14 (K_jpeg) | M3 |
-| K_jpeg (conformance, same upsampling) | **2** per channel | 2026-11-14, from §1 | M3 |
-| 16-bit BMP | class A against the correctly rounded value (F3) | 2026-11-14 | M3, on the known-defect list until chitra rounds |
+| Class B accuracy, mean | port mean abs error vs source ≤ reference's + **0.05** | 2026-11-14, from §2: the largest IDCT-only excess is 0.007, and the upsampling defect it must catch is 0.13–1.34 | M3. Since 1.0.1, with chroma subsampling: over the fixture and its partner turned 180° (§11) |
+| Class B accuracy, max | port max abs error vs source ≤ reference's + **2** | 2026-11-14 (K_jpeg) | M3. Since 1.0.1, with chroma subsampling: the worst of the pair against Rust's worst (§11) |
+| K_jpeg (conformance, same upsampling) | **2** per channel | 2026-11-14, from §1 | M3. Since 1.0.1, JPEG without chroma subsampling only (§11) |
+| 16-bit BMP | class A against the correctly rounded value (F3) | 2026-11-14 | M3; passes since 1.0.1 (chitra 1.4.0 rounds) |
 | Class R, PNG and BMP | decode(encode(px)) = px exactly, under chitra and under Rust's `image` | port plan §4 (M0) | M3 |
 | Class R, JPEG encoder | the quantised coefficients against the exact mathematics: **none off by more than 1, at most 1 % off by one**, per image | 2026-11-14, M3 (see below) | M3 |
 
@@ -326,3 +327,147 @@ The whole corpus, 48,095 rows, at `VERSION` 1.0.0:
 
 The MCP profile does not build for PE: bote's dependency majra uses the futex syscalls, and its own `state.md` says
 Windows is not a majra target. Everything outside the MCP profile builds and passes there.
+
+## 11. 1.0.1 (2026-11-14): chitra 1.4.1
+
+chitra 1.4.0 and 1.4.1 answered every chitra issue selah filed at M3 except the PNG half of decode speed. selah now
+decodes through `chitra_image_decode_budget_via` with the freelist as its allocator, and its F4 guard is gone. The
+corpus was re-run before the known-defect list changed, so the list itself reported each fix: a listed row that
+passes fails the run.
+
+| Rows | 1.0.0 (chitra 1.3.1) | 1.0.1 (chitra 1.4.1) |
+|---|---|---|
+| 16-bpp BMP 5-5-5 and 5-6-5 (F3), and their 8 `redact_image` rows | upstream | ok: chitra rounds to the nearest level |
+| 32-bpp `BI_RGB` (F4) | ok, through selah's guard (L11) | ok, through chitra; the guard is gone |
+| `png-gray1-4100x4100` (L17) | upstream: refused over 16,777,216 pixels | ok: under a budget, the budget governs |
+| 4:2:0 64×64, 4:2:0 with a restart interval, 4:4:0 (F1) | upstream | ok, and more accurate than Rust |
+| 4:2:2 64×64, 4:2:0 33×17 (F1) | upstream | ok, under the subsampled-JPEG gate below |
+| progressive 64×64 and its 3 `convert_format` rows (ADR 0002 #2) | accepted: refused | ok; the oracle no longer marks it |
+
+- **Totals:**
+  - `decode`: 64 ok, 2 accepted (WebP #1, CMYK #16), 0 upstream, 0 failed (was 55 / 3 / 8);
+  - `codec`: 364 ok, 116 accepted (was 361 / 119);
+  - `annotate`: 3,453 ok, 4 accepted (was 3,445 / 4 / 8 upstream).
+- Every other module is unchanged.
+
+### Accuracy against the source
+
+The §2 table, re-measured; mean / max absolute error over RGB, on a 0–255 scale.
+
+| Fixture | Subsampling | chitra 1.4.1 | chitra 1.3.1 | Rust |
+|---|---|---|---|---|
+| `jpeg-image-q75-rgb-33x17-grad` | none | 2.668 / 32 | 2.674 / 32 | 2.676 / 32 |
+| `jpeg-image-q95-rgb-64x64-grad` | none | 0.684 / 9 | 0.684 / 9 | 0.687 / 9 |
+| `jpeg-image-q50-gray-33x17-grad` | gray | 0.545 / 1 | 0.545 / 1 | 0.545 / 1 |
+| `jpeg-image-q75-rgb-33x17-noise` | none | 13.945 / 76 | 13.944 / 76 | 13.937 / 76 |
+| `jpeg-enc-444-64x64` | 4:4:4 | 1.123 / 24 | 1.123 / 24 | 1.121 / 24 |
+| `jpeg-enc-gray-64x64` | gray | 0.281 / 1 | 0.281 / 1 | 0.296 / 1 |
+| `jpeg-enc-420-64x64` | 4:2:0 | **1.724** / 54 | 2.345 / 78 | 1.808 / 54 |
+| `jpeg-enc-restart-64x64` | 4:2:0, DRI 2 | **1.724** / 54 | 2.345 / 78 | 1.808 / 54 |
+| `jpeg-enc-420-33x17` | 4:2:0, partial MCUs | **3.809 / 46** | 5.402 / 58 | 4.062 / 47 |
+| `jpeg-enc-422-64x64` | 4:2:2 | 1.645 / 51 | 1.873 / 51 | **1.578** / 51 |
+| `jpeg-enc-440-64x64` | 4:4:0 | **1.748** / 46 | 1.991 / 47 | 1.865 / 46 |
+| `jpeg-enc-420-1x1` | 4:2:0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| `jpeg-enc-progressive-64x64` | 4:2:0, SOF2 | **1.724** / 54 | refused | 1.808 / 54 |
+
+Without subsampling nothing moved by more than 0.006 (chitra 1.4.0 now rounds IDCT ties as libjpeg does). The
+progressive file decodes to exactly the pixels of the baseline file with the same coefficients (`tests/codec.tcyr`).
+
+### The subsampled rows: libjpeg's upsampler, zune-jpeg's rounding, and the gate
+
+chitra 1.4 upsamples chroma exactly as libjpeg-turbo does: its output is byte-identical to `djpeg`. zune-jpeg 0.5.15,
+Rust's decoder, uses the same triangle filter but rounds differently (`src/upsampler/scalar.rs`):
+
+- **4:2:2 (h2v1):** zune computes every output as `(3a + b + 2) >> 2`, rounding half up, which biases chroma by
+  +0.125 of a level on average. libjpeg alternates `+1` and `+2` between neighbouring outputs, which is unbiased.
+- **4:2:0 (h2v2):** zune rounds the vertical pass to an integer, then rounds the horizontal pass: two roundings.
+  libjpeg keeps the vertical sums at full precision and rounds once.
+
+**Measured** on six sources:
+- encoders:
+  - jpeg-encoder 0.6.1, the fixtures' encoder, which decimates chroma (each pair keeps the left pixel's sample);
+  - cjpeg, which averages, at JFIF's siting;
+- both at q85;
+- decoders: `djpeg` (chitra's output) and zune-jpeg through `image` 0.25.10;
+- figures: mean / max against the source.
+
+| Source | Sampling | Encoder | libjpeg (chitra) | zune-jpeg (Rust) |
+|---|---|---|---|---|
+| the fixtures' gradient, 64×64 | 4:2:2 | jpeg-encoder | 1.646 / 51 | **1.578** / 51 |
+| | | cjpeg | 1.448 / 40 | **1.433** / 40 |
+| | 4:2:0 | jpeg-encoder | **1.724** / 54 | 1.809 / 54 |
+| | | cjpeg | **1.670** / 33 | 1.699 / 33 |
+| the same, mirrored left to right | 4:2:2 | jpeg-encoder | **1.639** / 38 | 1.702 / 38 |
+| | | cjpeg | **1.425** / 40 | 1.440 / 40 |
+| | 4:2:0 | jpeg-encoder | **2.432 / 53** | 2.674 / 55 |
+| | | cjpeg | **1.658** / 33 | 1.704 / 33 |
+| the fixtures' gradient, 33×17 | 4:2:2 | jpeg-encoder | 2.891 / 46 | **2.799** / 46 |
+| | | cjpeg | 2.296 / 40 | **2.276** / 40 |
+| | 4:2:0 | jpeg-encoder | **3.810 / 46** | 4.062 / 47 |
+| | | cjpeg | **3.242** / 37 | 3.326 / 37 |
+| noise, 64×64 | 4:2:2 and 4:2:0, both encoders | | 41.388 – 51.560 | within 0.010 |
+| a synthetic screenshot, 256×160 | 4:2:2 and 4:2:0, both encoders | | 7.344 – 12.076 | within 0.001 |
+| a smooth "photo", 128×128 | 4:2:2 | jpeg-encoder | **1.751** / 10 | 1.752 / 10 |
+| | | cjpeg | **1.265** / 9 | 1.269 / 9 |
+| | 4:2:0 | jpeg-encoder | **2.495** / 17 | 2.525 / 17 |
+| | | cjpeg | **1.370** / 12 | 1.428 / 12 |
+
+- **4:2:0:** libjpeg is ahead on every gradient and the photo, by up to 0.242, and level on noise and the screenshot.
+- **4:2:2:** which decoder is ahead on a gradient follows the gradient's direction.
+  - On the fixtures' rising gradient Rust is 0.068 ahead; on its mirror image the port is 0.063 ahead.
+  - Over the pair the two are level: 1.643 against 1.640 (cjpeg: 1.437 against 1.437).
+  - That is zune's round-half-up bias meeting a slope, not a better filter. Elsewhere they are within 0.004.
+
+So neither row is a chitra defect, and nothing is filed:
+
+- `jpeg-enc-422-64x64` failed the accuracy bound (mean +0.067 against +0.050), on the side of a bias that the mirror
+  image reverses.
+- `jpeg-enc-420-33x17` is the more accurate of the two (3.809 / 46 against 4.062 / 47). It failed conformance: max
+  \|d\| 3 against K_jpeg 2. K_jpeg was set for "the same upsampling" (above), which zune's double rounding is not.
+
+**The gate, changed with the maintainer's approval (2026-11-14).** Changing how a row is gated after a comparison is
+the maintainer's call, so both rows stayed on the known-defect list until it was decided.
+- **Conformance with Rust (K_jpeg)** applies only to JPEG without chroma subsampling, where both decoders produce
+  chroma at every pixel.
+- **A JPEG with chroma subsampling** is gated on accuracy against the source over the fixture and its partner turned
+  180°, with the same bounds:
+  - the pair's mean error within 0.050 of Rust's;
+  - the worst pixel of either within 2 of Rust's worst.
+- **Why 180°.** It mirrors both axes, so a rounding bias reverses for horizontal (4:2:2), vertical (4:4:0) and both
+  (4:2:0) subsampling alike.
+- **What the oracle writes.** Each subsampled fixture gains `<file>.rot180.jpg`, encoded with the same settings, with
+  its `.source.rgba` and Rust's decode (`decode/<file>.rot180.jpg.rgba`). The decode row names it as a second input
+  and a fourth output; no row is added anywhere else.
+
+| Fixture | Port, fixture / turned | Rust, fixture / turned | Pair means, port / Rust |
+|---|---|---|---|
+| `jpeg-enc-420-64x64` (and `-restart`, `-progressive`, the same coefficients) | 1.724 / 1.661 | 1.808 / 1.650 | **1.693** / 1.729 |
+| `jpeg-enc-422-64x64` | 1.645 / 1.639 | 1.578 / 1.701 | 1.642 / 1.640 |
+| `jpeg-enc-440-64x64` | 1.748 / 1.723 | 1.865 / 1.603 | 1.736 / 1.734 |
+| `jpeg-enc-420-33x17` | 3.809 / 3.762 | 4.062 / 3.603 | **3.786** / 3.833 |
+| `jpeg-enc-420-1x1` | 0 / 0 | 0 / 0 | 0 / 0 |
+
+- Every subsampled row passes, and the known-defect list is empty.
+- 4:4:0 shows why both axes turn. On its own fixture the port leads by 0.117; on the turned partner Rust leads by
+  0.120. Under the old gate that row had passed by the direction of its gradient.
+- **Mutation-checked.** The new harness and corpus run against 1.0.0 (chitra 1.3.1, box upsampling, F1) fail every
+  subsampled row. The pair means are 0.23–1.59 over Rust's, against a bound of 0.05.
+
+### Memory
+
+`tests/codec.tcyr` decodes the progressive fixture 1,000 times and holds the process's resident memory to under
+4 MiB of growth.
+- Measured: through the freelist it grows by 0 pages.
+- Mutation-checked: the same decodes through the bump heap (`chitra_image_decode_budget_via(0, …)`) grow it by
+  66 MiB, about 68 KiB a decode, and fail the test.
+- The cost, from an interleaved A/B on the 512 × 512 bench files (minimum of three): the freelist decodes PNG in
+  16.08 ms against the bump heap's 14.85 ms, and JPEG in 15.13 against 14.08, about 1 ms more each.
+  - Every block over 4 KiB is a fresh mapping, mapped and unmapped per decode (L24, filed with cyrius).
+  - chitra zeroes each block it takes from a caller's allocator.
+  - That is the price of the memory coming back.
+
+### Cross-target
+
+The harness output is identical on x86_64 ELF, aarch64 (qemu) and x86_64 PE (wine) (§10's targets), and the MCP
+harness gives 106 ok and 4 accepted on aarch64, as on x86_64.
+

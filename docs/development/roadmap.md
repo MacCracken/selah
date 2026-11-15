@@ -1,104 +1,85 @@
 # Selah Roadmap
 
-> Volatile state lives in [`state.md`](state.md). The Cyrius port's plan of record, with each milestone's scope,
-> gates and golden grid, is [`selah-port-plan.md`](selah-port-plan.md).
+> Volatile state lives in [`state.md`](state.md); finished work is in [`CHANGELOG.md`](../../CHANGELOG.md). The
+> Cyrius port (M0–M7, 1.0.0) is complete; its plan of record, with the conversion ledger the `L` numbers below refer
+> to, is [`selah-port-plan.md`](selah-port-plan.md). The Rust crate's roadmap through 0.30.0 is in git history and
+> `rust-old/`; its open items are carried into the versions below.
 
-## 1.0.0 — Cyrius port (done 2026-11-14; the tag is the maintainer's)
+## 1.0.x — upstream fixes, picked up as they land
 
-- [x] **M0 Initialize** (2026-11-14): freeze the 0.30.0 oracle, `cyrius port`, repair the scaffold, the manifest,
-  toolchain probes, the golden generator, the parity harness, decode baselines
-- [x] **M1 Foundation** (2026-11-14): error, log, fmtf, json, geometry, core, uuid, rfc3339
-- [x] **M2 PII and smart crop** (2026-11-14): ai
-- [x] **M3 Codecs** (2026-11-14): codec, png_enc, bmp_enc, jpeg_enc; decode gated under ADR 0003; WebP, progressive and CMYK refused (ADR 0002)
-- [x] **M4 Annotation** (2026-11-14): raster, annotate, the facade, and fsutil (brought forward from M5)
-- [x] **M5 System and clients** (2026-11-14): history, http, spawn (the clipboard), capture; daimon and hoosh clients
-  retargeted (ADR 0002)
-- [x] **M6 MCP profile** (2026-11-14): the five tools on bote 3.8.15, `dist/selah-mcp.cyr`, gated against Rust's
-  own stdio server
-- [x] **M7 Release 1.0.0** (2026-11-14): Rust-test ledger closed (288 of 289 ported, one n/a), full surface
-  parity (113 items), benches against Rust, both `dist/` bundles, the docs rewritten for Cyrius
+Patch releases: each item retires a workaround or a limit when the named issue lands upstream, with no API change.
+Every issue is filed in its own repository, with selah's measurement.
 
-### Waiting on other repos
+- [ ] bote: a setter for the stdio line limit (L23,
+  `bote/docs/development/issues/2026-11-14-stdio-line-limit-has-no-setter.md`). selah sets 4 MiB, and ADR 0002 #25's
+  limit of about 1,950 annotations a call goes
+- [ ] sandhi: the response cap grown as data arrives, and an over-cap answer named (L22,
+  `sandhi/docs/development/issues/2026-11-14-buffered-client-reserves-the-whole-response-cap.md`). The body limit
+  stops carrying 64 KiB of head room, and "too large" gets its own message
+- [ ] sandhi: `total_ms` bounding a blocked read (L10,
+  `sandhi/docs/development/issues/2026-11-11-total-ms-does-not-bound-a-blocked-first-read.md`)
+- [ ] bayan: base64 with an allocator (L19, `bayan/docs/development/issues/2026-11-14-base64-decode-has-no-allocator-form.md`).
+  `selah_decode_image_data` stops copying, and the MCP server stops growing with each base64 decode
+- [ ] bayan: JSON parse throughput (L21, `bayan/docs/development/issues/2026-11-14-json-value-parse-is-15-to-25-ns-per-byte.md`),
+  two thirds of reading a history line
+- [ ] sankoch: PNG decode speed, now mostly its inflate (L18,
+  `sankoch/docs/development/issues/2026-11-14-inflate-is-most-of-a-png-decode.md`)
+- [ ] sankoch: the per-call LZ77 table reset (L20,
+  `sankoch/docs/development/issues/2026-11-14-every-compress-call-pays-110-us-to-reset-the-lz77-tables.md`), about
+  half of a small PNG encode
+- [ ] cyrius: freelist reuse of blocks over 4 KiB (L24,
+  `cyrius/docs/development/issues/2026-11-11-freelist-maps-every-block-over-4k.md`). The scratch arenas' spare chunk
+  goes
+- [ ] cyrius: a spawn that feeds stdin (L3, `cyrius/docs/development/issues/2026-11-14-process-has-no-spawn-that-feeds-stdin.md`),
+  which replaces `src/spawn.cyr`
+- [ ] cyrius: RFC 3339 with fractions and offsets in `lib/chrono.cyr` (L5,
+  `cyrius/docs/development/issues/2026-11-14-chrono-rfc3339-has-no-fraction-or-offset.md`), which replaces most of
+  `src/rfc3339.cyr`
+- [ ] cyrius: a stable sort (L4), a shortest float printer (L1), and `#derive(Serialize)` fixed and byte-identical to
+  serde_json (L2), which retire the local versions in `history`, `fmtf` and `json`
 
-- [ ] daimon: the `/v1/screen/*` routes (`daimon/docs/development/issues/2026-11-14-selah-screen-capture-routes.md`)
-- [ ] hoosh: image parts for non-OpenAI providers, the 1 MiB body cap
-  (`hoosh/docs/development/issues/2026-11-14-selah-vision-image-parts-reach-only-openai-shaped-providers.md`)
-- [ ] sandhi: `total_ms` bounding a blocked read (`sandhi/docs/development/issues/2026-11-11-total-ms-does-not-bound-a-blocked-first-read.md`)
-- [ ] sandhi: the response cap reserved up front (`sandhi/docs/development/issues/2026-11-14-buffered-client-reserves-the-whole-response-cap.md`)
-- [ ] bayan: JSON parse throughput, base64 with an allocator (`bayan/docs/development/issues/2026-11-14-*`)
-- [ ] cyrius: a spawn that feeds stdin (`cyrius/docs/development/issues/2026-11-14-process-has-no-spawn-that-feeds-stdin.md`)
-- [ ] cyrius: freelist reuse of blocks over 4 KiB (`cyrius/docs/development/issues/2026-11-11-freelist-maps-every-block-over-4k.md`)
-- [ ] bote: a setter for the stdio line limit (`bote/docs/development/issues/2026-11-14-stdio-line-limit-has-no-setter.md`)
+## 1.1.0 — the selah-side items, unblocked now
 
-### After 1.0.0
+- [ ] **CMYK and YCCK JPEG.** chitra 1.4.0's `chitra_jpeg_decode_cmyk` returns the samples and the Adobe transform;
+  selah converts them to RGB, approximate unless the file carries an ICC profile, measured against the CMYK
+  fixture's source and Rust. Closes ADR 0002 #16 (L14)
+- [ ] **A format-aware metadata scan for the stub OCR**: skip compressed pixel data (PNG `IDAT`, JPEG scans), so the
+  scan stops finding "text" in it (Rust roadmap)
+- [ ] **MCP: optional path confinement** to an allowed root directory (Rust roadmap)
+- [ ] **MCP: a per-call rendering work budget** for `selah_annotate` (Rust roadmap)
 
-- [ ] WebP decode and encode
-- [ ] Progressive JPEG input (waits on chitra)
-- [ ] The open items of the Rust 0.30.0 section below
+## 1.2.0 — the live services
 
----
+- [ ] **Capture against a live daimon** once its `/v1/screen/*` routes ship (L9,
+  `daimon/docs/development/issues/2026-11-14-selah-screen-capture-routes.md`). If daimon's contract differs from
+  Rust's, retarget `CaptureClient` under an ADR 0002 row
+- [ ] **OCR on more providers** once hoosh translates image parts beyond OpenAI-compatible models (L8,
+  `hoosh/docs/development/issues/2026-11-14-selah-vision-image-parts-reach-only-openai-shaped-providers.md`); relax
+  the downscale if the 1 MiB cap moves
+- [ ] **Redaction that sees the pixels**: map OCR bounding boxes to PII matches, so `selah_redact` redacts text
+  rendered in the image instead of failing closed (Rust roadmap)
 
-The sections below are the Rust crate's history, kept for reference.
+## 1.3.0 — WebP, and retiring the oracle
 
-## v0.30.0 — Toolchain, Dependencies & Hardening (final Rust release)
+- [ ] **WebP decode and encode** (ADR 0002 #1), in selah or a sibling codec package; the Rust oracle covers it
+  (`image` decodes lossy and lossless, encodes lossless)
+- [ ] **Remove `rust-old/`** once WebP is done or explicitly dropped and the corpus and its generator are archived
+  (port plan §7)
+- [ ] **A shared encoder package** (L6): selah's PNG, BMP and JPEG writers, which aethersafta and kiran would
+  otherwise each carry. Where it lives is the maintainer's call
 
-The Cyrius port (1.0.0) follows this release: [selah-port-plan.md](selah-port-plan.md). The open items below carry over
-to Cyrius after 1.0.0.
+## Later (1.x)
 
+Carried from the Rust roadmap (0.25–0.26); each needs a service API that does not exist yet.
 
-- [x] MSRV 1.89 → 1.100 (edition 2024); dependencies to latest (ranga 1.0, bote 0.92, reqwest 0.13, hisab 1.4, base64 0.23, criterion 0.8)
-- [x] `image` restricted to supported codecs (PNG/JPEG/BMP/WebP); dependency tree 288 → 229 crates; zero ignored advisories
-- [x] Decode limits (decompression-bomb guard), bounded file reads and HTTP bodies
-- [x] Leak-free redaction (normalized rects, outward rounding, NaN rejected); MCP redact fails closed for unlocatable pixel text
-- [x] Rasterizer hardening (line clipping, bounded ellipse sampling) — no overflow/hang on extreme coordinates
-- [x] History: OS file locks, atomic rewrites, private permissions, bounded-memory `list`
-- [x] MCP: inputs must be images, outputs must be image files (no symlinks), traversal checks on both; schema-conformant annotations; `engine: "hoosh"` OCR wired up
-- [x] PII detection: punctuation-tolerant, space-grouped cards, `(555) 123-4567`, no double reports
-- [x] 289 tests (was 171), mock-HTTP coverage of capture/daimon/hoosh clients
-- [ ] Map OCR bounding boxes to PII matches (pixel-level auto-redaction)
-- [ ] Format-aware metadata scan for the stub OCR (skip compressed pixel data → no false positives)
-- [ ] Optional MCP path confinement to an allowed root directory
-- [ ] Per-call rendering work budget for MCP `selah_annotate`
+- [ ] Describe a screenshot's content through hoosh
+- [ ] Smart crop by content saliency through hoosh (the rule-of-thirds crop stays the fallback)
+- [ ] Annotation suggestions
+- [ ] Agent lifecycle with daimon: registration is there (ADR 0002 #4); a heartbeat returns once daimon keeps
+  liveness for an API agent (ADR 0002 #5)
+- [ ] Index screenshots for semantic search through daimon, and query their content in natural language (RAG)
+- [ ] agnoshi intents (voice-driven capture)
+- [ ] t-ron as MCP security middleware
 
-## v0.24.3 — Library Restructure (current release)
-
-- [x] Core capture and annotation types
-- [x] Daimon screen capture API client
-- [x] Annotation canvas with pixel rendering and SVG output
-- [x] Regex-based PII detection (email, phone, credit card, IP)
-- [x] Rule-of-thirds smart crop suggestions
-- [x] Clipboard integration (Wayland/X11)
-- [x] Multi-monitor support
-- [x] Annotation persistence (save/load JSON layers)
-- [x] Image format conversion (PNG, JPEG, BMP, WebP)
-- [x] Screenshot history (JSONL with file locking)
-- [x] Restructured as flat library crate (no binary, no GUI)
-- [x] Adopted hisab for geometry (Rect backed by hisab::Rect, Vec2)
-- [x] Adopted bote for MCP server (replaced custom JSON-RPC)
-- [x] Adopted ranga for annotation rendering (SIMD pixel blending)
-- [x] Daimon/Hoosh client integration module
-- [x] Facade API: `annotate_image()`, `redact_image()`, `decode_image_data()`
-- [x] 160 tests, criterion benchmarks, integration tests
-
-## v0.25.x — AI Features
-
-- [ ] Real OCR via hoosh vision models (replace byte-scanning stub)
-- [ ] Content description (describe what's in a screenshot via LLM)
-- [ ] Intelligent auto-redaction with pixel-level bounding boxes from OCR
-- [ ] Smart crop using content saliency detection via hoosh
-- [ ] Automatic annotation suggestions
-- [ ] Agent registration with daimon (Tier 1 lifecycle)
-
-## v0.26.x — Ecosystem Integration
-
-- [ ] Adopt ranga fully (replace `image` crate for format I/O when ranga adds codecs)
-- [ ] Vector search integration via daimon (index screenshots for semantic search)
-- [ ] RAG integration (query screenshot content via natural language)
-- [ ] agnoshi intent integration (voice-driven screenshot commands)
-- [ ] t-ron MCP security middleware
-
-## v1.0 — Stable API
-
-- [x] Public API stabilization
-- [x] All `#[non_exhaustive]` audited — applied to all public enums
-- [x] Full documentation with doc-tests on all key public items
+Dropped from the Rust roadmap: "adopt ranga for format I/O" (chitra decodes and selah encodes; the encoders' home is
+the 1.3.0 item above).

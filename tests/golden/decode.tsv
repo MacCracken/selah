@@ -53,15 +53,15 @@ decode	B	p:fixtures/jpeg-image-q75-rgb-33x17-grad.jpg	i:33 i:17 p:decode/jpeg-im
 decode	B	p:fixtures/jpeg-image-q95-rgb-64x64-grad.jpg	i:64 i:64 p:decode/jpeg-image-q95-rgb-64x64-grad.jpg.rgba	jpeg: image 0.25.10 JpegEncoder q95, RGB8 gradient
 decode	B	p:fixtures/jpeg-image-q50-gray-33x17-grad.jpg	i:33 i:17 p:decode/jpeg-image-q50-gray-33x17-grad.jpg.rgba	jpeg: image 0.25.10 JpegEncoder q50, L8 gradient
 decode	B	p:fixtures/jpeg-image-q75-rgb-33x17-noise.jpg	i:33 i:17 p:decode/jpeg-image-q75-rgb-33x17-noise.jpg.rgba	jpeg: image 0.25.10 JpegEncoder q75, RGB8 noise (worst case for any IDCT difference)
-decode	B	p:fixtures/jpeg-enc-420-64x64.jpg	i:64 i:64 p:decode/jpeg-enc-420-64x64.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 420 subsampling, baseline
-decode	B	p:fixtures/jpeg-enc-422-64x64.jpg	i:64 i:64 p:decode/jpeg-enc-422-64x64.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 422 subsampling, baseline
+decode	B	p:fixtures/jpeg-enc-420-64x64.jpg p:fixtures/jpeg-enc-420-64x64.jpg.rot180.jpg	i:64 i:64 p:decode/jpeg-enc-420-64x64.jpg.rgba p:decode/jpeg-enc-420-64x64.jpg.rot180.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 420 subsampling, baseline
+decode	B	p:fixtures/jpeg-enc-422-64x64.jpg p:fixtures/jpeg-enc-422-64x64.jpg.rot180.jpg	i:64 i:64 p:decode/jpeg-enc-422-64x64.jpg.rgba p:decode/jpeg-enc-422-64x64.jpg.rot180.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 422 subsampling, baseline
 decode	B	p:fixtures/jpeg-enc-444-64x64.jpg	i:64 i:64 p:decode/jpeg-enc-444-64x64.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 444 subsampling, baseline
-decode	B	p:fixtures/jpeg-enc-440-64x64.jpg	i:64 i:64 p:decode/jpeg-enc-440-64x64.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 440 subsampling, baseline
-decode	B	p:fixtures/jpeg-enc-420-33x17.jpg	i:33 i:17 p:decode/jpeg-enc-420-33x17.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 4:2:0, odd size (partial MCUs)
-decode	B	p:fixtures/jpeg-enc-420-1x1.jpg	i:1 i:1 p:decode/jpeg-enc-420-1x1.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 4:2:0, 1x1
-decode	B	p:fixtures/jpeg-enc-restart-64x64.jpg	i:64 i:64 p:decode/jpeg-enc-restart-64x64.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 4:2:0, restart interval 2 MCUs
+decode	B	p:fixtures/jpeg-enc-440-64x64.jpg p:fixtures/jpeg-enc-440-64x64.jpg.rot180.jpg	i:64 i:64 p:decode/jpeg-enc-440-64x64.jpg.rgba p:decode/jpeg-enc-440-64x64.jpg.rot180.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 440 subsampling, baseline
+decode	B	p:fixtures/jpeg-enc-420-33x17.jpg p:fixtures/jpeg-enc-420-33x17.jpg.rot180.jpg	i:33 i:17 p:decode/jpeg-enc-420-33x17.jpg.rgba p:decode/jpeg-enc-420-33x17.jpg.rot180.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 4:2:0, odd size (partial MCUs)
+decode	B	p:fixtures/jpeg-enc-420-1x1.jpg p:fixtures/jpeg-enc-420-1x1.jpg.rot180.jpg	i:1 i:1 p:decode/jpeg-enc-420-1x1.jpg.rgba p:decode/jpeg-enc-420-1x1.jpg.rot180.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 4:2:0, 1x1
+decode	B	p:fixtures/jpeg-enc-restart-64x64.jpg p:fixtures/jpeg-enc-restart-64x64.jpg.rot180.jpg	i:64 i:64 p:decode/jpeg-enc-restart-64x64.jpg.rgba p:decode/jpeg-enc-restart-64x64.jpg.rot180.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 4:2:0, restart interval 2 MCUs
 decode	B	p:fixtures/jpeg-enc-gray-64x64.jpg	i:64 i:64 p:decode/jpeg-enc-gray-64x64.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, grayscale
-decode	B	p:fixtures/jpeg-enc-progressive-64x64.jpg	i:64 i:64 p:decode/jpeg-enc-progressive-64x64.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 4:2:0, progressive (SOF2) adr=0002#2
+decode	B	p:fixtures/jpeg-enc-progressive-64x64.jpg p:fixtures/jpeg-enc-progressive-64x64.jpg.rot180.jpg	i:64 i:64 p:decode/jpeg-enc-progressive-64x64.jpg.rgba p:decode/jpeg-enc-progressive-64x64.jpg.rot180.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, 4:2:0, progressive (SOF2)
 decode	B	p:fixtures/jpeg-enc-cmyk-33x17.jpg	i:33 i:17 p:decode/jpeg-enc-cmyk-33x17.jpg.rgba	jpeg: jpeg-encoder 0.6.1 q85, CMYK (Adobe APP14) adr=0002#16
 decode	A	p:fixtures/jpeg-truncated.jpg	E:AnnotationError	jpeg: jpeg-enc-420-64x64 cut in half (mid-scan) -- refused: annotation error: failed to load image: Format error decoding Jpeg: I/O errors Not enough bytes, expected 162 but found 114\n
 decode	A	p:fixtures/webp-lossless-rgba8-7x3.webp	i:7 i:3 p:decode/webp-lossless-rgba8-7x3.webp.rgba	webp: image 0.25.10 WebPEncoder lossless, RGBA8 adr=0002#1
