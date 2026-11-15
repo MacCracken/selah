@@ -276,3 +276,41 @@ is what Rust's real client sent or concluded.
 
 Two mutation probes confirmed the gates bite: a wrong reason phrase for 403 and printing U+0085 raw each failed their
 row.
+
+## 9. M6 (2026-11-14): the MCP server, class A but for the shape of a schema refusal
+
+The rows drive Rust's real server. The oracle runs itself again as `--mcp-serve <url>`, which calls
+`selah::mcp::run_server` with its working directory in a fresh session directory and `XDG_DATA_HOME` inside it, and
+talks to it over pipes, a request per line. Capture sessions get a one-shot daimon (M5's `serve_once`). The harness
+(`tests/mcp/parity_mcp.tcyr`) builds the same directory (the fixtures in `tests/golden/mcp/`, a directory named
+`d.png`, a symlink `link.png`, the history file) and sends the same requests through `selah_mcp_dispatcher`.
+Responses are compared byte for byte after re-serializing with sorted keys and masking the directory, times and ids;
+an image a session writes is decoded and compared pixel for pixel.
+
+| Rows | Result |
+|---|---|
+| `tool` 5 | each tool's description and input schema; rows sorted by name (Rust's order is a HashMap's) |
+| `selah_annotate` 28 | every kind with colours and alpha, a negative size; PNG, JPEG, BMP and extensionless inputs; outputs by extension (`.png`, `.jpg`, `.bmp`), an existing file overwritten, a relative path; the refused outputs (`..`, a directory, a symlink, `.bashrc`, empty) and inputs (a key file, missing, a directory, empty, `..`, NUL); `invalid annotation N: …` for a coordinate past f32, a colour without alpha, a channel past 255; WebP in or out (ADR 0002 #1) |
+| `selah_ocr` 11 | the local engine over a plain PNG, one with text in its metadata, one with PII, a JPEG; the hoosh engine (ADR 0002 #24); refused paths and arguments |
+| `selah_redact` 15 | all targets and subsets of them, an empty list, refused targets; outputs as PNG, BMP and JPEG; the refusal when PII is found without a location |
+| `selah_history` 35 | `limit` absent (20), 0, 2 and 1000, and 1001, −1 and 2.5 refused; `since` in 28 forms: 12 chrono accepts (fractions of 1, 9 and 10 digits, one nanosecond past an entry, a leap second, year 0, offsets, a space, a lowercase `t` or `z`, U+2212 as the offset's minus) and 16 it refuses, each with chrono's text |
+| `selah_capture` 16 | full and region captures saved as PNG and BMP, a JPG name for PNG data, `JPG` and `tiff` refused, refused paths, a zero-width and an incomplete region, a region past f32, WebP (ADR 0002 #1), a 403, an answer that is not JSON, image data that is not base64; each capture followed by `selah_history` with limit 1, which shows the entry it recorded |
+
+110 rows: 106 ok, 4 accepted (three WebP rows under ADR 0002 #1, the hoosh engine under #24), 0 failed. 19 rows compare
+the verdict: Rust's bote answers a schema violation with JSON-RPC −32602 and bote 3.8.15 with an `isError` result
+(ADR 0002 #24). The harness output is the same on x86_64 and aarch64 (qemu).
+
+**Facts the grid taught:**
+- Rust's bote 0.92 lists the tools in HashMap order, which changes between runs: the first M6 corpus failed
+  `oracle --check` until the rows were sorted.
+- bote 0.92 checks enums inside array items too, case-sensitively. The aliases selah's own parser accepts for a kind
+  (`Rectangle`, `rect`, `ELLIPSE`, `free-form`, `redact`) never reach it over MCP; both servers refuse them.
+- chrono's `parse_from_rfc3339`, which reads `since`, is strict where the history file's reader is relaxed.
+  `_sl_rfc3339_strict` gives chrono's verdict and its four texts (`premature end of input`, `input contains invalid
+  characters`, `input is out of range`, `trailing input`) on all 28 forms, U+2212 as a minus sign included.
+- Rust's bench directory is the system temp directory, a tmpfs here; the first Cyrius bench wrote to `build/` on
+  ext4, where a 200-byte write costs 58–71 µs against 16 µs. Both now run in the temp directory.
+
+Two mutation probes confirmed the gates bite: accepting a `..` component failed 5 rows (and the capture probe wrote
+its `../x.png` outside the session directory, which is what the check prevents), and shortening chrono's `premature
+end of input` failed 5 rows.

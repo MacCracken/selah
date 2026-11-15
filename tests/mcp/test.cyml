@@ -1,0 +1,2 @@
+[test]
+modules = ["../../lib/patra.cyr", "../../lib/libro.cyr", "../../lib/majra.cyr", "../../lib/bote.cyr"]

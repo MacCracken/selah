@@ -58,7 +58,7 @@ stdlib = ["assert", "bench"]
 
 # The bundle consumers include (dist/selah.cyr), in dependency order: Cyrius is single-pass and no src/ file includes
 # another, so a module comes after everything it calls. tests/selah_src.cyr lists the same order for the test units.
-# [lib.mcp] (M6) repeats this list and adds src/mcp.cyr.
+# [lib.mcp] repeats this list and adds src/mcp.cyr.
 [lib]
 modules = [
     "src/error.cyr",
@@ -87,4 +87,38 @@ modules = [
     "src/spawn.cyr",
     "src/capture.cyr",
     "src/daimon.cyr",
+]
+
+# The MCP server (M6): the [lib] bundle plus src/mcp.cyr, as dist/selah-mcp.cyr. Its consumer declares bote itself
+# (`[deps.bote]`, as selah does behind `[features] mcp`); selah's own tests in tests/mcp/ get bote from
+# tests/mcp/test.cyml.
+[lib.mcp]
+modules = [
+    "src/error.cyr",
+    "src/version_str.cyr",
+    "src/log.cyr",
+    "src/scratch.cyr",
+    "src/fmtf.cyr",
+    "src/json.cyr",
+    "src/uuid.cyr",
+    "src/rfc3339.cyr",
+    "src/geometry.cyr",
+    "src/debug_data.cyr",
+    "src/core.cyr",
+    "src/ai_data.cyr",
+    "src/ai.cyr",
+    "src/png_enc.cyr",
+    "src/bmp_enc.cyr",
+    "src/jpeg_enc.cyr",
+    "src/codec.cyr",
+    "src/fsutil.cyr",
+    "src/raster.cyr",
+    "src/annotate.cyr",
+    "src/selah.cyr",
+    "src/history.cyr",
+    "src/http.cyr",
+    "src/spawn.cyr",
+    "src/capture.cyr",
+    "src/daimon.cyr",
+    "src/mcp.cyr",
 ]

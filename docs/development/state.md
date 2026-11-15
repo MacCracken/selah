@@ -24,18 +24,19 @@ reference oracle. Accuracy is the bar, and Rust is the floor ([ADR 0003](../adr/
 | M3 Codecs | ✅ done 2026-11-14 |
 | M4 Annotation | ✅ done 2026-11-14 |
 | M5 System and clients | ✅ done 2026-11-14 |
-| M6–M7 | not started |
+| M6 MCP profile | ✅ done 2026-11-14 |
+| M7 Release 1.0.0 | not started |
 
 ## Source
 
 - Rust oracle: `rust-old/` (7,160 lines in `src/`, 289 tests), frozen; green from its new location (2026-11-14).
 - Cyrius: `src/` holds error, version_str, log, scratch, fmtf, json, uuid, rfc3339, geometry, the generated
   debug_data, core, the generated ai_data, ai, png_enc, bmp_enc, jpeg_enc, codec, fsutil, raster, annotate, the selah
-  facade, history, http, spawn, capture and daimon (about 9,450 lines, 470 of them generated tables), bundled as
-  `dist/selah.cyr` (`[lib]`); `src/main.cyr` is the build-smoke stub.
-- Surface parity: 83/83 (`scripts/surface_parity.py`): error, geometry, core, ai, annotate, lib (the facade), fsutil,
-  history, http, capture and daimon whole (`heartbeat` and `with_client` removed by ADR 0002 #5 and #9). mcp is
-  pending M6.
+  facade, history, http, spawn, capture and daimon, bundled as `dist/selah.cyr` (`[lib]`), and mcp, which the
+  `[lib.mcp]` profile adds as `dist/selah-mcp.cyr` (about 11,000 lines in all, 470 of them generated tables);
+  `src/main.cyr` is the build-smoke stub.
+- Surface parity: 86/86 (`scripts/surface_parity.py .`): every module whole (`heartbeat` and `with_client` removed
+  by ADR 0002 #5 and #9).
 - **Known limits, each filed upstream:**
   - every decode's memory stays with the process (chitra, L16), which matters for the MCP server, and so does every
     base64 decode (bayan, L19);
@@ -43,26 +44,33 @@ reference oracle. Accuracy is the bar, and Rust is the floor ([ADR 0003](../adr/
   - decoding runs about 20× slower than Rust (chitra, L18), and every PNG compression pays about 110 µs up front
     (sankoch, L20);
   - reading JSON (the history, a capture answer) is bound by bayan's parser, 14–25 ns a byte (bayan, L21);
-  - sandhi reserves a request's whole response cap, so selah hands it a freelist arena (sandhi, L22).
+  - sandhi reserves a request's whole response cap, so selah hands it a freelist arena (sandhi, L22);
+  - the MCP server's stdio refuses a request line over 128 KiB, about 1,950 annotations in one call (bote, L23);
+  - the freelist maps every block over 4 KiB afresh, so the arenas keep one spare chunk (cyrius, L24).
 
 ## Tests
 
-- `cyrius test`: `tests/parity.tcyr` (the golden corpus), the ported Rust tests (`error`, `geometry`, `core`, `ai`,
-  `codec`, `annotate`, `fsutil`, `integration`, `history`, `http`, `capture` and `daimon`: 234 Rust tests and 14
-  doctests, 643 assertions), and `selah.tcyr` (the bundle, as a consumer sees it). The HTTP tests run against a
-  loopback mock server on a thread (`tests/mock_http.cyr`).
-- Golden corpus: 47,985 rows, every module gated, the harness output identical on x86_64 ELF, aarch64 (qemu) and
-  x86_64 PE (wine).
+- `cyrius test` (16 suites, 794 assertions): `tests/parity.tcyr` (the golden corpus), the ported Rust tests (`error`,
+  `geometry`, `core`, `ai`, `codec`, `annotate`, `fsutil`, `integration`, `history`, `http`, `capture`, `daimon` and
+  `mcp`: 274 Rust tests and 14 doctests), and `selah.tcyr` (the bundle, as a consumer sees it). The HTTP tests run
+  against a loopback mock server on a thread (`tests/mock_http.cyr`).
+- `tests/mcp/` (the MCP suites, the MCP golden harness, the `dist/selah-mcp.cyr` smoke test and the MCP benches) runs
+  under a plain `cyrius test`: its `test.cyml` prepends bote. Under `--features mcp` every bote symbol would be
+  defined twice.
+- Golden corpus: 48,095 rows, every module gated, the harness output identical on x86_64 ELF, aarch64 (qemu) and
+  x86_64 PE (wine); the MCP harness on x86_64 and aarch64.
   - M1's 34,863 and `ai`'s 8,457 are all class A and all pass.
   - `decode` (66): 55 ok, 3 accepted (ADR 0002 #1, #2, #16), 8 upstream (F1, F3 and the pixel cap, filed with chitra).
   - `codec` (480): 361 ok, 119 accepted (WebP).
   - `annotate` (3,457): 3,445 ok, 4 accepted (WebP), 8 upstream (the 16-bpp BMPs under F3).
   - `system` (662): 654 ok, 8 accepted (WebP captures, and the ADR 0002 #21 JSON rows).
+  - `mcp` (110): 106 ok, 4 accepted (WebP under ADR 0002 #1, the hoosh engine under #24), through Rust's real stdio
+    server.
   - `scripts/oracle -- --reverse`: Rust decodes all 165 Cyrius-encoded images, loads all 45 Cyrius-written layers and
     lists all 3 Cyrius-written history files.
-  - See [`port-parity.md`](port-parity.md) §2, §5, §6, §7 and §8.
-- Benches: all 13 criterion benches ported, plus 6 codec and 5 M5 benches with Rust numbers from `oracle --bench`
-  ([`../benchmarks-rust-v-cyrius.md`](../benchmarks-rust-v-cyrius.md)).
+  - See [`port-parity.md`](port-parity.md) §2 and §5–§9.
+- Benches: all 13 criterion benches ported, plus 6 codec, 5 M5 and 4 MCP benches with Rust numbers from
+  `oracle --bench` ([`../benchmarks-rust-v-cyrius.md`](../benchmarks-rust-v-cyrius.md)).
 
 ## Dependencies
 
@@ -104,9 +112,14 @@ taswir, aethersafta, kiran (planned): none is in Cyrius yet. Rust consumers stay
 - cyrius: a spawn that feeds stdin (`cyrius/docs/development/issues/2026-11-14-process-has-no-spawn-that-feeds-stdin.md`, L3)
 - sankoch: the per-call LZ77 table reset and the deflate rate
   (`sankoch/docs/development/issues/2026-11-14-every-compress-call-pays-110-us-to-reset-the-lz77-tables.md`, L20)
+- bote: a setter for the stdio line limit (`bote/docs/development/issues/2026-11-14-stdio-line-limit-has-no-setter.md`,
+  L23)
+- cyrius: large-block reuse in the freelist
+  (`cyrius/docs/development/issues/2026-11-11-freelist-maps-every-block-over-4k.md`, pravash's; selah's data point
+  appended, L24)
 
 ## Next
 
-M6 MCP profile: the five tools on bote 3.8.15 (itihas's template), with Rust's names, schemas, descriptions and
-read-only annotations, path and input safety, and `selah_ocr`'s `engine: "hoosh"` through the retargeted client.
-Live capture still waits on daimon's routes (L9).
+M7 Release 1.0.0: the Rust-test ledger closed (289 tests: ported, folded into golden rows, or n/a), full surface
+parity, README, `docs/development.md` and the architecture doc rewritten for Cyrius, the CHANGELOG `1.0.0` entry and
+`VERSION` 1.0.0. The tag is the maintainer's. Live capture still waits on daimon's routes (L9).

@@ -149,6 +149,18 @@ fn _sl_path_split(path, n, name_at_out, name_len_out): i64 {
 # Atomically replaces the file at `path` with data[0..len): a temp `.<name>.tmp-<uuid>` beside it, created 0600
 # (never an existing name), written, synced and renamed over `path`. Ok(0), or Err(SL_ERR_IO) with the temp removed.
 fn _sl_write_atomic(path, data, len, detail_out = 0): Result {
+    return _sl_write_atomic_x(path, data, len, 1, detail_out);
+}
+
+# As _sl_write_atomic without the fsync: the replacement is still atomic and private, and as durable as a plain
+# write (Rust's MCP outputs and save_to_file use std::fs::write). The sync costs about 29 ms a file on the M6 bench
+# machine.
+fn _sl_write_atomic_nosync(path, data, len, detail_out = 0): Result {
+    return _sl_write_atomic_x(path, data, len, 0, detail_out);
+}
+
+# The two forms: `sync` 1 syncs the temp before the rename.
+fn _sl_write_atomic_x(path, data, len, sync, detail_out): Result {
     var n = strlen(path);
     var na = 0;
     var nl = 0;
@@ -194,7 +206,8 @@ fn _sl_write_atomic(path, data, len, detail_out = 0): Result {
         }
         off = off + w;
     }
-    var fr = xfsync(fd);
+    var fr = 0;
+    if (sync == 1) { fr = xfsync(fd); }
     var cr = file_close(fd);
     if (fr < 0 || cr < 0) {
         xunlink(tmp);

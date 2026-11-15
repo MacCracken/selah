@@ -66,6 +66,33 @@ pub fn run(root: &std::path::Path) {
         _ => eprintln!("oracle --bench: build/bench/image512.{{png,jpg}} missing: run `cyrius bench` first"),
     }
     m5(root);
+    m6();
+}
+
+/// M6: the MCP server's calls, through Rust's stdio server (oracle --mcp-serve), so each figure includes a pipe round
+/// trip: selah's build_dispatcher is private, and only the server can be timed. tests/mcp/mcp.bcyr times the same
+/// requests through bote's stdio loop (`*_stdio`). `mcp_stdio_floor` is a method neither server has, answered -32601:
+/// the round trip with almost no work. Inputs from tests/golden/mcp/.
+fn m6() {
+    let fx = crate::m_mcp::fixtures();
+    let dir = crate::m_mcp::session_dir(9999, &fx);
+    let mut s = crate::m_mcp::Server::start(&dir, "http://127.0.0.1:9");
+    time("mcp_stdio_floor", 2000, || s.call(r#"{"jsonrpc":"2.0","id":9,"method":"selah/none"}"#).len());
+    time("mcp_tools_list_stdio", 2000, || s.call(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).len());
+    let shot = dir.join("shot.png").to_string_lossy().into_owned();
+    let out = dir.join("out.png").to_string_lossy().into_owned();
+    let req = serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "selah_annotate",
+        "arguments": { "image_path": shot, "output": out, "annotations": [
+            { "kind": "redaction", "position": { "x": 0, "y": 0, "width": 4, "height": 4 } },
+            { "kind": "rectangle", "position": { "x": 1, "y": 1, "width": 5, "height": 5 } },
+            { "kind": "text", "position": { "x": 0, "y": 0, "width": 8, "height": 8 }, "text": "hi" } ] } } })
+    .to_string();
+    time("mcp_annotate_8x8_stdio", 200, || s.call(&req).len());
+    time("mcp_history_list_stdio", 2000, || {
+        s.call(r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"selah_history","arguments":{}}}"#).len()
+    });
+    drop(s);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// M5's entry i, as tests/selah.bcyr builds it.

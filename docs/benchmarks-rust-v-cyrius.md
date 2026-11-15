@@ -56,3 +56,32 @@ cores; single runs varied by up to 2×).
 | `history_get_1000` | 0.361 ms | 6.82 ms | 19× | 1,000 lines read for the id only, the last one matching |
 | `history_delete_miss_1000` | 0.473 ms | 7.51 ms | 16× | the file read whole and every line's id parsed under the lock; nothing written |
 | `capture_parse_1mb` | 0.195 ms | 18.8 ms | 96× | bayan's string parse is ~15 ms of it (L21); selah's pre-pass 0.72 ms, the copy out the rest (was 29 ms before the pre-pass was fused) |
+
+### M6 the MCP server (Cyrius-only benches; Rust's numbers from `oracle --bench`)
+
+Rust selah's `build_dispatcher` is private, so Rust can only be timed through its stdio server. The oracle starts
+it (`--mcp-serve`) and times one request line out and its answer back. `tests/mcp/mcp.bcyr` times the same requests
+the same way, a server child running bote's stdio loop on two pipes, and also in process through
+`codec_process_message`. Both work in the system temp directory (a tmpfs here) with the files from
+`tests/golden/mcp/`: `shot.png` (8 × 8 RGBA) and `history.jsonl` (5 entries). Each figure is the median of three runs,
+measured 2026-11-14 at a load average of 3–5 on 16 cores.
+
+| Bench | Rust (stdio) | Cyrius (stdio) | Ratio | Cyrius in process | Notes |
+|---|---|---|---|---|---|
+| `mcp_stdio_floor` | 12.0 µs | 15.1 µs | 1.3× | | a method neither server has, answered −32601: the round trip with almost no work |
+| `mcp_tools_list` | 45 µs | 45.9 µs | 1.0× | 31.1 µs | the five definitions (about 3 KB of descriptions and schemas), written by bote |
+| `mcp_annotate_8x8` | 66 µs | 289.5 µs | 4.4× | 256.6 µs | the render is 157 µs: sankoch's ~110 µs a compression (L20) and chitra's small-image decode (L18). Then bote's handling ~40 µs, the arguments' parse 11 µs, the atomic write 16 µs, the input's read and checks 8 µs |
+| `mcp_history_list` | 37 µs | 112.3 µs | 3.0× | 103.4 µs | the store's list of 5 lines is ~55 µs, mostly bayan's parse (L21) and the lock; the payload ~15 µs, wrapping it as a JSON string 9 µs, bote ~17 µs |
+
+What M6 changed, each measured before and after on the same bench:
+
+- The JSON string writer (`_sl_json_str`, behind every JSON selah writes) finds plain runs a word at a time and
+  assembles its output in a 4 KiB chunk; it called the builder once per byte. The 782-byte history payload: 16.9 →
+  9.15 µs. 64 KiB of plain text: 1.31 → 0.285 ms.
+- The scratch arena keeps one spare 64 KiB chunk between calls. The freelist maps anything over 4 KiB afresh, so
+  each call mapped and unmapped a chunk (6.2 µs) and faulted its pages in again (~2 µs a page); now 0.18 µs. The
+  annotate arguments' parse: 17.6 → 11.0 µs. The MCP calls in process: annotate 280 → 257 µs, history 112 → 103 µs.
+- The MCP outputs and `CaptureClient::save_to_file` stay atomic but drop the fsync (ADR 0002 #18): 28.7 → 0.76 ms
+  a file.
+- The M5 rows re-measured with these changes show no regression (`history_record` 13.6 µs, `history_list_1000`
+  7.43 ms, `capture_parse_1mb` 16.6 ms); the load was lighter than at M5, so the drops are not claimed as wins.

@@ -1,0 +1,1341 @@
+# mcp.cyr — selah's MCP server: five tools over stdio, on bote 3.8.15 (Rust: rust-old/src/mcp.rs).
+#
+# Port plan M6, D13. In the `[lib.mcp]` profile only (dist/selah-mcp.cyr); a consumer of it declares bote itself.
+#   - The tools keep Rust's names, descriptions and input schemas (each given to bote as its JSON), and selah_ocr and
+#     selah_history keep their read-only annotations, which bote 3.8.15 sends in tools/list (Rust's bote 0.92 dropped
+#     them; ADR 0002 #24).
+#   - A handler answers as Rust's did: a CallToolResult `{"content":[{"text":<payload>,"type":"text"}]}` whose payload
+#     is the JSON Rust built with `json!` and printed with serde_json (keys in byte order), or
+#     `{"content":[…],"isError":true}` with Rust's message.
+#   - Paths from the client are checked as Rust checked them: no `..` component and no NUL; an input must be a
+#     regular file of at most 256 MiB whose bytes are a PNG, JPEG, BMP or WebP; an output must carry an image
+#     extension and must not be an existing symlink, directory or device. Absolute paths are allowed: the server acts
+#     as the user running it. Outputs are written atomically and 0600, without an fsync (ADR 0002 #18).
+#   - selah_ocr's `hoosh` engine goes through the retargeted HooshClient (D2), configured with
+#     selah_mcp_set_hoosh_config (hoosh needs a model; ADR 0002 #24).
+#   - UPSTREAM(L23): bote's stdio reads a request of at most 128 KiB (its STDIO_BUF_SIZE, which has no setter), where
+#     Rust's reader had no limit. One selah_annotate call over stdio fits about 1,950 bare rectangles, or about 980
+#     annotations with a colour and text, of the 10,000 it accepts (ADR 0002 #25).
+# One server per process: the handlers have no context argument (bote's ABI), so the API URL, the history store and
+# the hoosh configuration are module state, set by selah_mcp_dispatcher.
+
+const SL_MAX_INPUT_FILE_BYTES = 268435456;
+const SL_MAX_ANNOTATIONS = 10000;
+const _SL_MAX_HISTORY_LIMIT = 1000;
+const _SL_DEFAULT_HISTORY_LIMIT = 20;
+
+var _sl_mcp_api_url = 0;
+var _sl_mcp_history = 0;
+var _sl_mcp_hoosh = 0;
+
+#must_use
+fn _sl_as_source(p): *SlCaptureSource {
+    return p;
+}
+
+# ── responses ────────────────────────────────────────────────────────────────────────
+
+# The CallToolResult for a successful call: the payload (a Str of JSON) as one text block.
+#must_use
+fn _sl_mcp_text_content(payload): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"content\":[{\"text\":");
+    _sl_json_str_s(sb, payload);
+    str_builder_add_cstr(sb, ",\"type\":\"text\"}]}");
+    return str_data(str_builder_build(sb));
+}
+
+# The CallToolResult for a failed call (Rust's error_content): the message as one text block, `isError` true.
+#must_use
+fn _sl_mcp_error_content(msg): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"content\":[{\"text\":");
+    _sl_json_str_s(sb, msg);
+    str_builder_add_cstr(sb, ",\"type\":\"text\"}],\"isError\":true}");
+    return str_data(str_builder_build(sb));
+}
+
+# Stores a message (a Str from the NUL-terminated pieces a, b, c; b and c may be 0) at out and returns 0: a tool's
+# failure.
+fn _sl_mcp_fail3(out, a, b, c): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, a);
+    if (b != 0) { str_builder_add_cstr(sb, b); }
+    if (c != 0) { str_builder_add_cstr(sb, c); }
+    store64(out, str_builder_build(sb));
+    return 0;
+}
+
+# Stores an error's Display (code, detail Str or 0), after `prefix` when non-zero, at out and returns 0.
+fn _sl_mcp_fail_err(out, prefix, code, d): i64 {
+    var sb = str_builder_new();
+    if (prefix != 0) { str_builder_add_cstr(sb, prefix); }
+    str_builder_add(sb, selah_error_display(code, d));
+    store64(out, str_builder_build(sb));
+    return 0;
+}
+
+# ── arguments ────────────────────────────────────────────────────────────────────────
+
+# Rust's optional_str: (1, Str) for a string, (1, 0) when absent or null, (0, message) for anything else.
+fn _sl_mcp_opt_str(args, key): (i64, i64) {
+    var v = _sl_json_member(args, key);
+    if (v == 0 || bayan_json_v_is_null(v) == true) { return (1, 0); }
+    var s = _sl_json_as_str(v);
+    if (s != 0) { return (1, s); }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, key);
+    str_builder_add_cstr(sb, " must be a string");
+    return (0, str_builder_build(sb));
+}
+
+# Rust's require_str: (1, Str), or (0, message): "missing <key>" or "<key> must be a string".
+fn _sl_mcp_req_str(args, key): (i64, i64) {
+    var ok, s = _sl_mcp_opt_str(args, key);
+    if (ok == 0) { return (0, s); }
+    if (s == 0) {
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "missing ");
+        str_builder_add_cstr(sb, key);
+        return (0, str_builder_build(sb));
+    }
+    return (1, s);
+}
+
+# Rust's validate_path: not empty, no NUL, no `..` component (Path::components' ParentDir). 1, or 0 with the message
+# at out.
+fn _sl_mcp_validate_path(p, out): i64 {
+    var n = str_len(p);
+    var d = str_data(p);
+    if (n == 0) { return _sl_mcp_fail3(out, "path must not be empty", 0, 0); }
+    var i = 0;
+    while (i < n) {
+        if (load8(d + i) == 0) { return _sl_mcp_fail3(out, "path must not contain NUL bytes", 0, 0); }
+        i = i + 1;
+    }
+    var s = 0;
+    while (s <= n) {
+        var e = s;
+        while (e < n && load8(d + e) != 47) { e = e + 1; }
+        if (e - s == 2 && load8(d + s) == 46 && load8(d + s + 1) == 46) {
+            return _sl_mcp_fail3(out, "path traversal not allowed: ", d, 0);
+        }
+        s = e + 1;
+    }
+    return 1;
+}
+
+# 1 when the bytes are a format the tools read (image's guess_format: PNG, JPEG, BMP or WebP).
+#must_use
+fn _sl_mcp_is_image(data, n): i64 {
+    var m = _sl_guess_mime(data, n);
+    if (n == 0) { return 0; }
+    if (streq(m, "image/png") == 1) { return _sl_starts(data, n, "\x89PNG\r\n\x1a\n", 8); }
+    if (streq(m, "image/jpeg") == 1 || streq(m, "image/bmp") == 1 || streq(m, "image/webp") == 1) { return 1; }
+    return 0;
+}
+
+# Rust's read_input: the file read whole (a regular file of at most 256 MiB), and an image. Returns the bytes on the
+# freelist (length at len_out), or 0 with the message at out.
+fn _sl_mcp_read_input(path, len_out, out): i64 {
+    var d = 0;
+    var t, v = _sl_read_limited(str_data(path), SL_MAX_INPUT_FILE_BYTES, len_out, &d);
+    if (is_err_result(t) == 1) {
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "failed to read ");
+        str_builder_add(sb, path);
+        str_builder_add_cstr(sb, ": ");
+        str_builder_add(sb, selah_error_display(v, d));
+        store64(out, str_builder_build(sb));
+        return 0;
+    }
+    if (_sl_mcp_is_image(v, load64(len_out)) == 0) {
+        fl_free(v);
+        var eb = str_builder_new();
+        str_builder_add(eb, path);
+        str_builder_add_cstr(eb, " is not a supported image (png, jpeg, bmp, webp)");
+        store64(out, str_builder_build(eb));
+        return 0;
+    }
+    return v;
+}
+
+# 1 when the NUL-terminated path exists and is not a regular file (a symlink, a directory, a device), by lstat.
+#must_use
+fn _sl_mcp_exists_not_file(path): i64 {
+    #ifndef CYRIUS_TARGET_WIN
+    var st[256];
+    if (sys_lstat(path, &st) != 0) { return 0; }
+    if ((load32(&st + STAT_MODE) & 61440) != 32768) { return 1; }
+    #endif
+    return 0;
+}
+
+# Rust's validate_output: a valid path with an image extension that is not an existing non-regular file. Returns the
+# format (>= 0), or -1 with the message at out.
+fn _sl_mcp_validate_output(p, out): i64 {
+    if (_sl_mcp_validate_path(p, out) == 0) { return -1; }
+    var ft, fv = selah_image_format_from_path(str_data(p), str_len(p));
+    if (is_none(ft) == 1) {
+        _sl_mcp_fail3(out, "output ", str_data(p), " must have an image extension (png, jpg, jpeg, bmp, webp)");
+        return -1;
+    }
+    if (_sl_mcp_exists_not_file(str_data(p)) == 1) {
+        _sl_mcp_fail3(out, "refusing to write ", str_data(p), ": it exists and is not a regular file");
+        return -1;
+    }
+    return fv;
+}
+
+# Path::new(input).with_file_name(name), as a Str: the input's file name replaced (a trailing `/` goes with it).
+#must_use
+fn _sl_mcp_with_file_name(input, name): i64 {
+    var p = str_data(input);
+    var n = str_len(input);
+    var s, len = _sl_path_file_name(p, n);
+    var sb = str_builder_new();
+    if (s >= 0) {
+        _sl_sb_bytes(sb, p, s);
+    } elif (n > 0) {
+        _sl_sb_bytes(sb, p, n);
+        if (load8(p + n - 1) != 47) { str_builder_putc(sb, 47); }
+    }
+    str_builder_add(sb, name);
+    return str_builder_build(sb);
+}
+
+# Rust's output_path: the `output` argument, or `<stem>_<suffix>.<ext>` beside the input (`.png` added when that has
+# no image extension), validated. Returns the format (>= 0) and stores the path at path_out, or -1 with the message
+# at out.
+fn _sl_mcp_output_path(args, input, suffix, path_out, out): i64 {
+    var ok, o = _sl_mcp_opt_str(args, "output");
+    if (ok == 0) {
+        store64(out, o);
+        return -1;
+    }
+    if (o == 0) {
+        var name = selah_derive_output_path(str_data(input), str_len(input), suffix, strlen(suffix));
+        var ft, fv = selah_image_format_from_path(str_data(name), str_len(name));
+        if (is_none(ft) == 1) {
+            var nb = str_builder_new();
+            str_builder_add(nb, name);
+            str_builder_add_cstr(nb, ".png");
+            name = str_builder_build(nb);
+        }
+        o = _sl_mcp_with_file_name(input, name);
+    }
+    store64(path_out, o);
+    return _sl_mcp_validate_output(o, out);
+}
+
+# Rust's mask_pii: the first two and last two characters kept and the rest starred; four characters or fewer all
+# starred (counted in characters, so multi-byte text is never split).
+#must_use
+fn _sl_mask_pii(s): i64 {
+    var p = str_data(s);
+    var n = str_len(s);
+    var chars = 0;
+    var i = 0;
+    while (i < n) {
+        var l = 1;
+        if (load8(p + i) >= 128) {
+            l = _sl_utf8_seq(p, i, n);
+            if (l == 0) { l = 1; }
+        }
+        i = i + l;
+        chars = chars + 1;
+    }
+    var sb = str_builder_new();
+    if (chars <= 4) {
+        var k = 0;
+        while (k < chars) {
+            str_builder_putc(sb, 42);
+            k = k + 1;
+        }
+        return str_builder_build(sb);
+    }
+    var c = 0;
+    i = 0;
+    while (i < n) {
+        var l2 = 1;
+        if (load8(p + i) >= 128) {
+            l2 = _sl_utf8_seq(p, i, n);
+            if (l2 == 0) { l2 = 1; }
+        }
+        if (c < 2 || c >= chars - 2) {
+            _sl_sb_bytes(sb, p + i, l2);
+        } else {
+            str_builder_putc(sb, 42);
+        }
+        i = i + l2;
+        c = c + 1;
+    }
+    return str_builder_build(sb);
+}
+
+# The NUL-terminated path made absolute with every symlink resolved, as std::fs::canonicalize: the file is opened
+# and its /proc/self/fd link read. A Str, or 0 when that fails (Rust then records the path as given).
+#must_use
+fn _sl_mcp_canonicalize(path): i64 {
+    #ifdef CYRIUS_TARGET_WIN
+    return 0;
+    #endif
+    #ifndef CYRIUS_TARGET_WIN
+    var fd = file_open(path, O_RDONLY, 0);
+    if (fd < 0) { return 0; }
+    var lb = str_builder_new();
+    str_builder_add_cstr(lb, "/proc/self/fd/");
+    str_builder_add_int(lb, fd);
+    var link = str_data(str_builder_build(lb));
+    var buf = fl_alloc(4097);
+    var r = sys_readlink(link, buf, 4096);
+    file_close(fd);
+    if (r <= 0) {
+        fl_free(buf);
+        return 0;
+    }
+    var sb = str_builder_new();
+    _sl_sb_bytes(sb, buf, r);
+    fl_free(buf);
+    return str_builder_build(sb);
+    #endif
+}
+
+# Appends a rect as serde_json writes Rust's Rect inside a `json!` value: {"height","width","x","y"}, each f32
+# widened to f64 (to_value goes through f64).
+fn _sl_mcp_rect_json(sb, r: SlRect): i64 {
+    var w: f32 = r.max_x - r.min_x;
+    var h: f32 = r.max_y - r.min_y;
+    var hd: f64 = f32_to(h);
+    var wd: f64 = f32_to(w);
+    var xd: f64 = f32_to(r.min_x);
+    var yd: f64 = f32_to(r.min_y);
+    str_builder_add_cstr(sb, "{\"height\":");
+    _sl_fmt_f64_json(sb, hd);
+    str_builder_add_cstr(sb, ",\"width\":");
+    _sl_fmt_f64_json(sb, wd);
+    str_builder_add_cstr(sb, ",\"x\":");
+    _sl_fmt_f64_json(sb, xd);
+    str_builder_add_cstr(sb, ",\"y\":");
+    _sl_fmt_f64_json(sb, yd);
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+# ── RFC 3339, strictly (chrono's DateTime::parse_from_rfc3339) ────────────────────────
+
+enum SlChronoErr {
+    SL_CHRONO_OK = 0;
+    SL_CHRONO_OUT_OF_RANGE = 1;
+    SL_CHRONO_INVALID = 4;
+    SL_CHRONO_TOO_SHORT = 5;
+    SL_CHRONO_TOO_LONG = 6;
+}
+
+# chrono's ParseError Display for the kinds parse_rfc3339 returns.
+#must_use
+fn _sl_chrono_err_text(k): i64 {
+    if (k == SL_CHRONO_OUT_OF_RANGE) { return "input is out of range"; }
+    if (k == SL_CHRONO_INVALID) { return "input contains invalid characters"; }
+    if (k == SL_CHRONO_TOO_SHORT) { return "premature end of input"; }
+    if (k == SL_CHRONO_TOO_LONG) { return "trailing input"; }
+    return "bad or unsupported format string";
+}
+
+# The ASCII digit at p[i] as a value, or -1.
+#must_use
+fn _sl_dig(p, i): i64 {
+    var c = load8(p + i);
+    if (c >= 48 && c <= 57) { return c - 48; }
+    return -1;
+}
+
+# chrono 0.4.45's parse_rfc3339, step by step: `YYYY-MM-DD` (T, t or a space) `hh:mm:ss`, an optional `.` and 1–9
+# digits (more are skipped), then `Z`, `z` or a sign (`+`, `-`, U+2212) with `hh:mm`, and nothing after. Stores the
+# instant as unix seconds and nanoseconds (a leap second as 59 with 10^9 added) and returns SL_CHRONO_OK, or the
+# error kind chrono returns.
+fn _sl_rfc3339_strict(p, n, secs_out, nanos_out): i64 {
+    if (n < 19) { return SL_CHRONO_TOO_SHORT; }
+    var k = 0;
+    while (k < 4) {
+        if (_sl_dig(p, k) < 0) { return SL_CHRONO_INVALID; }
+        k = k + 1;
+    }
+    var year = _sl_dig(p, 0) * 1000 + _sl_dig(p, 1) * 100 + _sl_dig(p, 2) * 10 + _sl_dig(p, 3);
+    if (load8(p + 4) != 45) { return SL_CHRONO_INVALID; }
+    if (_sl_dig(p, 5) < 0 || _sl_dig(p, 6) < 0) { return SL_CHRONO_INVALID; }
+    var month = _sl_dig(p, 5) * 10 + _sl_dig(p, 6);
+    if (load8(p + 7) != 45) { return SL_CHRONO_INVALID; }
+    if (_sl_dig(p, 8) < 0 || _sl_dig(p, 9) < 0) { return SL_CHRONO_INVALID; }
+    var day = _sl_dig(p, 8) * 10 + _sl_dig(p, 9);
+    if (_sl_valid_date(year, month, day) == 0) { return SL_CHRONO_OUT_OF_RANGE; }
+    var sep = load8(p + 10);
+    if (sep != 84 && sep != 116 && sep != 32) { return SL_CHRONO_INVALID; }
+    if (_sl_dig(p, 11) < 0 || _sl_dig(p, 12) < 0) { return SL_CHRONO_INVALID; }
+    var hour = _sl_dig(p, 11) * 10 + _sl_dig(p, 12);
+    if (load8(p + 13) != 58) { return SL_CHRONO_INVALID; }
+    if (_sl_dig(p, 14) < 0 || _sl_dig(p, 15) < 0) { return SL_CHRONO_INVALID; }
+    var minute = _sl_dig(p, 14) * 10 + _sl_dig(p, 15);
+    if (load8(p + 16) != 58) { return SL_CHRONO_INVALID; }
+    if (_sl_dig(p, 17) < 0 || _sl_dig(p, 18) < 0) { return SL_CHRONO_INVALID; }
+    var sec = _sl_dig(p, 17) * 10 + _sl_dig(p, 18);
+    var nano = 0;
+    if (sec == 60) {
+        sec = 59;
+        nano = 1000000000;
+    }
+    var i = 19;
+    if (n > 19 && load8(p + 19) == 46) {
+        i = 20;
+        if (i >= n) { return SL_CHRONO_TOO_SHORT; }
+        if (_sl_dig(p, i) < 0) { return SL_CHRONO_INVALID; }
+        var frac = 0;
+        var cnt = 0;
+        while (i < n && cnt < 9 && _sl_dig(p, i) >= 0) {
+            frac = frac * 10 + _sl_dig(p, i);
+            cnt = cnt + 1;
+            i = i + 1;
+        }
+        while (cnt < 9) {
+            frac = frac * 10;
+            cnt = cnt + 1;
+        }
+        while (i < n && _sl_dig(p, i) >= 0) { i = i + 1; }
+        nano = nano + frac;
+    }
+    if (hour > 23 || minute > 59 || sec > 59 || nano >= 2000000000) { return SL_CHRONO_OUT_OF_RANGE; }
+    if (nano >= 1000000000 && sec != 59) { return SL_CHRONO_OUT_OF_RANGE; }
+    if (i >= n) { return SL_CHRONO_TOO_SHORT; }
+    var off = 0;
+    var c = load8(p + i);
+    if (c == 90 || c == 122) {
+        i = i + 1;
+    } else {
+        var neg = 0;
+        if (c == 43) {
+            i = i + 1;
+        } elif (c == 45) {
+            neg = 1;
+            i = i + 1;
+        } elif (c == 226 && i + 2 < n && load8(p + i + 1) == 136 && load8(p + i + 2) == 146) {
+            neg = 1;
+            i = i + 3;
+        } else {
+            return SL_CHRONO_INVALID;
+        }
+        if (n - i < 2) { return SL_CHRONO_TOO_SHORT; }
+        if (_sl_dig(p, i) < 0 || _sl_dig(p, i + 1) < 0) { return SL_CHRONO_INVALID; }
+        var oh = _sl_dig(p, i) * 10 + _sl_dig(p, i + 1);
+        i = i + 2;
+        if (i >= n) { return SL_CHRONO_TOO_SHORT; }
+        if (load8(p + i) != 58) { return SL_CHRONO_INVALID; }
+        i = i + 1;
+        if (n - i < 2) { return SL_CHRONO_TOO_SHORT; }
+        var m1 = _sl_dig(p, i);
+        var m2 = _sl_dig(p, i + 1);
+        if (m1 >= 6 && m2 >= 0) { return SL_CHRONO_OUT_OF_RANGE; }
+        if (m1 < 0 || m1 > 5 || m2 < 0) { return SL_CHRONO_INVALID; }
+        i = i + 2;
+        off = oh * 3600 + (m1 * 10 + m2) * 60;
+        if (neg == 1) { off = -off; }
+    }
+    if (i < n) { return SL_CHRONO_TOO_LONG; }
+    if (off <= -86400 || off >= 86400) { return SL_CHRONO_OUT_OF_RANGE; }
+    var days = _sl_days_from_civil(year, month, day);
+    store64(secs_out, days * 86400 + hour * 3600 + minute * 60 + sec - off);
+    store64(nanos_out, nano);
+    return SL_CHRONO_OK;
+}
+
+# ── selah_capture ────────────────────────────────────────────────────────────────────
+
+# Rust's tool_capture: Ok-shaped 1 with the payload Str at out, or 0 with the message.
+fn _sl_mcp_capture(args, out): i64 {
+    var fok, fs = _sl_mcp_opt_str(args, "format");
+    if (fok == 0) {
+        store64(out, fs);
+        return 0;
+    }
+    var requested = -1;
+    if (fs != 0) {
+        var d = 0;
+        var pt, pv = selah_image_format_parse(str_data(fs), str_len(fs), &d);
+        if (is_err_result(pt) == 1) { return _sl_mcp_fail_err(out, 0, pv, d); }
+        requested = pv;
+    }
+    var rgb: i64[4];
+    var region: *SlCaptureRegion = _sl_as_region(&rgb);
+    region.kind = SL_REGION_FULL_SCREEN;
+    region.rect = SlRect_default();
+    region.window = 0;
+    var rv = _sl_json_member(args, "region");
+    if (rv != 0 && bayan_json_v_is_null(rv) == false) {
+        var rd = 0;
+        var rect: SlRect = SlRect_default();
+        var rt, rr = _sl_rect_from_value(rv, &rect, &rd);
+        if (is_err_result(rt) == 1) {
+            var eb = str_builder_new();
+            str_builder_add_cstr(eb, "invalid region: ");
+            if (rd != 0) { str_builder_add(eb, rd); }
+            store64(out, str_builder_build(eb));
+            return 0;
+        }
+        region.kind = SL_REGION_RECT;
+        region.rect = rect;
+    }
+    var ook, o = _sl_mcp_opt_str(args, "output");
+    if (ook == 0) {
+        store64(out, o);
+        return 0;
+    }
+    var format = requested;
+    var output = o;
+    if (o != 0) {
+        var from_ext = _sl_mcp_validate_output(o, out);
+        if (from_ext < 0) { return 0; }
+        if (format < 0) { format = from_ext; }
+        if (format != from_ext) {
+            var mb = str_builder_new();
+            str_builder_add_cstr(mb, "output ");
+            str_builder_add(mb, o);
+            str_builder_add_cstr(mb, " has a .");
+            selah_image_format_fmt(mb, from_ext);
+            str_builder_add_cstr(mb, " extension but format is ");
+            selah_image_format_fmt(mb, format);
+            store64(out, str_builder_build(mb));
+            return 0;
+        }
+    } else {
+        if (format < 0) { format = selah_image_format_default(); }
+        var ob = str_builder_new();
+        str_builder_add_cstr(ob, "screenshot.");
+        str_builder_add_cstr(ob, selah_image_format_extension(format));
+        output = str_builder_build(ob);
+        if (_sl_mcp_validate_output(output, out) < 0) { return 0; }
+    }
+    var c = SlCaptureClient_new(_sl_mcp_api_url);
+    var cd = 0;
+    var ct, cv = SlCaptureClient_capture(c, region, format, &cd);
+    SlCaptureClient_free(c);
+    if (is_err_result(ct) == 1) { return _sl_mcp_fail_err(out, 0, cv, cd); }
+    var resp: *SlCaptureResponse = _sl_as_capture_resp(cv);
+    var dlen = 0;
+    var dd = 0;
+    var dt, data = selah_decode_image_data(str_data(resp.image_data), str_len(resp.image_data), &dlen, &dd);
+    if (is_err_result(dt) == 1) {
+        SlCaptureResponse_free(resp);
+        return _sl_mcp_fail_err(out, 0, data, dd);
+    }
+    var wd = 0;
+    var wt, wv = SlCaptureClient_save_to_file(data, dlen, str_data(output), &wd);
+    fl_free(data);
+    if (is_err_result(wt) == 1) {
+        SlCaptureResponse_free(resp);
+        var pb = str_builder_new();
+        str_builder_add_cstr(pb, "failed to write ");
+        str_builder_add(pb, output);
+        str_builder_add_cstr(pb, ": ");
+        return _sl_mcp_fail_err(out, str_data(str_builder_build(pb)), wv, wd);
+    }
+    var saved = _sl_mcp_canonicalize(str_data(output));
+    if (saved == 0) { saved = output; }
+    var now = clock_epoch_ns();
+    var secs = now / 1000000000;
+    var nanos = now % 1000000000;
+    if (_sl_mcp_history != 0) {
+        var sb = str_builder_new();
+        if (region.kind == SL_REGION_RECT) {
+            var srb: i64[4];
+            var src: *SlCaptureSource = _sl_as_source(&srb);
+            src.kind = SL_SOURCE_REGION;
+            src.region = region.rect;
+            src.window = 0;
+            src.fmt(sb);
+        } else {
+            str_builder_add_cstr(sb, "full screen");
+        }
+        var source = str_builder_build(sb);
+        var id: u8[16];
+        _sl_uuid_v4(&id);
+        var ext = selah_image_format_extension(format);
+        var e = SlHistoryEntry_new(&id, str_data(saved), str_len(saved), secs, nanos, str_data(source),
+            str_len(source), resp.width, resp.height, ext, strlen(ext));
+        var hd = 0;
+        var ht, hv = SlHistoryStore_record(_sl_mcp_history, e, &hd);
+        if (is_err_result(ht) == 1) { _sl_log_warn("failed to record capture in history"); }
+        SlHistoryEntry_free(e);
+    }
+    var pb2 = str_builder_new();
+    str_builder_add_cstr(pb2, "{\"format\":");
+    var fx = selah_image_format_extension(format);
+    _sl_json_str(pb2, fx, strlen(fx));
+    str_builder_add_cstr(pb2, ",\"height\":");
+    str_builder_add_int(pb2, resp.height);
+    str_builder_add_cstr(pb2, ",\"path\":");
+    _sl_json_str_s(pb2, saved);
+    str_builder_add_cstr(pb2, ",\"timestamp\":\"");
+    _sl_rfc3339_fmt_offset(pb2, secs, nanos);
+    str_builder_add_cstr(pb2, "\",\"width\":");
+    str_builder_add_int(pb2, resp.width);
+    str_builder_putc(pb2, 125);
+    SlCaptureResponse_free(resp);
+    store64(out, str_builder_build(pb2));
+    return 1;
+}
+
+# ── selah_annotate ───────────────────────────────────────────────────────────────────
+
+# One AnnotationInput read as serde's derive reads it (an object, unknown members ignored; or the array of its four
+# fields, the last two optional): `kind` parsed as AnnotationKind's FromStr does (any case, the aliases), `position`
+# a Rect, `color` a Color or absent / null (opaque red), `text` a string or absent / null. Returns the annotation, or
+# 0 with the reason at why_out (a Str).
+fn _sl_mcp_annotation(item, why_out): i64 {
+    var isarr = 0;
+    if (item != 0 && bayan_json_v_is_arr(item) == true) {
+        var al = bayan_json_v_arr_len(item);
+        if (al < 2 || al > 4) {
+            store64(why_out, str_from("invalid length: expected struct AnnotationInput with 2 to 4 elements"));
+            return 0;
+        }
+        isarr = 1;
+    } elif (item == 0 || bayan_json_v_is_obj(item) == false) {
+        store64(why_out, str_from("invalid type: expected struct AnnotationInput"));
+        return 0;
+    }
+    var kv = 0;
+    var pv = 0;
+    var cv = 0;
+    var tv = 0;
+    if (isarr == 1) {
+        var n = bayan_json_v_arr_len(item);
+        kv = bayan_json_v_arr_get(item, 0);
+        pv = bayan_json_v_arr_get(item, 1);
+        if (n > 2) { cv = bayan_json_v_arr_get(item, 2); }
+        if (n > 3) { tv = bayan_json_v_arr_get(item, 3); }
+    } else {
+        kv = _sl_json_member(item, "kind");
+        pv = _sl_json_member(item, "position");
+        cv = _sl_json_member(item, "color");
+        tv = _sl_json_member(item, "text");
+    }
+    var ks = _sl_json_as_str(kv);
+    if (ks == 0) {
+        store64(why_out, str_from("`kind` is missing or not a string"));
+        return 0;
+    }
+    if (pv == 0) {
+        store64(why_out, str_from("missing field `position`"));
+        return 0;
+    }
+    var rect: SlRect = SlRect_default();
+    var rd = 0;
+    var rt, rr = _sl_rect_from_value(pv, &rect, &rd);
+    if (is_err_result(rt) == 1) {
+        if (rd == 0) { rd = str_from("invalid position"); }
+        store64(why_out, rd);
+        return 0;
+    }
+    var col: SlColor = SlColor_default();
+    if (cv != 0 && bayan_json_v_is_null(cv) == false) {
+        var cd = 0;
+        var ct, cr = _sl_color_from_value(cv, &col, &cd);
+        if (is_err_result(ct) == 1) {
+            if (cd == 0) { cd = str_from("invalid color"); }
+            store64(why_out, cd);
+            return 0;
+        }
+    }
+    var text = 0;
+    if (tv != 0 && bayan_json_v_is_null(tv) == false) {
+        text = _sl_json_as_str(tv);
+        if (text == 0) {
+            store64(why_out, str_from("`text` must be a string or null"));
+            return 0;
+        }
+    }
+    var kd = 0;
+    var kt, kind = selah_annotation_kind_parse(str_data(ks), str_len(ks), &kd);
+    if (is_err_result(kt) == 1) {
+        store64(why_out, selah_error_display(kind, kd));
+        return 0;
+    }
+    var a: *SlAnnotation = SlAnnotation_new(kind, rect, col);
+    if (text != 0) { a.text = str_new(_sl_fl_dup(str_data(text), str_len(text)), str_len(text)); }
+    return a;
+}
+
+# Rust's tool_annotate.
+fn _sl_mcp_annotate(args, out): i64 {
+    var iok, image_path = _sl_mcp_req_str(args, "image_path");
+    if (iok == 0) {
+        store64(out, image_path);
+        return 0;
+    }
+    if (_sl_mcp_validate_path(image_path, out) == 0) { return 0; }
+    var av = _sl_json_member(args, "annotations");
+    if (av == 0) { return _sl_mcp_fail3(out, "missing annotations", 0, 0); }
+    if (bayan_json_v_is_arr(av) == false) { return _sl_mcp_fail3(out, "annotations must be an array", 0, 0); }
+    var count = bayan_json_v_arr_len(av);
+    if (count > SL_MAX_ANNOTATIONS) {
+        var tb = str_builder_new();
+        str_builder_add_cstr(tb, "too many annotations (");
+        str_builder_add_int(tb, count);
+        str_builder_add_cstr(tb, ", limit 10000)");
+        store64(out, str_builder_build(tb));
+        return 0;
+    }
+    var anns = vec_new();
+    var i = 0;
+    while (i < count) {
+        var why = 0;
+        var a = _sl_mcp_annotation(bayan_json_v_arr_get(av, i), &why);
+        if (a == 0) {
+            var j = 0;
+            while (j < vec_len(anns)) {
+                SlAnnotation_free(vec_get(anns, j));
+                j = j + 1;
+            }
+            var eb = str_builder_new();
+            str_builder_add_cstr(eb, "invalid annotation ");
+            str_builder_add_int(eb, i);
+            str_builder_add_cstr(eb, ": ");
+            str_builder_add(eb, why);
+            store64(out, str_builder_build(eb));
+            return 0;
+        }
+        vec_push(anns, a);
+        i = i + 1;
+    }
+    var output = 0;
+    var format = _sl_mcp_output_path(args, image_path, "annotated", &output, out);
+    var ok = 0;
+    if (format >= 0) { ok = _sl_mcp_render_write(image_path, anns, format, output, out); }
+    var k = 0;
+    while (k < vec_len(anns)) {
+        SlAnnotation_free(vec_get(anns, k));
+        k = k + 1;
+    }
+    if (ok == 0) { return 0; }
+    var pb = str_builder_new();
+    str_builder_add_cstr(pb, "{\"annotation_count\":");
+    str_builder_add_int(pb, count);
+    str_builder_add_cstr(pb, ",\"format\":");
+    var fx = selah_image_format_extension(format);
+    _sl_json_str(pb, fx, strlen(fx));
+    str_builder_add_cstr(pb, ",\"path\":");
+    _sl_json_str_s(pb, output);
+    str_builder_putc(pb, 125);
+    store64(out, str_builder_build(pb));
+    return 1;
+}
+
+# The input read (read_input), the annotations drawn on it in `format`, and the result written to `output`
+# (atomically, 0600). 1, or 0 with the message at out.
+fn _sl_mcp_render_write(image_path, anns, format, output, out): i64 {
+    var n = 0;
+    var src = _sl_mcp_read_input(image_path, &n, out);
+    if (src == 0) { return 0; }
+    var rn = 0;
+    var d = 0;
+    var t, img = SlAnnotationCanvas_render_to_image(src, n, anns, format, &rn, &d);
+    fl_free(src);
+    if (is_err_result(t) == 1) { return _sl_mcp_fail_err(out, 0, img, d); }
+    var wd = 0;
+    var wt, wv = _sl_write_atomic_nosync(str_data(output), img, rn, &wd);
+    selah_bytes_free(img);
+    if (is_err_result(wt) == 1) {
+        var pb = str_builder_new();
+        str_builder_add_cstr(pb, "failed to write ");
+        str_builder_add(pb, output);
+        str_builder_add_cstr(pb, ": ");
+        if (wd != 0) { str_builder_add(pb, wd); }
+        store64(out, str_builder_build(pb));
+        return 0;
+    }
+    return 1;
+}
+
+# ── selah_ocr ────────────────────────────────────────────────────────────────────────
+
+# Rust's tool_ocr.
+fn _sl_mcp_ocr(args, out): i64 {
+    var iok, image_path = _sl_mcp_req_str(args, "image_path");
+    if (iok == 0) {
+        store64(out, image_path);
+        return 0;
+    }
+    if (_sl_mcp_validate_path(image_path, out) == 0) { return 0; }
+    var eok, es = _sl_mcp_opt_str(args, "engine");
+    if (eok == 0) {
+        store64(out, es);
+        return 0;
+    }
+    var engine = "local";
+    if (es != 0) { engine = str_data(es); }
+    var hoosh = 0;
+    if (es != 0 && str_len(es) == 5 && memeq(engine, "hoosh", 5) == 1) { hoosh = 1; }
+    var local = 0;
+    if (es == 0 || (str_len(es) == 5 && memeq(engine, "local", 5) == 1)) { local = 1; }
+    if (hoosh == 0 && local == 0) {
+        var eb = str_builder_new();
+        str_builder_add_cstr(eb, "unknown OCR engine ");
+        _sl_debug_str(eb, str_data(es), str_len(es));
+        str_builder_add_cstr(eb, " (use local or hoosh)");
+        store64(out, str_builder_build(eb));
+        return 0;
+    }
+    var n = 0;
+    var data = _sl_mcp_read_input(image_path, &n, out);
+    if (data == 0) { return 0; }
+    var o: *SlOcrResult = 0;
+    if (hoosh == 1) {
+        var cfg = _sl_mcp_hoosh;
+        var own = 0;
+        if (cfg == 0) {
+            cfg = SlHooshConfig_default();
+            own = 1;
+        }
+        var hc = SlHooshClient_with_config(cfg);
+        if (own == 1) { SlHooshConfig_free(cfg); }
+        var hd = 0;
+        var ht, hv = SlHooshClient_ocr(hc, data, n, &hd);
+        SlHooshClient_free(hc);
+        fl_free(data);
+        if (is_err_result(ht) == 1) { return _sl_mcp_fail_err(out, 0, hv, hd); }
+        o = _sl_as_ocr(hv);
+    } else {
+        o = selah_extract_text_regions(data, n);
+        fl_free(data);
+    }
+    var pb = str_builder_new();
+    str_builder_add_cstr(pb, "{\"confidence\":");
+    _sl_fmt_f64_json(pb, o.confidence);
+    str_builder_add_cstr(pb, ",\"engine\":");
+    _sl_json_str(pb, engine, strlen(engine));
+    if (o.is_stub == 1) {
+        str_builder_add_cstr(pb, ",\"is_stub\":true,\"regions\":[");
+    } else {
+        str_builder_add_cstr(pb, ",\"is_stub\":false,\"regions\":[");
+    }
+    var boxes = o.bounding_boxes;
+    var i = 0;
+    while (boxes != 0 && i < vec_len(boxes)) {
+        if (i > 0) { str_builder_putc(pb, 44); }
+        var r: *SlRect = _sl_as_rect(vec_get(boxes, i));
+        var rc: SlRect = SlRect_default();
+        rc.min_x = r.min_x;
+        rc.min_y = r.min_y;
+        rc.max_x = r.max_x;
+        rc.max_y = r.max_y;
+        _sl_mcp_rect_json(pb, rc);
+        i = i + 1;
+    }
+    str_builder_add_cstr(pb, "],\"text\":");
+    _sl_json_str_s(pb, o.text);
+    str_builder_putc(pb, 125);
+    store64(out, str_builder_build(pb));
+    return 1;
+}
+
+# ── selah_redact ─────────────────────────────────────────────────────────────────────
+
+# 1 when the Str is one of the redaction keys selah_redact accepts.
+#must_use
+fn _sl_mcp_is_redaction_key(s): i64 {
+    var p = str_data(s);
+    var n = str_len(s);
+    if (_sl_eq(p, n, "email") == 1 || _sl_eq(p, n, "phone") == 1) { return 1; }
+    if (_sl_eq(p, n, "credit_card") == 1 || _sl_eq(p, n, "ip_address") == 1) { return 1; }
+    return 0;
+}
+
+# Rust's parse_targets: (1, 0) for no filter, (1, the bayan array) for a list of known keys, or (0, message).
+fn _sl_mcp_targets(args): (i64, i64) {
+    var v = _sl_json_member(args, "targets");
+    if (v == 0 || bayan_json_v_is_null(v) == true) { return (1, 0); }
+    if (bayan_json_v_is_arr(v) == false) { return (0, str_from("targets must be an array")); }
+    var n = bayan_json_v_arr_len(v);
+    var i = 0;
+    while (i < n) {
+        var t = bayan_json_v_arr_get(v, i);
+        var s = _sl_json_as_str(t);
+        if (s == 0 || _sl_mcp_is_redaction_key(s) == 0) {
+            var sb = str_builder_new();
+            str_builder_add_cstr(sb, "invalid redaction target ");
+            _sl_json_value_fmt(sb, t);
+            str_builder_add_cstr(sb, " (use email, phone, credit_card, ip_address)");
+            return (0, str_builder_build(sb));
+        }
+        i = i + 1;
+    }
+    return (1, v);
+}
+
+# 1 when the target filter (a bayan array, or 0 for all) admits the key (a NUL-terminated string).
+#must_use
+fn _sl_mcp_target_admits(filter, key): i64 {
+    if (filter == 0) { return 1; }
+    var n = bayan_json_v_arr_len(filter);
+    var i = 0;
+    while (i < n) {
+        var s = _sl_json_as_str(bayan_json_v_arr_get(filter, i));
+        if (_sl_eq(str_data(s), str_len(s), key) == 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Rust's tool_redact.
+fn _sl_mcp_redact(args, out): i64 {
+    var iok, image_path = _sl_mcp_req_str(args, "image_path");
+    if (iok == 0) {
+        store64(out, image_path);
+        return 0;
+    }
+    if (_sl_mcp_validate_path(image_path, out) == 0) { return 0; }
+    var tok, filter = _sl_mcp_targets(args);
+    if (tok == 0) {
+        store64(out, filter);
+        return 0;
+    }
+    var output = 0;
+    var format = _sl_mcp_output_path(args, image_path, "redacted", &output, out);
+    if (format < 0) { return 0; }
+    var n = 0;
+    var data = _sl_mcp_read_input(image_path, &n, out);
+    if (data == 0) { return 0; }
+    var ocr: *SlOcrResult = selah_extract_text_regions(data, n);
+    var all = selah_suggest_redactions(str_data(ocr.text), str_len(ocr.text));
+    var located = vec_new();
+    var unlocated = vec_new();
+    var i = 0;
+    while (i < vec_len(all)) {
+        var s: *SlRedactionSuggestion = _sl_as_suggestion(vec_get(all, i));
+        if (_sl_mcp_target_admits(filter, s.target.key()) == 1) {
+            var area: f64 = s.region.area();
+            if (area > 0.0) {
+                vec_push(located, s);
+            } else {
+                vec_push(unlocated, s);
+            }
+        }
+        i = i + 1;
+    }
+    if (vec_len(unlocated) > 0 && ocr.is_stub == 0) {
+        fl_free(data);
+        var eb = str_builder_new();
+        str_builder_add_cstr(eb, "detected ");
+        str_builder_add_int(eb, vec_len(unlocated));
+        str_builder_add_cstr(eb, " sensitive match(es) (");
+        _sl_mcp_kinds(eb, unlocated);
+        str_builder_add_cstr(eb, ") that the OCR engine could not locate in the image; refusing to write an ");
+        str_builder_add_cstr(eb, "unredacted copy to ");
+        str_builder_add(eb, output);
+        store64(out, str_builder_build(eb));
+        return 0;
+    }
+    var anns = vec_new();
+    var k = 0;
+    while (k < vec_len(located)) {
+        var ls: *SlRedactionSuggestion = _sl_as_suggestion(vec_get(located, k));
+        vec_push(anns, SlAnnotation_new(SL_KIND_REDACTION, ls.region, SL_COLOR_BLACK));
+        k = k + 1;
+    }
+    var rn = 0;
+    var d = 0;
+    var t, img = SlAnnotationCanvas_render_to_image(data, n, anns, format, &rn, &d);
+    fl_free(data);
+    var q = 0;
+    while (q < vec_len(anns)) {
+        SlAnnotation_free(vec_get(anns, q));
+        q = q + 1;
+    }
+    if (is_err_result(t) == 1) { return _sl_mcp_fail_err(out, 0, img, d); }
+    var wd = 0;
+    var wt, wv = _sl_write_atomic_nosync(str_data(output), img, rn, &wd);
+    selah_bytes_free(img);
+    if (is_err_result(wt) == 1) {
+        var fb = str_builder_new();
+        str_builder_add_cstr(fb, "failed to write ");
+        str_builder_add(fb, output);
+        str_builder_add_cstr(fb, ": ");
+        if (wd != 0) { str_builder_add(fb, wd); }
+        store64(out, str_builder_build(fb));
+        return 0;
+    }
+    var pb = str_builder_new();
+    str_builder_add_cstr(pb, "{\"format\":");
+    var fx = selah_image_format_extension(format);
+    _sl_json_str(pb, fx, strlen(fx));
+    if (ocr.is_stub == 1) {
+        str_builder_add_cstr(pb, ",\"metadata_matches\":[");
+        var m = 0;
+        while (m < vec_len(unlocated)) {
+            if (m > 0) { str_builder_putc(pb, 44); }
+            var us: *SlRedactionSuggestion = _sl_as_suggestion(vec_get(unlocated, m));
+            str_builder_add_cstr(pb, "{\"matched_text\":");
+            _sl_json_str_s(pb, _sl_mask_pii(us.matched_text));
+            str_builder_add_cstr(pb, ",\"target_type\":");
+            _sl_mcp_target_display(pb, us);
+            str_builder_putc(pb, 125);
+            m = m + 1;
+        }
+        str_builder_putc(pb, 93);
+    }
+    str_builder_add_cstr(pb, ",\"path\":");
+    _sl_json_str_s(pb, output);
+    str_builder_add_cstr(pb, ",\"redactions\":[");
+    var r = 0;
+    while (r < vec_len(located)) {
+        if (r > 0) { str_builder_putc(pb, 44); }
+        var rs: *SlRedactionSuggestion = _sl_as_suggestion(vec_get(located, r));
+        str_builder_add_cstr(pb, "{\"confidence\":");
+        _sl_fmt_f64_json(pb, rs.confidence);
+        str_builder_add_cstr(pb, ",\"matched_text\":");
+        _sl_json_str_s(pb, _sl_mask_pii(rs.matched_text));
+        str_builder_add_cstr(pb, ",\"target_type\":");
+        _sl_mcp_target_display(pb, rs);
+        str_builder_putc(pb, 125);
+        r = r + 1;
+    }
+    str_builder_putc(pb, 93);
+    if (ocr.is_stub == 1) {
+        str_builder_add_cstr(pb, ",\"warning\":\"local OCR is a stub: it scans the file's embedded bytes, not the ");
+        str_builder_add_cstr(pb, "rendered pixels, so text visible in the image was NOT detected or redacted. ");
+        str_builder_add_cstr(pb, "Matches ");
+        str_builder_add_cstr(pb, "found in embedded metadata are listed in metadata_matches; the re-encoded output ");
+        str_builder_add_cstr(pb, "does not include that metadata.\"");
+    }
+    str_builder_putc(pb, 125);
+    store64(out, str_builder_build(pb));
+    return 1;
+}
+
+# Appends a suggestion's target type as Rust's Display writes it, as a JSON string.
+fn _sl_mcp_target_display(sb, s: *SlRedactionSuggestion): i64 {
+    var tb = str_builder_new();
+    s.target.fmt(tb);
+    _sl_json_str_s(sb, str_builder_build(tb));
+    return 0;
+}
+
+# Appends the sorted, deduplicated keys of the suggestions, comma-separated.
+fn _sl_mcp_kinds(sb, list): i64 {
+    var keys = vec_new();
+    var i = 0;
+    while (i < vec_len(list)) {
+        var s: *SlRedactionSuggestion = _sl_as_suggestion(vec_get(list, i));
+        var k = s.target.key();
+        var j = 0;
+        var seen = 0;
+        while (j < vec_len(keys)) {
+            if (streq(vec_get(keys, j), k) == 1) { seen = 1; }
+            j = j + 1;
+        }
+        if (seen == 0) {
+            # Insert in byte order.
+            var at = vec_len(keys);
+            vec_push(keys, k);
+            while (at > 0 && _sl_str_cmp(str_from(vec_get(keys, at - 1)), str_from(k)) > 0) {
+                vec_set(keys, at, vec_get(keys, at - 1));
+                at = at - 1;
+            }
+            vec_set(keys, at, k);
+        }
+        i = i + 1;
+    }
+    var q = 0;
+    while (q < vec_len(keys)) {
+        if (q > 0) { str_builder_add_cstr(sb, ", "); }
+        str_builder_add_cstr(sb, vec_get(keys, q));
+        q = q + 1;
+    }
+    return 0;
+}
+
+# ── selah_history ────────────────────────────────────────────────────────────────────
+
+# Rust's tool_history.
+fn _sl_mcp_history(args, out): i64 {
+    var limit = _SL_DEFAULT_HISTORY_LIMIT;
+    var lv = _sl_json_member(args, "limit");
+    if (lv != 0 && bayan_json_v_is_null(lv) == false) {
+        limit = _sl_json_as_uint(lv, 9223372036854775807);
+        if (limit < 0) { return _sl_mcp_fail3(out, "limit must be a non-negative integer", 0, 0); }
+    }
+    if (limit > _SL_MAX_HISTORY_LIMIT) { limit = _SL_MAX_HISTORY_LIMIT; }
+    var sok, ss = _sl_mcp_opt_str(args, "since");
+    if (sok == 0) {
+        store64(out, ss);
+        return 0;
+    }
+    var since: i64[2];
+    var sp = 0;
+    if (ss != 0) {
+        var k = _sl_rfc3339_strict(str_data(ss), str_len(ss), &since, _sl_addr(&since) + 8);
+        if (k != SL_CHRONO_OK) {
+            var eb = str_builder_new();
+            str_builder_add_cstr(eb, "invalid since timestamp ");
+            _sl_debug_str(eb, str_data(ss), str_len(ss));
+            str_builder_add_cstr(eb, ": ");
+            str_builder_add_cstr(eb, _sl_chrono_err_text(k));
+            store64(out, str_builder_build(eb));
+            return 0;
+        }
+        sp = &since;
+    }
+    if (_sl_mcp_history == 0) { return _sl_mcp_fail3(out, "screenshot history is unavailable", 0, 0); }
+    var d = 0;
+    var t, v = SlHistoryStore_list(_sl_mcp_history, limit, sp, &d);
+    if (is_err_result(t) == 1) { return _sl_mcp_fail_err(out, 0, v, d); }
+    var pb = str_builder_new();
+    str_builder_add_cstr(pb, "{\"screenshots\":[");
+    var i = 0;
+    while (i < vec_len(v)) {
+        if (i > 0) { str_builder_putc(pb, 44); }
+        var e: *SlHistoryEntry = _sl_as_history(vec_get(v, i));
+        str_builder_add_cstr(pb, "{\"dimensions\":\"");
+        str_builder_add_int(pb, e.width);
+        str_builder_putc(pb, 120);
+        str_builder_add_int(pb, e.height);
+        str_builder_add_cstr(pb, "\",\"format\":");
+        _sl_json_str_s(pb, e.format);
+        str_builder_add_cstr(pb, ",\"id\":\"");
+        _sl_uuid_fmt(pb, e, 1);
+        str_builder_add_cstr(pb, "\",\"path\":");
+        _sl_json_str_s(pb, e.path);
+        str_builder_add_cstr(pb, ",\"source\":");
+        _sl_json_str_s(pb, e.source);
+        str_builder_add_cstr(pb, ",\"timestamp\":\"");
+        _sl_rfc3339_fmt_offset(pb, e.secs, e.nanos);
+        str_builder_add_cstr(pb, "\"}");
+        i = i + 1;
+    }
+    str_builder_add_cstr(pb, "]}");
+    selah_history_entries_free(v);
+    store64(out, str_builder_build(pb));
+    return 1;
+}
+
+# ── dispatch ─────────────────────────────────────────────────────────────────────────
+
+# Runs tool `name` (NUL-terminated) on the arguments JSON (a NUL-terminated string; a non-object reads as no
+# arguments). Returns (1 when the tool failed, the payload or message as a Str). The handlers and the tests use it.
+fn _sl_mcp_run(name, args_json): (i64, i64) {
+    var a = _sl_scratch_new();
+    var args = 0;
+    if (args_json != 0) { args = _sl_json_parse_a(a, args_json, strlen(args_json)); }
+    var text = 0;
+    var ok = 0;
+    if (streq(name, "selah_capture") == 1) {
+        ok = _sl_mcp_capture(args, &text);
+    } elif (streq(name, "selah_annotate") == 1) {
+        ok = _sl_mcp_annotate(args, &text);
+    } elif (streq(name, "selah_ocr") == 1) {
+        ok = _sl_mcp_ocr(args, &text);
+    } elif (streq(name, "selah_redact") == 1) {
+        ok = _sl_mcp_redact(args, &text);
+    } elif (streq(name, "selah_history") == 1) {
+        ok = _sl_mcp_history(args, &text);
+    } else {
+        text = str_from("unknown tool");
+    }
+    # The text is copied off the scratch arena (it may hold strings from the arguments).
+    var copy = str_new(_sl_fl_dup(str_data(text), str_len(text)), str_len(text));
+    _sl_scratch_free(a);
+    if (ok == 1) { return (0, copy); }
+    _sl_log_kv(SK_WARN, "MCP tool call failed", "tool", name);
+    return (1, copy);
+}
+
+# A bote handler's answer for tool `name`.
+fn _sl_mcp_answer(name, args): i64 {
+    var failed, text = _sl_mcp_run(name, args);
+    var r = 0;
+    if (failed == 1) {
+        r = _sl_mcp_error_content(text);
+    } else {
+        r = _sl_mcp_text_content(text);
+    }
+    fl_free(str_data(text));
+    return r;
+}
+
+# The bote handlers (ABI: fn h(args_cstr, claims) → result_cstr).
+fn _sl_mcp_h_capture(args, claims): i64 { return _sl_mcp_answer("selah_capture", args); }
+fn _sl_mcp_h_annotate(args, claims): i64 { return _sl_mcp_answer("selah_annotate", args); }
+fn _sl_mcp_h_ocr(args, claims): i64 { return _sl_mcp_answer("selah_ocr", args); }
+fn _sl_mcp_h_redact(args, claims): i64 { return _sl_mcp_answer("selah_redact", args); }
+fn _sl_mcp_h_history(args, claims): i64 { return _sl_mcp_answer("selah_history", args); }
+
+# ── the tool definitions ─────────────────────────────────────────────────────────────
+
+# The rect schema Rust's build_registry shares, with an optional description.
+fn _sl_mcp_rect_schema(sb, desc): i64 {
+    str_builder_add_cstr(sb, "{\"type\":\"object\",");
+    if (desc != 0) {
+        str_builder_add_cstr(sb, "\"description\":\"");
+        str_builder_add_cstr(sb, desc);
+        str_builder_add_cstr(sb, "\",");
+    }
+    str_builder_add_cstr(sb, "\"properties\":{\"x\":{\"type\":\"number\"},\"y\":{\"type\":\"number\"},");
+    str_builder_add_cstr(sb, "\"width\":{\"type\":\"number\"},\"height\":{\"type\":\"number\"}},");
+    str_builder_add_cstr(sb, "\"required\":[\"x\",\"y\",\"width\",\"height\"]}");
+    return 0;
+}
+
+# The five inputSchemas, as Rust's build_registry describes them (JSON text, NUL-terminated).
+#must_use
+fn _sl_mcp_schema(tool): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"type\":\"object\",\"properties\":{");
+    if (tool == 0) {
+        str_builder_add_cstr(sb, "\"region\":");
+        _sl_mcp_rect_schema(sb, "Capture region (omit for full screen)");
+        str_builder_add_cstr(sb, ",\"format\":{\"type\":\"string\",\"enum\":[\"png\",\"jpg\",\"jpeg\",\"bmp\",");
+        str_builder_add_cstr(sb, "\"webp\"],");
+        str_builder_add_cstr(sb, "\"default\":\"png\"},\"output\":{\"type\":\"string\",");
+        str_builder_add_cstr(sb, "\"description\":\"Output file path (default: ");
+        str_builder_add_cstr(sb, "screenshot.<format>)\"}},\"required\":[]}");
+    } elif (tool == 1) {
+        str_builder_add_cstr(sb, "\"image_path\":{\"type\":\"string\",\"description\":\"Path to the source image\"},");
+        str_builder_add_cstr(sb, "\"annotations\":{\"type\":\"array\",\"maxItems\":10000,");
+        str_builder_add_cstr(sb, "\"items\":{\"type\":\"object\",");
+        str_builder_add_cstr(sb, "\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"arrow\",\"rectangle\",");
+        str_builder_add_cstr(sb, "\"circle\",\"text\",\"highlight\",\"redaction\",\"freeform\"]},\"position\":");
+        _sl_mcp_rect_schema(sb, 0);
+        str_builder_add_cstr(sb, ",\"color\":{\"type\":\"object\",\"description\":\"RGBA color, 0-255 per channel ");
+        str_builder_add_cstr(sb, "(default: opaque red)\",\"properties\":{\"r\":{\"type\":\"integer\"},");
+        str_builder_add_cstr(sb, "\"g\":{\"type\":\"integer\"},\"b\":{\"type\":\"integer\"},");
+        str_builder_add_cstr(sb, "\"a\":{\"type\":\"integer\"}}},");
+        str_builder_add_cstr(sb, "\"text\":{\"type\":\"string\"}},\"required\":[\"kind\",\"position\"]}},");
+        str_builder_add_cstr(sb, "\"output\":{\"type\":\"string\",\"description\":\"Output file path; format ");
+        str_builder_add_cstr(sb, "follows the ");
+        str_builder_add_cstr(sb, "extension (default: <image>_annotated.<ext> next to the input)\"}},");
+        str_builder_add_cstr(sb, "\"required\":[\"image_path\",\"annotations\"]}");
+    } elif (tool == 2) {
+        str_builder_add_cstr(sb, "\"image_path\":{\"type\":\"string\",\"description\":\"Path to the image\"},");
+        str_builder_add_cstr(sb, "\"engine\":{\"type\":\"string\",\"enum\":[\"local\",\"hoosh\"],");
+        str_builder_add_cstr(sb, "\"default\":\"local\"}},");
+        str_builder_add_cstr(sb, "\"required\":[\"image_path\"]}");
+    } elif (tool == 3) {
+        str_builder_add_cstr(sb, "\"image_path\":{\"type\":\"string\",\"description\":\"Path to the image\"},");
+        str_builder_add_cstr(sb, "\"targets\":{\"type\":\"array\",\"items\":{\"type\":\"string\",\"enum\":[\"email\",");
+        str_builder_add_cstr(sb, "\"phone\",\"credit_card\",\"ip_address\"]},\"description\":\"Types of sensitive ");
+        str_builder_add_cstr(sb, "data ");
+        str_builder_add_cstr(sb, "to redact (default: ");
+        str_builder_add_cstr(sb, "all)\"},\"output\":{\"type\":\"string\",\"description\":\"Output file ");
+        str_builder_add_cstr(sb, "path; format follows the extension (default: <image>_redacted.<ext> next to the ");
+        str_builder_add_cstr(sb, "input)\"}},\"required\":[\"image_path\"]}");
+    } else {
+        str_builder_add_cstr(sb, "\"limit\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":1000,\"default\":20,");
+        str_builder_add_cstr(sb, "\"description\":\"Max results to return\"},\"since\":{\"type\":\"string\",");
+        str_builder_add_cstr(sb, "\"description\":\"RFC 3339 timestamp — only return captures at or after this ");
+        str_builder_add_cstr(sb, "time\"}},");
+        str_builder_add_cstr(sb, "\"required\":[]}");
+    }
+    return str_data(str_builder_build(sb));
+}
+
+# The tool names and descriptions, in Rust's registration order.
+#must_use
+fn _sl_mcp_tool_name(i): i64 {
+    if (i == 0) { return "selah_capture"; }
+    if (i == 1) { return "selah_annotate"; }
+    if (i == 2) { return "selah_ocr"; }
+    if (i == 3) { return "selah_redact"; }
+    return "selah_history";
+}
+
+#must_use
+fn _sl_mcp_tool_description(i): i64 {
+    if (i == 0) { return "Take a screenshot via the daimon screen capture API"; }
+    if (i == 1) { return "Add annotations to an image"; }
+    if (i == 2) {
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "Extract text from an image. The 'local' engine is a stub that only finds text ");
+        str_builder_add_cstr(sb, "embedded in file metadata; use 'hoosh' for real OCR of rendered text.");
+        return str_data(str_builder_build(sb));
+    }
+    if (i == 3) {
+        var rb = str_builder_new();
+        str_builder_add_cstr(rb, "Detect and redact sensitive content in an image. Fails (without writing output) ");
+        str_builder_add_cstr(rb, "if sensitive text is detected but cannot be located in the image.");
+        return str_data(str_builder_build(rb));
+    }
+    return "List recent screenshots and their metadata";
+}
+
+# The five tool definitions (bote ToolDefs): selah_ocr read-only but open-world (its hoosh engine calls a service),
+# selah_history read-only. A vec.
+#must_use
+fn selah_mcp_tool_definitions(): i64 {
+    var defs = vec_new();
+    var i = 0;
+    while (i < 5) {
+        var schema = tool_schema_from_json(_sl_mcp_schema(i));
+        var d = tool_def_new(_sl_mcp_tool_name(i), _sl_mcp_tool_description(i), schema);
+        if (i == 2) {
+            # openWorldHint true: bote's HINT_TRUE, read off its destructive preset (whose open-world hint is true)
+            # so the bundle names no bote variable (dist/selah-mcp.cyr compiles without bote in scope).
+            var a = ann_read_only();
+            ann_set_open_world(a, ann_open_world_hint(ann_destructive()));
+            tool_def_with_annotations(d, a);
+        }
+        if (i == 4) { tool_def_with_annotations(d, ann_read_only()); }
+        vec_push(defs, d);
+        i = i + 1;
+    }
+    return defs;
+}
+
+# Sets the hoosh configuration selah_ocr's `hoosh` engine uses (copied). hoosh needs a model; the default has none,
+# so the engine refuses until one is set (ADR 0002 #24).
+fn selah_mcp_set_hoosh_config(cfg: *SlHooshConfig): i64 {
+    if (_sl_mcp_hoosh != 0) { SlHooshConfig_free(_sl_mcp_hoosh); }
+    _sl_mcp_hoosh = SlHooshConfig_new(cfg.endpoint, cfg.model);
+    return 0;
+}
+
+# A bote dispatcher with the five tools and their handlers, serving as server "selah" (Rust: build_dispatcher).
+# `api_url` (copied) is daimon's for selah_capture; `history` (a *SlHistoryStore, or 0 for none) is where captures
+# are recorded and what selah_history lists.
+#must_use
+fn selah_mcp_dispatcher(api_url, history): i64 {
+    if (_sl_mcp_api_url != 0) { fl_free(_sl_mcp_api_url); }
+    _sl_mcp_api_url = _sl_fl_dup(api_url, strlen(api_url));
+    _sl_mcp_history = history;
+    var reg = tool_registry_new();
+    var defs = selah_mcp_tool_definitions();
+    var i = 0;
+    while (i < vec_len(defs)) {
+        registry_register(reg, vec_get(defs, i));
+        i = i + 1;
+    }
+    var d = dispatcher_new(reg);
+    dispatcher_set_server_info(d, "selah", SL_VERSION);
+    dispatcher_handle(d, "selah_capture", &_sl_mcp_h_capture);
+    dispatcher_handle(d, "selah_annotate", &_sl_mcp_h_annotate);
+    dispatcher_handle(d, "selah_ocr", &_sl_mcp_h_ocr);
+    dispatcher_handle(d, "selah_redact", &_sl_mcp_h_redact);
+    dispatcher_handle(d, "selah_history", &_sl_mcp_h_history);
+    return d;
+}
+
+# Runs the MCP server over stdio until stdin closes (Rust: run_server). Captures are recorded in the default
+# history store; when it cannot be opened, history is off and selah_history says so. Ok(0) or Err(SL_ERR_IO).
+fn selah_run_server(api_url, detail_out = 0): Result {
+    var hd = 0;
+    var ht, hv = SlHistoryStore_open_default(&hd);
+    var store = 0;
+    if (is_ok(ht) == 1) {
+        store = hv;
+    } else {
+        _sl_log_warn("screenshot history unavailable");
+    }
+    var d = selah_mcp_dispatcher(api_url, store);
+    _sl_log_kv(SK_INFO, "starting selah MCP server on stdio", "api_url", api_url);
+    var r = transport_stdio_run(d);
+    if (r < 0) { return _sl_fail_cstr(SL_ERR_IO, detail_out, "the stdio transport failed"); }
+    return Ok(0);
+}

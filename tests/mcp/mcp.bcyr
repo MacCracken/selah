@@ -1,0 +1,164 @@
+# mcp.bcyr — the MCP server's per-call cost (M6): in process, through bote's codec_process_message, and over stdio,
+# a request line to a server child on a pipe and its answer back. Rust's numbers (oracle --bench) are the stdio ones:
+# its dispatcher is private, so only its stdio server can be timed. `mcp_stdio_floor` is a method neither server has,
+# answered -32601: the round trip with almost no work.
+
+include "tests/selah_src.cyr"
+include "src/mcp.cyr"
+
+# Copies tests/golden/mcp/<name> to <dir>/<name>.
+fn _b_fixture(dir, name): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "tests/golden/mcp/");
+    str_builder_add_cstr(sb, name);
+    var n = 0;
+    var bytes = file_read_whole_max(str_data(str_builder_build(sb)), 1048576, &n);
+    var db = str_builder_new();
+    str_builder_add_cstr(db, dir);
+    str_builder_putc(db, 47);
+    str_builder_add_cstr(db, name);
+    file_write_all(str_data(str_builder_build(db)), bytes, n);
+    return 0;
+}
+
+# dir + "/" + name, NUL-terminated.
+fn _b_join(dir, name): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, dir);
+    str_builder_putc(sb, 47);
+    str_builder_add_cstr(sb, name);
+    return str_data(str_builder_build(sb));
+}
+
+# Times `n` calls of the request (NUL-terminated) on the dispatcher.
+fn _b_calls(name, d, req, n): i64 {
+    var sink = 0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        var r = codec_process_message(req, d, 0);
+        sink = sink + strlen(r);
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return sink;
+}
+
+var _b_to = 0;
+var _b_from = 0;
+var _b_rbuf = 0;
+var _b_rcap = 1048576;
+
+# Forks a server child running bote's stdio loop on the dispatcher, over two pipes. Its pid.
+fn _b_stdio_start(d): i64 {
+    var ip: u8[16];
+    var op: u8[16];
+    sys_pipe(&ip);
+    sys_pipe(&op);
+    var pid = sys_fork();
+    if (pid == 0) {
+        sys_close(load32(&ip + 4));
+        sys_close(load32(&op));
+        var rc = _stdio_serve(d, load32(&ip), load32(&op + 4));
+        sys_exit(0);
+    }
+    sys_close(load32(&ip));
+    sys_close(load32(&op + 4));
+    _b_to = load32(&ip + 4);
+    _b_from = load32(&op);
+    _b_rbuf = fl_alloc(_b_rcap);
+    return pid;
+}
+
+# One request line (n bytes, newline included) out and one answer line back: the answer's length, or -1.
+fn _b_rt(line, n): i64 {
+    var w = 0;
+    while (w < n) {
+        var k = sys_write(_b_to, line + w, n - w);
+        if (k <= 0) { return 0 - 1; }
+        w = w + k;
+    }
+    var got = 0;
+    while (got < _b_rcap) {
+        var r = sys_read(_b_from, _b_rbuf + got, _b_rcap - got);
+        if (r <= 0) { return 0 - 1; }
+        got = got + r;
+        if (load8(_b_rbuf + got - 1) == 10) { return got; }
+    }
+    return 0 - 1;
+}
+
+# Times `n` round trips of the request (NUL-terminated, without its newline) through the server child.
+fn _b_stdio_calls(name, req, n): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, req);
+    str_builder_putc(sb, 10);
+    var line = str_builder_build(sb);
+    var sink = 0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        sink = sink + _b_rt(str_data(line), str_len(line));
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return sink;
+}
+
+# Runs every MCP bench.
+fn main(): i64 {
+    alloc_init();
+    # In the system temp directory, as the oracle's Rust bench works (std::env::temp_dir), so both sides read and
+    # write on the same file system.
+    var db = str_builder_new();
+    str_builder_add_cstr(db, "/tmp/selah_mcp_bench_");
+    str_builder_add_int(db, sys_getpid());
+    var dir = str_data(str_builder_build(db));
+    sys_mkdir(dir, 448);
+    _b_fixture(dir, "shot.png");
+    _b_fixture(dir, "history.jsonl");
+    var store = SlHistoryStore_open(_b_join(dir, "history.jsonl"));
+    var d = selah_mcp_dispatcher("http://127.0.0.1:9", store);
+    _b_calls("mcp_tools_list", d, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}", 2000);
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",");
+    str_builder_add_cstr(sb, "\"params\":{\"name\":\"selah_annotate\",");
+    str_builder_add_cstr(sb, "\"arguments\":{\"image_path\":");
+    _sl_json_str(sb, _b_join(dir, "shot.png"), strlen(_b_join(dir, "shot.png")));
+    str_builder_add_cstr(sb, ",\"output\":");
+    _sl_json_str(sb, _b_join(dir, "out.png"), strlen(_b_join(dir, "out.png")));
+    str_builder_add_cstr(sb, ",");
+    str_builder_add_cstr(sb, "\"annotations\":[{\"kind\":\"redaction\",\"position\":{\"x\":0,\"y\":0,\"width\":4,");
+    str_builder_add_cstr(sb, "\"height\":4}},");
+    str_builder_add_cstr(sb, "{\"kind\":\"rectangle\",\"position\":{\"x\":1,\"y\":1,\"width\":5,\"height\":5}},");
+    str_builder_add_cstr(sb, "{\"kind\":\"text\",\"position\":{\"x\":0,\"y\":0,\"width\":8,\"height\":8},");
+    str_builder_add_cstr(sb, "\"text\":\"hi\"}]}}}");
+    var annreq = str_data(str_builder_build(sb));
+    _b_calls("mcp_annotate_8x8", d, annreq, 200);
+    var hb = str_builder_new();
+    str_builder_add_cstr(hb, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",");
+    str_builder_add_cstr(hb, "\"params\":{\"name\":\"selah_history\",\"arguments\":{}}}");
+    var hreq = str_data(str_builder_build(hb));
+    _b_calls("mcp_history_list", d, hreq, 2000);
+    var pid = _b_stdio_start(d);
+    var f = _b_stdio_calls("mcp_stdio_floor", "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"selah/none\"}", 2000);
+    var t = _b_stdio_calls("mcp_tools_list_stdio", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}", 2000);
+    var a = _b_stdio_calls("mcp_annotate_8x8_stdio", annreq, 200);
+    var h = _b_stdio_calls("mcp_history_list_stdio", hreq, 2000);
+    sys_close(_b_to);
+    var st: u8[8];
+    var wp = sys_waitpid(pid, &st, 0);
+    var u1 = sys_unlink(_b_join(dir, "shot.png"));
+    var u2 = sys_unlink(_b_join(dir, "out.png"));
+    var u3 = sys_unlink(_b_join(dir, "history.jsonl"));
+    var u4 = sys_unlink(_b_join(dir, "history.jsonl.lock"));
+    var u5 = sys_rmdir(dir);
+    return 0;
+}
+
+var r = main();
+sys_exit_group(0);

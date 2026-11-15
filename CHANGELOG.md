@@ -98,6 +98,49 @@ The Rust crate stays at 0.30.x on crates.io.
 - **Benches**: the four M2 benches, at 5.6× to 7.2× Rust.
 - **Surface parity**: 37/37.
 
+### Port — M6 (MCP profile)
+
+- **`src/mcp.cyr`**, in a new `[lib.mcp]` profile bundled as `dist/selah-mcp.cyr` (its consumer declares bote):
+  - the five tools on bote 3.8.15, with Rust's names, descriptions and input schemas, and `selah_ocr` and
+    `selah_history` read-only (`selah_ocr` open-world);
+  - every answer is Rust's: a text block holding the payload as serde_json prints it (keys sorted), or `isError` with
+    Rust's message;
+  - paths are checked as Rust checked them: no `..` and no NUL; an input must be a regular image file of at most
+    256 MiB; an output must carry an image extension and must not be an existing symlink, directory or device;
+  - `selah_history`'s `since` is read as chrono's `parse_from_rfc3339` reads it, strictly, with its error texts;
+  - `selah_mcp_dispatcher(api_url, history)` is public, `selah_run_server` serves stdio, and
+    `selah_mcp_set_hoosh_config` gives `selah_ocr`'s hoosh engine its model.
+- **`src/json.cyr`:** the JSON string writer behind every JSON selah writes finds plain runs a word at a time and
+  assembles its output in a 4 KiB chunk (a 782-byte payload 16.9 → 9.15 µs; 64 KiB 1.31 → 0.285 ms). Also
+  `_sl_json_value_fmt`, serde_json's `Value` Display.
+- **`src/scratch.cyr`:** one spare 64 KiB chunk kept between arenas (L24), where each arena mapped a fresh one:
+  6.2 µs a call to 0.18 µs.
+- **`src/fsutil.cyr`:** `_sl_write_atomic_nosync`. The MCP outputs and `CaptureClient::save_to_file` stay atomic
+  and private but drop the fsync (28.7 ms a file to 0.76 ms).
+- **`src/rfc3339.cyr`:** the `+00:00` form chrono's `to_rfc3339` writes.
+- **Divergences (ADR 0002):**
+  - #24: `tools/list` carries the annotations; a schema violation is an `isError` result (bote 3.x, SEP-1303), not
+    −32602; `serverInfo` is selah's; the hoosh engine needs a model; the dispatcher is public.
+  - #25: bote's stdio refuses a request line over 128 KiB, about 1,950 bare annotations (filed, L23).
+  - #18 extended: the MCP outputs written atomically, without the sync.
+- **Golden:** a new `mcp` module, 110 rows (106 ok, 4 accepted), through Rust's real stdio server: the oracle runs
+  itself as `--mcp-serve` in a session directory per row, with a one-shot daimon for captures. Responses are compared
+  byte for byte with the directory, times and ids masked, and written images pixel for pixel. Identical on x86_64
+  and aarch64 (qemu). Two mutation probes showed the gates bite.
+- **Tests:** `tests/mcp/`, run by a plain `cyrius test` (its `test.cyml` prepends bote):
+  - `mcp.tcyr`: 40 Rust tests (`test_run_async_inside_current_thread_runtime` is n/a: the port has no async
+    runtime), the stdio transport end to end on both sides of bote's line, the hoosh engine through a mock,
+    `serverInfo`, and strict RFC 3339 (114 assertions);
+  - `parity_mcp.tcyr` (the golden rows) and `bundle.tcyr` (`dist/selah-mcp.cyr` as a consumer sees it);
+  - `core.tcyr`: the JSON string writer against a byte-by-byte one, every byte value at every position in a word.
+- **Benches** (`tests/mcp/mcp.bcyr`, with Rust's numbers from `oracle --bench`, both through stdio on the same
+  tmpfs): the round trip 1.3×, `tools/list` 1.0×, `selah_annotate` on 8 × 8 4.4× (sankoch L20, chitra L18),
+  `selah_history` 3.0× (bayan L21).
+- **Filed:** bote: the stdio line limit has no setter (L23). Appended selah's data point to cyrius's freelist issue
+  (every block over 4 KiB is a fresh mapping, L24).
+- **Oracle:** `tools/list` rows sorted by name, as Rust's bote lists its tools in HashMap order, which changed between
+  runs.
+
 ### Port — M5 (system and clients)
 
 - **`src/history.cyr`:** `SlHistoryEntry` and `SlHistoryStore` (open, open_default, record, list, get, delete).

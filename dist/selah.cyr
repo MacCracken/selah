@@ -158,6 +158,7 @@ fn _sl_log_kv(level, msg, key, val): i64 {
 # scratch.cyr — a per-call allocator on the freelist (port plan D10).
 #
 # UPSTREAM(L22): sandhi's buffered client reserves its whole response cap in the allocator it is given.
+# UPSTREAM(L24): the freelist maps every block over 4 KiB afresh; the arenas keep one spare chunk (below).
 #
 # sandhi and bayan take an allocator (their `_a` forms). Their default is the bump heap, which never frees, so every
 # request, response and parse would stay with the process for its lifetime: the shape L16 and L19 describe for chitra
@@ -174,9 +175,27 @@ fn _sl_log_kv(level, msg, key, val): i64 {
 #   +40 current chunk   +48 position   +56 end   +64 first chunk   +72 big blocks (a freelist array)   +80 count
 #   +88 capacity
 # A chunk is { next, size } then its data. Not thread-safe: one per call, on one thread.
+# One spare chunk outlives the arenas (_sl_scratch_spare): the freelist maps anything over 4 KiB afresh, so an arena per
+# call would map and unmap a chunk each time, about 6 µs, plus about 2 µs for each page it touches (measured, M6).
 
 const _SL_SCRATCH_CHUNK = 65536;
 const _SL_SCRATCH_BIG = 16384;
+
+# The spare chunk, or 0. Taken and given back with a compare-and-swap, so two threads never hold it at once.
+var _sl_scratch_spare = 0;
+
+# A chunk for an arena: the spare when there is one, else a fresh one (0 when out of memory).
+fn _sl_scratch_chunk_take(): i64 {
+    var sp = atomic_load(&_sl_scratch_spare);
+    if (sp != 0 && atomic_cas(&_sl_scratch_spare, sp, 0) == 1) { return sp; }
+    return fl_alloc(_SL_SCRATCH_CHUNK + 16);
+}
+
+# Gives a chunk back: it becomes the spare when there is none, else it returns to the freelist.
+fn _sl_scratch_chunk_give(ch): i64 {
+    if (atomic_cas(&_sl_scratch_spare, 0, ch) == 0) { fl_free(ch); }
+    return 0;
+}
 
 # Records a big block. Returns 1, or 0 when the list cannot grow.
 fn _sl_scratch_track(st, p): i64 {
@@ -206,7 +225,7 @@ fn _sl_scratch_next(st): i64 {
     var nxt = 0;
     if (cur != 0) { nxt = load64(cur); }
     if (nxt == 0) {
-        nxt = fl_alloc(_SL_SCRATCH_CHUNK + 16);
+        nxt = _sl_scratch_chunk_take();
         if (nxt == 0) { return 0; }
         store64(nxt, 0);
         store64(nxt + 8, _SL_SCRATCH_CHUNK);
@@ -297,7 +316,7 @@ fn _sl_scratch_new(): i64 {
     return a;
 }
 
-# Frees every block the allocator handed out, its chunks, and the allocator.
+# Frees every block the allocator handed out, its chunks (one may stay as the spare), and the allocator.
 fn _sl_scratch_free(a): i64 {
     if (a == 0) { return 0; }
     var st = a + 40;
@@ -306,7 +325,7 @@ fn _sl_scratch_free(a): i64 {
     var ch = load64(st + 24);
     while (ch != 0) {
         var nx = load64(ch);
-        fl_free(ch);
+        _sl_scratch_chunk_give(ch);
         ch = nx;
     }
     fl_free(a);
@@ -904,36 +923,105 @@ fn _sl_fmt_f32_debug(sb, x: f32): i64 {
 
 var _SL_HEX = "0123456789abcdef";
 
-# Appends bytes p[0..n) as a JSON string, quotes included.
+# The escape of each byte a JSON string escapes (`"`, `\`, and below 0x20), at slot 8c: its length, then serde_json's
+# bytes (`\"`, `\\`, `\b`, `\t`, `\n`, `\f`, `\r`, else `\u00xx`). Length 0 for every other byte.
+var _sl_json_esc: u8[2048];
+var _sl_json_esc_ready = 0;
+
+fn _sl_json_esc_init(): i64 {
+    var c = 0;
+    while (c < 256) {
+        var e = &_sl_json_esc + c * 8;
+        store8(e, 0);
+        var x = 0;
+        if (c == 34) { x = 34; }
+        elif (c == 92) { x = 92; }
+        elif (c == 8) { x = 98; }
+        elif (c == 9) { x = 116; }
+        elif (c == 10) { x = 110; }
+        elif (c == 12) { x = 102; }
+        elif (c == 13) { x = 114; }
+        if (x != 0) {
+            store8(e, 2);
+            store8(e + 1, 92);
+            store8(e + 2, x);
+        } elif (c < 32) {
+            store8(e, 6);
+            store8(e + 1, 92);
+            store8(e + 2, 117);
+            store8(e + 3, 48);
+            store8(e + 4, 48);
+            store8(e + 5, load8(_SL_HEX + (c >> 4)));
+            store8(e + 6, load8(_SL_HEX + (c & 15)));
+        }
+        c = c + 1;
+    }
+    _sl_json_esc_ready = 1;
+    return 0;
+}
+
+# Appends bytes p[0..n) as a JSON string, quotes included, escaped as serde_json escapes; every other byte goes as it
+# is. Runs that need nothing are found a word at a time (a SWAR test for a quote, a backslash or a byte below 0x20).
+# The text is assembled in a 4 KiB chunk and handed to the builder a chunk at a time; a run longer than the chunk goes
+# straight in.
 fn _sl_json_str(sb, p, n): i64 {
-    str_builder_putc(sb, 34);
+    if (_sl_json_esc_ready == 0) { _sl_json_esc_init(); }
+    var esc = &_sl_json_esc;
+    var chunk: u8[4096];
+    var o = &chunk;
+    store8(o, 34);
+    var t = 1;
     var i = 0;
     while (i < n) {
-        var c = load8(p + i);
-        if (c == 34) {
-            str_builder_putc(sb, 92);
-            str_builder_putc(sb, 34);
-        } elif (c == 92) {
-            str_builder_putc(sb, 92);
-            str_builder_putc(sb, 92);
-        } elif (c < 32) {
-            str_builder_putc(sb, 92);
-            if (c == 8) { str_builder_putc(sb, 98); }
-            elif (c == 9) { str_builder_putc(sb, 116); }
-            elif (c == 10) { str_builder_putc(sb, 110); }
-            elif (c == 12) { str_builder_putc(sb, 102); }
-            elif (c == 13) { str_builder_putc(sb, 114); }
-            else {
-                str_builder_add_cstr(sb, "u00");
-                str_builder_putc(sb, load8(_SL_HEX + (c >> 4)));
-                str_builder_putc(sb, load8(_SL_HEX + (c & 15)));
-            }
-        } else {
-            str_builder_putc(sb, c);
+        var run = i;
+        while (run + 8 <= n) {
+            var w = load64(p + run);
+            var q = w ^ 0x2222222222222222;
+            var bs = w ^ 0x5C5C5C5C5C5C5C5C;
+            var zq = (q - 0x0101010101010101) & (-1 ^ q);
+            var zb = (bs - 0x0101010101010101) & (-1 ^ bs);
+            var lt = (w - 0x2020202020202020) & (-1 ^ w);
+            if (((zq | zb | lt) & 0x8080808080808080) != 0) { break; }
+            run = run + 8;
         }
+        while (run < n && load8(esc + load8(p + run) * 8) == 0) { run = run + 1; }
+        var len = run - i;
+        if (len > 0) {
+            if (t + len > 4096) {
+                _sl_sb_bytes(sb, o, t);
+                t = 0;
+            }
+            if (len > 4096) {
+                _sl_sb_bytes(sb, p + i, len);
+            } else {
+                memcpy(o + t, p + i, len);
+                t = t + len;
+            }
+            i = run;
+            continue;
+        }
+        var e = esc + load8(p + i) * 8;
+        if (t + 6 > 4096) {
+            _sl_sb_bytes(sb, o, t);
+            t = 0;
+        }
+        store8(o + t, 92);
+        store8(o + t + 1, load8(e + 2));
+        if (load8(e) == 6) {
+            store8(o + t + 2, load8(e + 3));
+            store8(o + t + 3, load8(e + 4));
+            store8(o + t + 4, load8(e + 5));
+            store8(o + t + 5, load8(e + 6));
+        }
+        t = t + load8(e);
         i = i + 1;
     }
-    str_builder_putc(sb, 34);
+    if (t + 1 > 4096) {
+        _sl_sb_bytes(sb, o, t);
+        t = 0;
+    }
+    store8(o + t, 34);
+    _sl_sb_bytes(sb, o, t + 1);
     return 0;
 }
 
@@ -1247,6 +1335,94 @@ fn _sl_json_field(v, key, len, i): i64 {
     return _sl_json_member(v, key);
 }
 
+# ── a Value's text ────────────────────────────────────────────────────────────────────
+
+# -1, 0 or 1 as the bytes of Str a sort before, equal or after those of Str b.
+#must_use
+fn _sl_str_cmp(a, b): i64 {
+    var an = str_len(a);
+    var bn = str_len(b);
+    var n = an;
+    if (bn < n) { n = bn; }
+    var i = 0;
+    while (i < n) {
+        var x = load8(str_data(a) + i);
+        var y = load8(str_data(b) + i);
+        if (x != y) {
+            if (x < y) { return -1; }
+            return 1;
+        }
+        i = i + 1;
+    }
+    if (an < bn) { return -1; }
+    if (an > bn) { return 1; }
+    return 0;
+}
+
+# Appends a bayan value as serde_json's Display writes a `Value`: compact, an object's keys in byte order (its Map is
+# a BTreeMap), strings escaped as serde escapes them, integers as integers, floats in serde's f64 form.
+fn _sl_json_value_fmt(sb, v): i64 {
+    if (v == 0) {
+        str_builder_add_cstr(sb, "null");
+        return 0;
+    }
+    var tag = bayan_json_v_tag(v);
+    if (tag == JTAG_NULL) {
+        str_builder_add_cstr(sb, "null");
+    } elif (tag == JTAG_BOOL) {
+        if (bayan_json_v_bool(v) != 0) {
+            str_builder_add_cstr(sb, "true");
+        } else {
+            str_builder_add_cstr(sb, "false");
+        }
+    } elif (tag == JTAG_INT) {
+        str_builder_add_int(sb, bayan_json_v_int(v));
+    } elif (tag == JTAG_FLOAT) {
+        var d: f64 = 0.0;
+        store64(&d, bayan_json_v_float(v));
+        _sl_fmt_f64_json(sb, d);
+    } elif (tag == JTAG_STR) {
+        _sl_json_str_s(sb, bayan_json_v_str(v));
+    } elif (tag == JTAG_ARR) {
+        str_builder_putc(sb, 91);
+        var n = bayan_json_v_arr_len(v);
+        var i = 0;
+        while (i < n) {
+            if (i > 0) { str_builder_putc(sb, 44); }
+            _sl_json_value_fmt(sb, bayan_json_v_arr_get(v, i));
+            i = i + 1;
+        }
+        str_builder_putc(sb, 93);
+    } else {
+        var m = bayan_json_v_obj_len(v);
+        var order = fl_alloc(m * 8 + 8);
+        var k = 0;
+        while (k < m) {
+            var j = k;
+            while (j > 0 && _sl_str_cmp(bayan_json_v_obj_key(v, load64(order + (j - 1) * 8)),
+                bayan_json_v_obj_key(v, k)) > 0) {
+                store64(order + j * 8, load64(order + (j - 1) * 8));
+                j = j - 1;
+            }
+            store64(order + j * 8, k);
+            k = k + 1;
+        }
+        str_builder_putc(sb, 123);
+        var q = 0;
+        while (q < m) {
+            if (q > 0) { str_builder_putc(sb, 44); }
+            var idx = load64(order + q * 8);
+            _sl_json_str_s(sb, bayan_json_v_obj_key(v, idx));
+            str_builder_putc(sb, 58);
+            _sl_json_value_fmt(sb, bayan_json_v_obj_val(v, idx));
+            q = q + 1;
+        }
+        str_builder_putc(sb, 125);
+        fl_free(order);
+    }
+    return 0;
+}
+
 # --- uuid.cyr ---
 
 # uuid.cyr — selah's ids (Rust: uuid 1.29.2 `Uuid`), as 16 bytes in RFC 4122 order.
@@ -1392,6 +1568,16 @@ fn _sl_sb_digits_n(sb, v, width): i64 {
 # Appends the instant (unix seconds, nanoseconds 0..=1_999_999_999) as chrono's serde writes a DateTime<Utc>,
 # without quotes.
 fn _sl_rfc3339_fmt(sb, secs, nanos): i64 {
+    return _sl_rfc3339_fmt_x(sb, secs, nanos, 1);
+}
+
+# As _sl_rfc3339_fmt, as chrono's `to_rfc3339()` writes it: the offset as `+00:00`, not `Z` (the MCP payloads).
+fn _sl_rfc3339_fmt_offset(sb, secs, nanos): i64 {
+    return _sl_rfc3339_fmt_x(sb, secs, nanos, 0);
+}
+
+# The two forms: `zulu` 1 ends with `Z`, 0 with `+00:00`.
+fn _sl_rfc3339_fmt_x(sb, secs, nanos, zulu): i64 {
     var days = secs / 86400;
     var sod = secs % 86400;
     if (sod < 0) {
@@ -1434,7 +1620,11 @@ fn _sl_rfc3339_fmt(sb, secs, nanos): i64 {
             _sl_sb_digits_n(sb, ns, 9);
         }
     }
-    str_builder_putc(sb, 90);
+    if (zulu == 1) {
+        str_builder_putc(sb, 90);
+    } else {
+        str_builder_add_cstr(sb, "+00:00");
+    }
     return 0;
 }
 
@@ -5461,6 +5651,18 @@ fn _sl_path_split(path, n, name_at_out, name_len_out): i64 {
 # Atomically replaces the file at `path` with data[0..len): a temp `.<name>.tmp-<uuid>` beside it, created 0600
 # (never an existing name), written, synced and renamed over `path`. Ok(0), or Err(SL_ERR_IO) with the temp removed.
 fn _sl_write_atomic(path, data, len, detail_out = 0): Result {
+    return _sl_write_atomic_x(path, data, len, 1, detail_out);
+}
+
+# As _sl_write_atomic without the fsync: the replacement is still atomic and private, and as durable as a plain
+# write (Rust's MCP outputs and save_to_file use std::fs::write). The sync costs about 29 ms a file on the M6 bench
+# machine.
+fn _sl_write_atomic_nosync(path, data, len, detail_out = 0): Result {
+    return _sl_write_atomic_x(path, data, len, 0, detail_out);
+}
+
+# The two forms: `sync` 1 syncs the temp before the rename.
+fn _sl_write_atomic_x(path, data, len, sync, detail_out): Result {
     var n = strlen(path);
     var na = 0;
     var nl = 0;
@@ -5506,7 +5708,8 @@ fn _sl_write_atomic(path, data, len, detail_out = 0): Result {
         }
         off = off + w;
     }
-    var fr = xfsync(fd);
+    var fr = 0;
+    if (sync == 1) { fr = xfsync(fd); }
     var cr = file_close(fd);
     if (fr < 0 || cr < 0) {
         xunlink(tmp);
@@ -8110,7 +8313,7 @@ fn _sl_spawn_feed(path, argv, data, n, sp: *SlSpawn): (i64, i64) {
 #   - `agent_id` is a field, Rust's constant "selah" by default, set to the id daimon registered (D2);
 #   - a WebP capture is refused (ADR 0002 #1: the port has no WebP codec);
 #   - the client takes a timeout, not a caller's reqwest client (#9);
-#   - save_to_file writes atomically, 0600 (#18).
+#   - save_to_file writes atomically, 0600, without an fsync (#18).
 # Regions are normalized, clipped to the non-negative quadrant and rounded outward to whole pixels, and a non-finite
 # or empty one is refused before any request is sent; so is a window target, which the daimon API has no selector
 # for (a full-screen fallback would expose every other window).
@@ -8511,10 +8714,10 @@ fn _sl_monitors_from_body(p, n, detail_out = 0): Result {
     return Ok(out);
 }
 
-# Writes data[0..n) to the file at `path` (Rust: CaptureClient::save_to_file): atomically and 0600 here, as the layer
-# file is (ADR 0002 #18). Ok(0) or Err(SL_ERR_IO).
+# Writes data[0..n) to the file at `path` (Rust: CaptureClient::save_to_file, a plain write): atomically and 0600
+# here, without an fsync (ADR 0002 #18). Ok(0) or Err(SL_ERR_IO).
 fn SlCaptureClient_save_to_file(data, n, path, detail_out = 0): Result {
-    var t, v = _sl_write_atomic(path, data, n, detail_out);
+    var t, v = _sl_write_atomic_nosync(path, data, n, detail_out);
     if (is_err_result(t) == 1) { return Err(v); }
     _sl_log_kv(SK_DEBUG, "saved capture", "path", path);
     return Ok(0);

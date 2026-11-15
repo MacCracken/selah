@@ -72,7 +72,8 @@ selah/src/
 ```sh
 cyrius deps --features mcp                     # resolve dependencies (vendors lib/)
 cyrius build src/main.cyr build/selah          # compile
-cyrius test                                    # tests/*.tcyr: parity + ported Rust tests
+cyrius test                                    # tests/*.tcyr and tests/mcp/: parity + ported Rust tests
+                                               # (tests/mcp/test.cyml prepends bote; never add --features mcp)
 cyrius bench                                   # tests/*.bcyr
 cargo test --manifest-path rust-old/Cargo.toml --all-features            # the Rust oracle, read-only
 cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --check   # golden corpus up to date
@@ -97,16 +98,17 @@ cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --benc
 ### Cleanliness check
 
 ```sh
-cyrius fmt --check
-cyrius lint
-cyrius vet
+cyrius fmt --check src/*.cyr tests/*.tcyr tests/*.bcyr tests/*.cyr tests/mcp/*.tcyr tests/mcp/*.bcyr
+cyrius lint src/*.cyr tests/mcp/*.tcyr
+cyrius vet src/main.cyr
 cyrius build src/main.cyr build/selah
 cyrius test                 # must be warning-free, not just passing (one named exception below)
 cyrius test --bounds
 cyrius bench
 cyrius distlib --all && cyrius distlib --check
 cyrius deps --locked && cyrius deps --locked --features mcp
-cyrius audit
+cyrius audit                # fmt, lint, docs (every fn in src/ and tests/ documented), test, bench
+python3 scripts/surface_parity.py .
 ```
 
 `cyrius test` and `cyrius build` must be **warning-free**. Every float type diagnostic is a bug: integer arithmetic
@@ -189,5 +191,5 @@ tables (sandhi's TLS stack with any compression tables), printed for any unit th
 - [`docs/adr/`](docs/adr/) — Architecture Decision Records (*why X over Y?*)
 - [`docs/architecture/`](docs/architecture/) — non-obvious constraints
 - [`docs/guides/`](docs/guides/) — task-oriented how-tos
-- [`docs/mcp-tools.md`](docs/mcp-tools.md) — the MCP tools (Rust 0.30 behaviour until M6 rewrites it)
+- [`docs/mcp-tools.md`](docs/mcp-tools.md) — the MCP tools, running the server, and how it differs from Rust 0.30
 - `rust-old/docs/` — the Rust architecture overview and development guide, kept for reference

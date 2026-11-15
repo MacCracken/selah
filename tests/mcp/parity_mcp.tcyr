@@ -1,0 +1,390 @@
+# parity_mcp.tcyr — replays tests/golden/mcp.tsv (scripts/oracle src/m_mcp.rs) against selah's own dispatcher.
+#
+# The MCP rows need bote, so they are not in modules.txt; tests/mcp/test.cyml prepends bote for this directory. Each
+# session runs in a fresh temp directory D holding tests/golden/mcp/'s fixtures (plus d.png, a directory; link.png, a
+# symlink to victim.txt; and the history at D/xdg/selah/history.jsonl), with D as the working directory, a dispatcher
+# from selah_mcp_dispatcher, and a mock daimon (tests/mock_http.cyr) when the row gives one. Every request goes
+# through bote's codec_process_message, and every response is written as the oracle wrote Rust's: re-serialized
+# with sorted keys, D as `$DIR`, and after a capture its times and entry ids as `$NOW` and `$ID`.
+
+include "tests/parity_core.cyr"
+include "tests/selah_src.cyr"
+include "tests/mock_http.cyr"
+include "src/mcp.cyr"
+
+var _pm_root = 0;
+var _pm_n = 0;
+
+# 1 when token i of field f is exactly the NUL-terminated text.
+fn _pm_tok_is(f, i, text): i64 {
+    var p = 0;
+    var n = 0;
+    if (_pc_tok(f, i, &p, &n) == 0) { return 0; }
+    return n == strlen(text) && memeq(p, text, n) == 1;
+}
+
+# Decode an h: token (field f, token i) into a fresh buffer; stores its length.
+fn _pm_tok_h(f, i, len_out): i64 {
+    var p = 0;
+    var n = 0;
+    _pc_tok(f, i, &p, &n);
+    var bytes = (n - 2) / 2;
+    var buf = alloc(bytes + 1);
+    var k = 0;
+    while (k < bytes) {
+        store8(buf + k, _pc_hex(p + 2 + k * 2, 2));
+        k = k + 1;
+    }
+    store8(buf + bytes, 0);
+    store64(len_out, bytes);
+    return buf;
+}
+
+# The N of the row's `adr=0002#N` tag, or 0.
+fn _pm_adr(): i64 {
+    var s = _pc_f[8];
+    var n = _pc_f[9];
+    if (n >= 10 && memeq(s, "adr=0002#", 9) == 1) { return _pc_dec(s + 9, n - 9); }
+    return 0;
+}
+
+# Appends "c:<crc32 of p[0..n)>", lowercase hex, 8 digits.
+fn _pm_put_crc(sb, p, n): i64 {
+    crc32_init_table();
+    var c = crc32(p, n);
+    str_builder_add_cstr(sb, "c:");
+    var k = 28;
+    while (k >= 0) {
+        str_builder_putc(sb, load8("0123456789abcdef" + ((c >> k) & 15)));
+        k = k - 4;
+    }
+    return 0;
+}
+
+# The repository root (this process's working directory at start), NUL-terminated.
+fn _pm_cwd(): i64 {
+    var buf = fl_alloc(4097);
+    var r = sys_readlink("/proc/self/cwd", buf, 4096);
+    store8(buf + r, 0);
+    return buf;
+}
+
+# path + "/" + name as a NUL-terminated string (name a NUL-terminated string).
+fn _pm_join(path, name): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, path);
+    str_builder_putc(sb, 47);
+    str_builder_add_cstr(sb, name);
+    return str_data(str_builder_build(sb));
+}
+
+# Removes the directory tree at path (files, symlinks, directories).
+fn _pm_rmtree(path): i64 {
+    var names = dir_list(str_from(path));
+    var i = 0;
+    while (names != 0 && i < vec_len(names)) {
+        var nm = vec_get(names, i);
+        var p = _pm_join(path, str_data(nm));
+        var st[256];
+        if (sys_lstat(p, &st) == 0 && (load32(&st + STAT_MODE) & 61440) == 16384) {
+            _pm_rmtree(p);
+        } else {
+            xunlink(p);
+        }
+        i = i + 1;
+    }
+    sys_rmdir(path);
+    return 0;
+}
+
+# Copies tests/golden/mcp/<name> to <dir>/<name>.
+fn _pm_fixture(dir, name): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "mcp/");
+    str_builder_add_cstr(sb, name);
+    var rel = str_builder_build(sb);
+    var n = 0;
+    var bytes = _pc_read(str_data(rel), str_len(rel), &n);
+    file_write_all(_pm_join(dir, name), bytes, n);
+    return 0;
+}
+
+# A fresh session directory with the fixtures; returns its canonical path (NUL-terminated).
+fn _pm_session_dir(): i64 {
+    _pm_n = _pm_n + 1;
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "/tmp/selah_parity_mcp_");
+    str_builder_add_int(sb, sys_getpid());
+    str_builder_putc(sb, 95);
+    str_builder_add_int(sb, _pm_n);
+    var d = str_data(str_builder_build(sb));
+    _pm_rmtree(d);
+    sys_mkdir(d, 448);
+    var nsb = str_builder_new();
+    str_builder_add_cstr(nsb, "in.png shot.png grad.png leaky.png pii.png photo.jpg pic.bmp art.webp noext prev.png ");
+    str_builder_add_cstr(nsb, "id_ed25519 .bashrc victim.txt empty.png ");
+    var names = str_data(str_builder_build(nsb));
+    var s = 0;
+    var n = strlen(names);
+    var i = 0;
+    while (i < n) {
+        if (load8(names + i) == 32) {
+            var nb = str_builder_new();
+            _sl_sb_bytes(nb, names + s, i - s);
+            _pm_fixture(d, str_data(str_builder_build(nb)));
+            s = i + 1;
+        }
+        i = i + 1;
+    }
+    sys_mkdir(_pm_join(d, "d.png"), 493);
+    sys_symlink("victim.txt", _pm_join(d, "link.png"));
+    sys_mkdir(_pm_join(d, "xdg"), 448);
+    sys_mkdir(_pm_join(d, "xdg/selah"), 448);
+    var hn = 0;
+    var hist = _pc_read("mcp/history.jsonl", 17, &hn);
+    file_write_all(_pm_join(d, "xdg/selah/history.jsonl"), hist, hn);
+    var canon = _sl_mcp_canonicalize(d);
+    return str_data(canon);
+}
+
+# s (a Str) with every occurrence of `from` (NUL-terminated) replaced by `to`.
+fn _pm_replace(s, from, to): i64 {
+    var p = str_data(s);
+    var n = str_len(s);
+    var fl = strlen(from);
+    var sb = str_builder_new();
+    var i = 0;
+    while (i < n) {
+        if (fl > 0 && i + fl <= n && memeq(p + i, from, fl) == 1) {
+            str_builder_add_cstr(sb, to);
+            i = i + fl;
+        } else {
+            str_builder_putc(sb, load8(p + i));
+            i = i + 1;
+        }
+    }
+    return str_builder_build(sb);
+}
+
+# s with the value after every `\"<key>\":\"` replaced by `mask` (the oracle's mask_values).
+fn _pm_mask(s, key, mask): i64 {
+    var pb = str_builder_new();
+    str_builder_add_cstr(pb, "\\\"");
+    str_builder_add_cstr(pb, key);
+    str_builder_add_cstr(pb, "\\\":\\\"");
+    var pat = str_builder_build(pb);
+    var pl = str_len(pat);
+    var p = str_data(s);
+    var n = str_len(s);
+    var sb = str_builder_new();
+    var i = 0;
+    while (i < n) {
+        if (i + pl <= n && memeq(p + i, str_data(pat), pl) == 1) {
+            _sl_sb_bytes(sb, p + i, pl);
+            i = i + pl;
+            while (i < n) {
+                if (load8(p + i) == 92 && i + 1 < n && load8(p + i + 1) == 34) { break; }
+                i = i + 1;
+            }
+            str_builder_add_cstr(sb, mask);
+        } else {
+            str_builder_putc(sb, load8(p + i));
+            i = i + 1;
+        }
+    }
+    return str_builder_build(sb);
+}
+
+# A response as a token's payload: re-serialized with sorted keys, D as $DIR, the capture masks when asked.
+fn _pm_canonical(resp, dir, after_capture): i64 {
+    var v = _sl_json_parse(resp, strlen(resp));
+    var sb = str_builder_new();
+    _sl_json_value_fmt(sb, v);
+    var s = _pm_replace(str_builder_build(sb), dir, "$DIR");
+    if (after_capture == 1) {
+        s = _pm_mask(s, "timestamp", "$NOW");
+        s = _pm_mask(s, "id", "$ID");
+    }
+    return s;
+}
+
+# 1 when the response (a NUL-terminated JSON-RPC response) is a refusal: a JSON-RPC error, or a tool result with
+# isError true.
+fn _pm_refused(resp): i64 {
+    var v = _sl_json_parse(resp, strlen(resp));
+    if (_sl_json_member(v, "error") != 0) { return 1; }
+    var e = _sl_json_member(_sl_json_member(v, "result"), "isError");
+    if (e != 0 && bayan_json_v_bool(e) != 0) { return 1; }
+    return 0;
+}
+
+# The first content block's text of a response, a Str, or 0.
+fn _pm_text(resp): i64 {
+    var v = _sl_json_parse(resp, strlen(resp));
+    var c = _sl_json_member(_sl_json_member(v, "result"), "content");
+    if (c == 0 || bayan_json_v_is_arr(c) == false || bayan_json_v_arr_len(c) == 0) { return 0; }
+    return _sl_json_as_str(_sl_json_member(bayan_json_v_arr_get(c, 0), "text"));
+}
+
+# The decoded expected token k of the outputs (an `s:`), as a NUL-terminated string.
+fn _pm_expected(k): i64 {
+    var n = 0;
+    return _pc_tok_s(3, k, &n);
+}
+
+# 1 when the note field starts with the NUL-terminated text.
+fn _pm_note_is(text): i64 {
+    var n = strlen(text);
+    return _pc_f[9] >= n && memeq(_pc_f[8], text, n) == 1;
+}
+
+fn _pm_tool_row(): i64 {
+    var n = 0;
+    var name = _pc_tok_s(2, 0, &n);
+    var d = selah_mcp_dispatcher("http://127.0.0.1:9", 0);
+    var r = codec_process_message("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}", d, 0);
+    var v = _sl_json_parse(r, strlen(r));
+    var tools = _sl_json_member(_sl_json_member(v, "result"), "tools");
+    var out = str_builder_new();
+    var i = 0;
+    while (i < bayan_json_v_arr_len(tools)) {
+        var t = bayan_json_v_arr_get(tools, i);
+        var tn = _sl_json_as_str(_sl_json_member(t, "name"));
+        if (str_len(tn) == n && memeq(str_data(tn), name, n) == 1) {
+            _pc_put_sstr(out, _sl_json_as_str(_sl_json_member(t, "description")));
+            _pc_sp(out);
+            var sb = str_builder_new();
+            _sl_json_value_fmt(sb, _sl_json_member(t, "inputSchema"));
+            _pc_put_sstr(out, str_builder_build(sb));
+        }
+        i = i + 1;
+    }
+    return _pc_check_out(str_builder_build(out));
+}
+
+fn _pm_session_row(): i64 {
+    var dir = _pm_session_dir();
+    var api = "http://127.0.0.1:9";
+    var m = 0;
+    if (_pm_tok_is(2, 2, "N") == 0) {
+        var bn = 0;
+        var body = _pm_tok_h(2, 3, &bn);
+        m = _mock_serve_mode(0, _pc_tok_num(2, 2), body, bn);
+        api = _mock_url(m);
+    }
+    var hs = SlHistoryStore_open(_pm_join(dir, "xdg/selah/history.jsonl"));
+    var d = selah_mcp_dispatcher(api, hs);
+    sys_chdir(dir);
+    var rn = 0;
+    var reqs = _pc_tok_s(2, 0, &rn);
+    var arr = _sl_json_parse(reqs, rn);
+    var out = str_builder_new();
+    var responses = vec_new();
+    var captured = 0;
+    var i = 0;
+    while (i < bayan_json_v_arr_len(arr)) {
+        var rq = bayan_json_v_arr_get(arr, i);
+        var tb = str_builder_new();
+        _sl_json_value_fmt(tb, rq);
+        var text = _pm_replace(str_builder_build(tb), "$DIR", dir);
+        var resp = codec_process_message(str_data(text), d, 0);
+        vec_push(responses, resp);
+        var nm = _sl_json_as_str(_sl_json_member(_sl_json_member(rq, "params"), "name"));
+        if (nm != 0 && str_len(nm) == 13 && memeq(str_data(nm), "selah_capture", 13) == 1) { captured = 1; }
+        if (i > 0) { _pc_sp(out); }
+        _pc_put_sstr(out, _pm_canonical(resp, dir, captured));
+        i = i + 1;
+    }
+    sys_chdir(_pm_root);
+    var fn_ = 0;
+    var files = _sl_json_parse(_pc_tok_s(2, 1, &fn_), fn_);
+    var f = 0;
+    while (f < bayan_json_v_arr_len(files)) {
+        var fname = _sl_json_as_str(bayan_json_v_arr_get(files, f));
+        var fp = _pm_join(dir, str_data(fname));
+        _pc_sp(out);
+        var flen = 0;
+        var fb = file_read_whole_max(fp, 67108864, &flen);
+        var it, iv = _sl_decode_image(fb, flen);
+        if (fb == 0 || flen <= 0 || is_err_result(it) == 1) {
+            str_builder_add_cstr(out, "N");
+        } else {
+            var img: *SlImage = _sl_as_image(iv);
+            _pm_put_crc(out, img.pixels, img.width * img.height * 4);
+        }
+        f = f + 1;
+    }
+    SlHistoryStore_free(hs);
+    _pm_rmtree(dir);
+    var actual = str_builder_build(out);
+    var first = vec_get(responses, 0);
+    if (_pm_note_is("verdict") == 1) {
+        var k = 0;
+        while (k < vec_len(responses)) {
+            var exp = _pm_expected(k);
+            if (_pm_refused(exp) != _pm_refused(vec_get(responses, k))) {
+                return _pc_record(PC_FAILED, _pc_diff_msg(str_data(actual), str_len(actual)));
+            }
+            k = k + 1;
+        }
+        return _pc_record(PC_OK, "the same verdict");
+    }
+    if (_pm_adr() != 0) {
+        if (_pm_refused(first) == 1) { return _pc_record(PC_ACCEPTED, "an ADR 0002 refusal"); }
+        return _pc_record(PC_FAILED, _pc_diff_msg(str_data(actual), str_len(actual)));
+    }
+    if (_pm_note_is("prefix:") == 1) {
+        var pl = _pc_f[9] - 7;
+        var pre = _pc_f[8] + 7;
+        var et = _pm_text(_pm_expected(0));
+        var at = _pm_text(first);
+        var ok = 1;
+        if (_pm_refused(first) != 1 || at == 0 || et == 0) { ok = 0; }
+        if (ok == 1 && (str_len(at) < pl || memeq(str_data(at), pre, pl) == 0)) { ok = 0; }
+        if (ok == 1 && (str_len(et) < pl || memeq(str_data(et), pre, pl) == 0)) { ok = 0; }
+        var k2 = 1;
+        while (ok == 1 && k2 < vec_len(responses)) {
+            var e2 = _pm_expected(k2);
+            var a2 = _pm_canonical(vec_get(responses, k2), dir, captured);
+            if (strlen(e2) != str_len(a2) || memeq(e2, str_data(a2), str_len(a2)) == 0) { ok = 0; }
+            k2 = k2 + 1;
+        }
+        if (ok == 1) { return _pc_record(PC_OK, "the message's prefix"); }
+        return _pc_record(PC_FAILED, _pc_diff_msg(str_data(actual), str_len(actual)));
+    }
+    return _pc_check_out(actual);
+}
+
+# Replays tests/golden/mcp.tsv; the exit code is the failure count, clamped.
+fn main(): i64 {
+    alloc_init();
+    _pm_root = _pm_cwd();
+    _pc_reset();
+    _pc_print_limit = 20;
+    var len = 0;
+    var tsv = _pc_read("mcp.tsv", 7, &len);
+    if (tsv == 0) {
+        _pc_s("[mcp] FAILED: tests/golden/mcp.tsv is missing\n");
+        return 1;
+    }
+    var pos = 0;
+    while (pos < len) {
+        var e = _pc_find(tsv, pos, len, 10);
+        if (e > pos && load8(tsv + pos) != 35) {
+            _pc_split(tsv + pos, e - pos);
+            if (_pc_fn_is("tool") == 1) {
+                _pm_tool_row();
+            } elif (_pc_fn_is("session") == 1) {
+                _pm_session_row();
+            } else {
+                _pc_record(PC_PENDING, "no dispatcher");
+            }
+        }
+        pos = e + 1;
+    }
+    return _pc_summary("mcp");
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

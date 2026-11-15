@@ -769,7 +769,7 @@ fn _par_render_row(): i64 {
         SlAnnotation_free(vec_get(anns, g));
         g = g + 1;
     }
-    return _pc_check(str_builder_build(sb));
+    return _pc_check_out(str_builder_build(sb));
 }
 
 # A canvas of i:w i:h with the full groups from input token `from`.
@@ -790,7 +790,7 @@ fn _par_svg_row(): i64 {
     SlAnnotationCanvas_free(c);
     var sb = str_builder_new();
     _pc_put_s(sb, str_data(svg), str_len(svg));
-    return _pc_check(str_builder_build(sb));
+    return _pc_check_out(str_builder_build(sb));
 }
 
 var _par_layer_seq = 0;
@@ -803,7 +803,7 @@ fn _par_layer_json_row(): i64 {
         var eb = str_builder_new();
         str_builder_add_cstr(eb, "E:");
         str_builder_add_cstr(eb, selah_error_name(kv));
-        return _pc_check(str_builder_build(eb));
+        return _pc_check_out(str_builder_build(eb));
     }
     var js = str_builder_new();
     _sl_layer_json(js, c.width, c.height, c.annotations, _pc_tok_num(2, 2), _pc_tok_num(2, 3));
@@ -834,7 +834,7 @@ fn _par_layer_json_row(): i64 {
     _par_layer_seq = _par_layer_seq + 1;
     var sb = str_builder_new();
     _pc_put_s(sb, str_data(json), str_len(json));
-    return _pc_check(str_builder_build(sb));
+    return _pc_check_out(str_builder_build(sb));
 }
 
 fn _par_layer_load_row(): i64 {
@@ -845,7 +845,7 @@ fn _par_layer_load_row(): i64 {
     if (is_err_result(t) == 1) {
         str_builder_add_cstr(sb, "E:");
         str_builder_add_cstr(sb, selah_error_name(v));
-        return _pc_check(str_builder_build(sb));
+        return _pc_check_out(str_builder_build(sb));
     }
     var c: *SlAnnotationCanvas = _sl_as_canvas(v);
     _pc_put_i(sb, c.width);
@@ -863,7 +863,7 @@ fn _par_layer_load_row(): i64 {
         i = i + 1;
     }
     SlAnnotationCanvas_free(c);
-    return _pc_check(str_builder_build(sb));
+    return _pc_check_out(str_builder_build(sb));
 }
 
 fn _par_decode_data_row(): i64 {
@@ -879,7 +879,7 @@ fn _par_decode_data_row(): i64 {
         _pc_put_h(sb, v, on);
         selah_bytes_free(v);
     }
-    return _pc_check(str_builder_build(sb));
+    return _pc_check_out(str_builder_build(sb));
 }
 
 fn _par_redact_row(): i64 {
@@ -912,7 +912,7 @@ fn _par_redact_row(): i64 {
         if (adr != 0 && v == SL_ERR_UNSUPPORTED_FORMAT) { return _pc_record(PC_ACCEPTED, _PAR_ADR_OK); }
         str_builder_add_cstr(sb, "E:");
         str_builder_add_cstr(sb, selah_error_name(v));
-        return _pc_check(str_builder_build(sb));
+        return _pc_check_out(str_builder_build(sb));
     }
     var dt, dv = _sl_decode_image(v, on);
     selah_bytes_free(v);
@@ -927,7 +927,7 @@ fn _par_redact_row(): i64 {
     _pc_put_i(sb, vec_len(sugg));
     SlImage_free(img);
     var actual = str_builder_build(sb);
-    if (known == 0) { return _pc_check(actual); }
+    if (known == 0) { return _pc_check_out(actual); }
     var same = str_len(actual) == _pc_f[7] && memeq(str_data(actual), _pc_f[6], _pc_f[7]) == 1;
     return _par_gate(same, known, _pc_diff_msg(str_data(actual), str_len(actual)));
 }
@@ -1025,7 +1025,7 @@ fn _par_error_row(): i64 {
     selah_error_fmt(sb, code, str_new(m, ml));
     var shown = str_builder_build(sb);
     _pc_put_sstr(out, shown);
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_fmtf_row(): i64 {
@@ -1045,7 +1045,7 @@ fn _par_fmtf_row(): i64 {
     var text = str_builder_build(sb);
     var out = str_builder_new();
     _pc_put_sstr(out, text);
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 # ---------------------------------------------------------------- geometry
@@ -1058,7 +1058,7 @@ fn _par_geometry_row(): i64 {
         var r: SlRect = SlRect_default();
         var t, v = SlRect_from_json(doc, n, &r);
         if (is_err_result(t) == 1) { _pc_put_raw(out, "E:serde"); } else { _par_put_layout(out, r); }
-        return _pc_check(str_builder_build(out));
+        return _pc_check_out(str_builder_build(out));
     }
     var r = _par_rect(0);
     if (_pc_fn_is("Rect::new") == 1) { _par_put_layout(out, r); }
@@ -1092,7 +1092,7 @@ fn _par_geometry_row(): i64 {
         _pc_put_sstr(out, str_builder_build(sb));
     }
     else { return _pc_record(PC_PENDING, "no dispatcher"); }
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 # ---------------------------------------------------------------- core
@@ -1300,7 +1300,7 @@ fn _par_core_row(): i64 {
     } else {
         return _pc_record(PC_PENDING, "no dispatcher");
     }
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 # ---------------------------------------------------------------- uuid, rfc3339
@@ -1315,7 +1315,7 @@ fn _par_uuid_row(): i64 {
         var b: u8[16];
         if (s == 0 || _sl_uuid_parse(str_data(s), str_len(s), &b) == 0) { _pc_put_raw(out, "E:serde"); }
         else { _pc_put_h(out, &b, 16); }
-        return _pc_check(str_builder_build(out));
+        return _pc_check_out(str_builder_build(out));
     }
     var hp = 0;
     var hn = 0;
@@ -1336,7 +1336,7 @@ fn _par_uuid_row(): i64 {
         return _pc_record(PC_PENDING, "no dispatcher");
     }
     _pc_put_sstr(out, str_builder_build(sb));
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_rfc3339_row(): i64 {
@@ -1362,7 +1362,7 @@ fn _par_rfc3339_row(): i64 {
     } else {
         return _pc_record(PC_PENDING, "no dispatcher");
     }
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 # ---------------------------------------------------------------- ai
@@ -1498,7 +1498,7 @@ fn _par_ai_row(): i64 {
     } else {
         return _pc_record(PC_PENDING, "no dispatcher");
     }
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 # ---------------------------------------------------------------- system (M5)
@@ -1580,7 +1580,7 @@ fn _par_history_line_row(): i64 {
         str_builder_add_cstr(out, "E:serde");
     }
     if (_par_adr21(out) == 1) { return 0; }
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_history_id_row(): i64 {
@@ -1594,7 +1594,7 @@ fn _par_history_id_row(): i64 {
         str_builder_add_cstr(out, "E:serde");
     }
     if (_par_adr21(out) == 1) { return 0; }
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_history_json_row(): i64 {
@@ -1614,7 +1614,7 @@ fn _par_history_json_row(): i64 {
     var out = str_builder_new();
     _pc_put_sstr(out, line);
     SlHistoryEntry_free(e);
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 var _par_hist_path = "build/parity_history.jsonl";
@@ -1653,7 +1653,7 @@ fn _par_history_list_row(): i64 {
         selah_history_entries_free(v);
     }
     SlHistoryStore_free(s);
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_history_get_row(): i64 {
@@ -1672,7 +1672,7 @@ fn _par_history_get_row(): i64 {
         str_builder_add_cstr(out, "N");
     }
     SlHistoryStore_free(s);
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_history_delete_row(): i64 {
@@ -1691,7 +1691,7 @@ fn _par_history_delete_row(): i64 {
         _pc_put_h(out, after, n);
     }
     SlHistoryStore_free(s);
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 # The format named by the e:ImageFormat token i.
@@ -1734,7 +1734,7 @@ fn _par_region_row(): i64 {
     var out = str_builder_new();
     _par_capture_out(out, _par_rect(0), 1, 0, _par_fmt_at(4));
     if (_par_adr1(out) == 1) { return 0; }
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_monitor_req_row(): i64 {
@@ -1742,7 +1742,7 @@ fn _par_monitor_req_row(): i64 {
     var id = _pc_tok_s(2, 0, &n);
     var out = str_builder_new();
     _par_capture_out(out, SlRect_default(), 0, id, _par_fmt_at(1));
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_capture_http_row(): i64 {
@@ -1754,7 +1754,7 @@ fn _par_capture_http_row(): i64 {
     if (status < 200 || status >= 300) {
         var st, sv = _sl_http_status_err(status, body, n, "daimon capture", &d);
         _par_put_err_text(out, sv, d, 0);
-        return _pc_check(str_builder_build(out));
+        return _pc_check_out(str_builder_build(out));
     }
     var t, v = _sl_capture_from_body(body, n, &d);
     if (is_err_result(t) == 1) {
@@ -1772,7 +1772,7 @@ fn _par_capture_http_row(): i64 {
         _pc_put_sstr(out, r.format);
         SlCaptureResponse_free(r);
     }
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_monitors_http_row(): i64 {
@@ -1784,12 +1784,12 @@ fn _par_monitors_http_row(): i64 {
     if (status < 200 || status >= 300) {
         var st, sv = _sl_http_status_err(status, body, n, "daimon monitors", &d);
         _par_put_err_text(out, sv, d, 0);
-        return _pc_check(str_builder_build(out));
+        return _pc_check_out(str_builder_build(out));
     }
     var t, v = _sl_monitors_from_body(body, n, &d);
     if (is_err_result(t) == 1) {
         _par_put_err_text(out, v, d, 1);
-        return _pc_check(str_builder_build(out));
+        return _pc_check_out(str_builder_build(out));
     }
     _pc_put_i(out, vec_len(v));
     var i = 0;
@@ -1812,7 +1812,7 @@ fn _par_monitors_http_row(): i64 {
         SlMonitor_free(m);
         i = i + 1;
     }
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_ocr_answer_row(): i64 {
@@ -1845,7 +1845,7 @@ fn _par_ocr_answer_row(): i64 {
         }
     }
     if (_par_adr21(out) == 1) { return 0; }
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 # The path part (from the first `/` after the authority) of the http URL u (a Str), as a Str.
@@ -1870,7 +1870,7 @@ fn _par_agent_path_row(): i64 {
     var vt, vv = _sl_validate_agent_id(id, n, &d);
     if (is_err_result(vt) == 1) {
         _par_put_err_text(out, vv, d, 0);
-        return _pc_check(str_builder_build(out));
+        return _pc_check_out(str_builder_build(out));
     }
     var segs = vec_new();
     vec_push(segs, "v1");
@@ -1879,7 +1879,7 @@ fn _par_agent_path_row(): i64 {
     vec_push(segs, "heartbeat");
     var t, u = _sl_endpoint_url("http://127.0.0.1:1", segs);
     _pc_put_sstr(out, _par_url_path(u));
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 # The s: input token i as a NUL-terminated string, or 0 for `N`.
@@ -1896,7 +1896,7 @@ fn _par_session_row(): i64 {
     } else {
         str_builder_add_cstr(out, "e:SessionType.X11");
     }
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_mime_row(): i64 {
@@ -1905,7 +1905,7 @@ fn _par_mime_row(): i64 {
     var out = str_builder_new();
     var m = _sl_guess_mime(b, n);
     _pc_put_s(out, m, strlen(m));
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_exit_status_row(): i64 {
@@ -1925,7 +1925,7 @@ fn _par_exit_status_row(): i64 {
     _sl_exit_status_fmt(sb, sp);
     var out = str_builder_new();
     _pc_put_sstr(out, str_builder_build(sb));
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_rect_debug_row(): i64 {
@@ -1933,7 +1933,7 @@ fn _par_rect_debug_row(): i64 {
     _sl_rect_debug(sb, _par_rect(0));
     var out = str_builder_new();
     _pc_put_sstr(out, str_builder_build(sb));
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_daimon_config_row(): i64 {
@@ -1953,7 +1953,7 @@ fn _par_daimon_config_row(): i64 {
             _pc_put_s(out, c.api_key, strlen(c.api_key));
         }
     }
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_daimon_config_json_row(): i64 {
@@ -1962,7 +1962,7 @@ fn _par_daimon_config_json_row(): i64 {
     SlDaimonConfig_to_json(c, sb);
     var out = str_builder_new();
     _pc_put_sstr(out, str_builder_build(sb));
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_hoosh_config_row(): i64 {
@@ -1976,7 +1976,7 @@ fn _par_hoosh_config_row(): i64 {
         var c: *SlHooshConfig = _sl_as_hconf(v);
         _pc_put_s(out, c.endpoint, strlen(c.endpoint));
     }
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_wire_register_row(): i64 {
@@ -1995,7 +1995,7 @@ fn _par_wire_register_row(): i64 {
     _pc_put_sstr(out, str_builder_build(line));
     _pc_sp(out);
     _pc_put_sstr(out, str_builder_build(body));
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 fn _par_wire_ocr_row(): i64 {
@@ -2018,7 +2018,7 @@ fn _par_wire_ocr_row(): i64 {
     _pc_sp(out);
     _pc_put_sstr(out, req);
     _sl_scratch_free(a);
-    return _pc_check(str_builder_build(out));
+    return _pc_check_out(str_builder_build(out));
 }
 
 # Class R for history: history files the port writes, which `oracle --reverse` lists with Rust and compares with

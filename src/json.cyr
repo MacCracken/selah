@@ -16,36 +16,105 @@
 
 var _SL_HEX = "0123456789abcdef";
 
-# Appends bytes p[0..n) as a JSON string, quotes included.
+# The escape of each byte a JSON string escapes (`"`, `\`, and below 0x20), at slot 8c: its length, then serde_json's
+# bytes (`\"`, `\\`, `\b`, `\t`, `\n`, `\f`, `\r`, else `\u00xx`). Length 0 for every other byte.
+var _sl_json_esc: u8[2048];
+var _sl_json_esc_ready = 0;
+
+fn _sl_json_esc_init(): i64 {
+    var c = 0;
+    while (c < 256) {
+        var e = &_sl_json_esc + c * 8;
+        store8(e, 0);
+        var x = 0;
+        if (c == 34) { x = 34; }
+        elif (c == 92) { x = 92; }
+        elif (c == 8) { x = 98; }
+        elif (c == 9) { x = 116; }
+        elif (c == 10) { x = 110; }
+        elif (c == 12) { x = 102; }
+        elif (c == 13) { x = 114; }
+        if (x != 0) {
+            store8(e, 2);
+            store8(e + 1, 92);
+            store8(e + 2, x);
+        } elif (c < 32) {
+            store8(e, 6);
+            store8(e + 1, 92);
+            store8(e + 2, 117);
+            store8(e + 3, 48);
+            store8(e + 4, 48);
+            store8(e + 5, load8(_SL_HEX + (c >> 4)));
+            store8(e + 6, load8(_SL_HEX + (c & 15)));
+        }
+        c = c + 1;
+    }
+    _sl_json_esc_ready = 1;
+    return 0;
+}
+
+# Appends bytes p[0..n) as a JSON string, quotes included, escaped as serde_json escapes; every other byte goes as it
+# is. Runs that need nothing are found a word at a time (a SWAR test for a quote, a backslash or a byte below 0x20).
+# The text is assembled in a 4 KiB chunk and handed to the builder a chunk at a time; a run longer than the chunk goes
+# straight in.
 fn _sl_json_str(sb, p, n): i64 {
-    str_builder_putc(sb, 34);
+    if (_sl_json_esc_ready == 0) { _sl_json_esc_init(); }
+    var esc = &_sl_json_esc;
+    var chunk: u8[4096];
+    var o = &chunk;
+    store8(o, 34);
+    var t = 1;
     var i = 0;
     while (i < n) {
-        var c = load8(p + i);
-        if (c == 34) {
-            str_builder_putc(sb, 92);
-            str_builder_putc(sb, 34);
-        } elif (c == 92) {
-            str_builder_putc(sb, 92);
-            str_builder_putc(sb, 92);
-        } elif (c < 32) {
-            str_builder_putc(sb, 92);
-            if (c == 8) { str_builder_putc(sb, 98); }
-            elif (c == 9) { str_builder_putc(sb, 116); }
-            elif (c == 10) { str_builder_putc(sb, 110); }
-            elif (c == 12) { str_builder_putc(sb, 102); }
-            elif (c == 13) { str_builder_putc(sb, 114); }
-            else {
-                str_builder_add_cstr(sb, "u00");
-                str_builder_putc(sb, load8(_SL_HEX + (c >> 4)));
-                str_builder_putc(sb, load8(_SL_HEX + (c & 15)));
-            }
-        } else {
-            str_builder_putc(sb, c);
+        var run = i;
+        while (run + 8 <= n) {
+            var w = load64(p + run);
+            var q = w ^ 0x2222222222222222;
+            var bs = w ^ 0x5C5C5C5C5C5C5C5C;
+            var zq = (q - 0x0101010101010101) & (-1 ^ q);
+            var zb = (bs - 0x0101010101010101) & (-1 ^ bs);
+            var lt = (w - 0x2020202020202020) & (-1 ^ w);
+            if (((zq | zb | lt) & 0x8080808080808080) != 0) { break; }
+            run = run + 8;
         }
+        while (run < n && load8(esc + load8(p + run) * 8) == 0) { run = run + 1; }
+        var len = run - i;
+        if (len > 0) {
+            if (t + len > 4096) {
+                _sl_sb_bytes(sb, o, t);
+                t = 0;
+            }
+            if (len > 4096) {
+                _sl_sb_bytes(sb, p + i, len);
+            } else {
+                memcpy(o + t, p + i, len);
+                t = t + len;
+            }
+            i = run;
+            continue;
+        }
+        var e = esc + load8(p + i) * 8;
+        if (t + 6 > 4096) {
+            _sl_sb_bytes(sb, o, t);
+            t = 0;
+        }
+        store8(o + t, 92);
+        store8(o + t + 1, load8(e + 2));
+        if (load8(e) == 6) {
+            store8(o + t + 2, load8(e + 3));
+            store8(o + t + 3, load8(e + 4));
+            store8(o + t + 4, load8(e + 5));
+            store8(o + t + 5, load8(e + 6));
+        }
+        t = t + load8(e);
         i = i + 1;
     }
-    str_builder_putc(sb, 34);
+    if (t + 1 > 4096) {
+        _sl_sb_bytes(sb, o, t);
+        t = 0;
+    }
+    store8(o + t, 34);
+    _sl_sb_bytes(sb, o, t + 1);
     return 0;
 }
 
@@ -357,4 +426,92 @@ fn _sl_json_seq_elem(v, len, i): i64 {
 fn _sl_json_field(v, key, len, i): i64 {
     if (v != 0 && bayan_json_v_is_arr(v) == true) { return _sl_json_seq_elem(v, len, i); }
     return _sl_json_member(v, key);
+}
+
+# ── a Value's text ────────────────────────────────────────────────────────────────────
+
+# -1, 0 or 1 as the bytes of Str a sort before, equal or after those of Str b.
+#must_use
+fn _sl_str_cmp(a, b): i64 {
+    var an = str_len(a);
+    var bn = str_len(b);
+    var n = an;
+    if (bn < n) { n = bn; }
+    var i = 0;
+    while (i < n) {
+        var x = load8(str_data(a) + i);
+        var y = load8(str_data(b) + i);
+        if (x != y) {
+            if (x < y) { return -1; }
+            return 1;
+        }
+        i = i + 1;
+    }
+    if (an < bn) { return -1; }
+    if (an > bn) { return 1; }
+    return 0;
+}
+
+# Appends a bayan value as serde_json's Display writes a `Value`: compact, an object's keys in byte order (its Map is
+# a BTreeMap), strings escaped as serde escapes them, integers as integers, floats in serde's f64 form.
+fn _sl_json_value_fmt(sb, v): i64 {
+    if (v == 0) {
+        str_builder_add_cstr(sb, "null");
+        return 0;
+    }
+    var tag = bayan_json_v_tag(v);
+    if (tag == JTAG_NULL) {
+        str_builder_add_cstr(sb, "null");
+    } elif (tag == JTAG_BOOL) {
+        if (bayan_json_v_bool(v) != 0) {
+            str_builder_add_cstr(sb, "true");
+        } else {
+            str_builder_add_cstr(sb, "false");
+        }
+    } elif (tag == JTAG_INT) {
+        str_builder_add_int(sb, bayan_json_v_int(v));
+    } elif (tag == JTAG_FLOAT) {
+        var d: f64 = 0.0;
+        store64(&d, bayan_json_v_float(v));
+        _sl_fmt_f64_json(sb, d);
+    } elif (tag == JTAG_STR) {
+        _sl_json_str_s(sb, bayan_json_v_str(v));
+    } elif (tag == JTAG_ARR) {
+        str_builder_putc(sb, 91);
+        var n = bayan_json_v_arr_len(v);
+        var i = 0;
+        while (i < n) {
+            if (i > 0) { str_builder_putc(sb, 44); }
+            _sl_json_value_fmt(sb, bayan_json_v_arr_get(v, i));
+            i = i + 1;
+        }
+        str_builder_putc(sb, 93);
+    } else {
+        var m = bayan_json_v_obj_len(v);
+        var order = fl_alloc(m * 8 + 8);
+        var k = 0;
+        while (k < m) {
+            var j = k;
+            while (j > 0 && _sl_str_cmp(bayan_json_v_obj_key(v, load64(order + (j - 1) * 8)),
+                bayan_json_v_obj_key(v, k)) > 0) {
+                store64(order + j * 8, load64(order + (j - 1) * 8));
+                j = j - 1;
+            }
+            store64(order + j * 8, k);
+            k = k + 1;
+        }
+        str_builder_putc(sb, 123);
+        var q = 0;
+        while (q < m) {
+            if (q > 0) { str_builder_putc(sb, 44); }
+            var idx = load64(order + q * 8);
+            _sl_json_str_s(sb, bayan_json_v_obj_key(v, idx));
+            str_builder_putc(sb, 58);
+            _sl_json_value_fmt(sb, bayan_json_v_obj_val(v, idx));
+            q = q + 1;
+        }
+        str_builder_putc(sb, 125);
+        fl_free(order);
+    }
+    return 0;
 }

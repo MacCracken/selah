@@ -1,0 +1,26 @@
+# bundle.tcyr — the MCP bundle as a consumer sees it: dist/selah-mcp.cyr, with bote declared beside it (here by
+# tests/mcp/test.cyml). `cyrius distlib --check` keeps the bundle current with src/.
+
+include "dist/selah-mcp.cyr"
+
+# Smoke-tests the MCP bundle: the dispatcher, tools/list and one tool call.
+fn main(): i64 {
+    alloc_init();
+    test_group("MCP bundle");
+    var d = selah_mcp_dispatcher("http://127.0.0.1:9", 0);
+    var r = codec_process_message("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}", d, 0);
+    var v = bayan_json_v_parse_buf(r, strlen(r));
+    var tools = bayan_json_v_obj_get_by_cstr(bayan_json_v_obj_get_by_cstr(v, "result"), "tools");
+    assert(tools != 0 && bayan_json_v_arr_len(tools) == 5, "five tools");
+    var qb = str_builder_new();
+    str_builder_add_cstr(qb, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",");
+    str_builder_add_cstr(qb, "\"params\":{\"name\":\"selah_history\",\"arguments\":{}}}");
+    var c = codec_process_message(str_data(str_builder_build(qb)), d, 0);
+    assert(c != 0 && strlen(c) > 0, "a tool answers");
+    assert(SL_MAX_ANNOTATIONS == 10000 && SL_MAX_INPUT_FILE_BYTES == 268435456, "Rust's limits");
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

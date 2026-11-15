@@ -457,6 +457,150 @@ fn _t_rfc3339_now(): i64 {
     return 0;
 }
 
+# A plain JSON string writer, byte by byte (the shape _sl_json_str had before M6), to check the word-at-a-time one.
+fn _t_json_ref(sb, p, n): i64 {
+    str_builder_putc(sb, 34);
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        if (c == 34 || c == 92) {
+            str_builder_putc(sb, 92);
+            str_builder_putc(sb, c);
+        } elif (c < 32) {
+            str_builder_putc(sb, 92);
+            if (c == 8) { str_builder_putc(sb, 98); }
+            elif (c == 9) { str_builder_putc(sb, 116); }
+            elif (c == 10) { str_builder_putc(sb, 110); }
+            elif (c == 12) { str_builder_putc(sb, 102); }
+            elif (c == 13) { str_builder_putc(sb, 114); }
+            else {
+                str_builder_add_cstr(sb, "u00");
+                str_builder_putc(sb, load8("0123456789abcdef" + (c >> 4)));
+                str_builder_putc(sb, load8("0123456789abcdef" + (c & 15)));
+            }
+        } else {
+            str_builder_putc(sb, c);
+        }
+        i = i + 1;
+    }
+    str_builder_putc(sb, 34);
+    return 0;
+}
+
+# 1 when _sl_json_str and the reference write the same bytes for p[0..n).
+fn _t_json_same(p, n): i64 {
+    var a = str_builder_new();
+    _sl_json_str(a, p, n);
+    var sa = str_builder_build(a);
+    var b = str_builder_new();
+    _t_json_ref(b, p, n);
+    var sb2 = str_builder_build(b);
+    return str_len(sa) == str_len(sb2) && memeq(str_data(sa), str_data(sb2), str_len(sa)) == 1;
+}
+
+# Cyrius-only (M6): the JSON string writer finds escapes a word at a time. Every byte value at each of the 16
+# positions of two words of plain bytes, and random strings mixing plain, escaped and non-ASCII bytes, against the
+# byte-by-byte reference.
+fn _t_json_str_swar(): i64 {
+    test_group("JSON string writer, word at a time, against byte by byte");
+    var buf: u8[64];
+    var bad = 0;
+    var c = 0;
+    while (c < 256) {
+        var pos = 0;
+        while (pos < 16) {
+            var k = 0;
+            while (k < 17) {
+                store8(&buf + k, 97);
+                k = k + 1;
+            }
+            store8(&buf + pos, c);
+            if (_t_json_same(&buf, 17) == 0) { bad = bad + 1; }
+            pos = pos + 1;
+        }
+        c = c + 1;
+    }
+    assert(bad == 0, "each byte value at each position in a word");
+    # a, b, space, quote, backslash, tab, newline, and the string's NUL.
+    var pool = "ab \"\\\t\n";
+    var seed = 12345;
+    var rbad = 0;
+    var r = 0;
+    while (r < 2000) {
+        var n = r % 40;
+        var j = 0;
+        while (j < n) {
+            seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF;
+            var pick = seed % 12;
+            var v = 0;
+            if (pick < 8) { v = load8(pool + pick); }
+            elif (pick == 8) { v = seed % 32; }
+            elif (pick == 9) { v = 128 + seed % 128; }
+            elif (pick == 10) { v = 127; }
+            else { v = 32 + seed % 95; }
+            store8(&buf + j, v);
+            j = j + 1;
+        }
+        if (_t_json_same(&buf, n) == 0) { rbad = rbad + 1; }
+        r = r + 1;
+    }
+    assert(rbad == 0, "2,000 random strings");
+    # The writer's 4 KiB chunk: plain runs either side of it ending in an escape, a flush in the middle of escapes,
+    # and a long mixed string.
+    var big = fl_alloc(20000);
+    var cbad = 0;
+    var m = 4088;
+    while (m < 4102) {
+        var x = 0;
+        while (x < m) {
+            store8(big + x, 97);
+            x = x + 1;
+        }
+        store8(big + m, 34);
+        store8(big + m + 1, 1);
+        if (_t_json_same(big, m + 2) == 0) { cbad = cbad + 1; }
+        m = m + 1;
+    }
+    var y = 0;
+    while (y < 3000) {
+        store8(big + y, 34);
+        y = y + 1;
+    }
+    if (_t_json_same(big, 3000) == 0) { cbad = cbad + 1; }
+    y = 0;
+    while (y < 20000) {
+        seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF;
+        var v2 = 97;
+        if (seed % 7 == 0) { v2 = 34; }
+        elif (seed % 11 == 0) { v2 = seed % 32; }
+        elif (seed % 13 == 0) { v2 = 200; }
+        store8(big + y, v2);
+        y = y + 1;
+    }
+    if (_t_json_same(big, 20000) == 0) { cbad = cbad + 1; }
+    y = 0;
+    while (y < 20000) {
+        store8(big + y, 98);
+        y = y + 1;
+    }
+    store8(big + 9000, 10);
+    if (_t_json_same(big, 20000) == 0) { cbad = cbad + 1; }
+    fl_free(big);
+    assert(cbad == 0, "runs and escapes across the 4 KiB chunk");
+    var ctl: u8[4];
+    store8(&ctl, 8);
+    store8(&ctl + 1, 12);
+    store8(&ctl + 2, 1);
+    store8(&ctl + 3, 31);
+    var ob = str_builder_new();
+    _sl_json_str(ob, &ctl, 4);
+    var os = str_builder_build(ob);
+    var want = "\"\\b\\f\\u0001\\u001f\"";
+    var same = str_len(os) == strlen(want) && memeq(str_data(os), want, str_len(os)) == 1;
+    assert(same, "serde's escapes, lowercase hex");
+    return 0;
+}
+
 # Runs the suite; the exit code is the failure count, clamped.
 fn main(): i64 {
     alloc_init();
@@ -498,6 +642,7 @@ fn main(): i64 {
     _t_color_to_css_semi_transparent();
     _t_redaction_target_display_all_variants();
     _t_annotation_kind_display_all();
+    _t_json_str_swar();
     _t_image_format_bmp_and_webp_mime();
     _t_doctests();
     _t_uuid_v4();

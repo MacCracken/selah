@@ -42,6 +42,7 @@ cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --chec
 | `codec` | M3 | 480 | `src/m_codec.rs` | `convert_format`'s verdict and dimensions for every fixture of at most 1 MP against every target; `encode` rows for the encoders' round trips (below) |
 | `annotate` | M4 | 3,457 | `src/m_annotate.rs` | `render` (by CRC of the RGBA), `to_svg`, `layer_json`, `layer_load`, `decode_image_data`, `redact_image`; the token groups are in the emitter's header |
 | `system` | M5 | 662 | `src/m_system.rs` | the history (Rust's HistoryStore over files the oracle writes), Rust's capture, daimon and hoosh clients driven against a loopback copy of `serve_once` on a tokio current-thread runtime, the session, MIME, exit-status and Debug texts, the configs; `wire_*` rows are class W (the retargeted requests, ADR 0002 #4 and #6). Row shapes are in the emitter's header |
+| `mcp` | M6 | 110 | `src/m_mcp.rs` | Rust's real MCP server over stdio: `tool` rows (each tool's description and input schema from `tools/list`, sorted by name, as bote 0.92 lists them in HashMap order) and `session` rows (a JSON array of requests, an optional one-shot daimon answer, one `s:` per response, then a `c:` per image the session wrote). Each session runs in its own directory with the fixtures in `tests/golden/mcp/`; responses are re-serialized with sorted keys, the directory written `$DIR`, and times and ids masked after a capture. Notes: `verdict` (both refuse; auto for Rust's −32602 schema refusals, ADR 0002 #24), `prefix:<text>` (the error text up to serde's part), `adr=0002#N`. Not in `modules.txt`: `tests/mcp/parity_mcp.tcyr` replays it, under bote |
 
 ## Fixtures
 
@@ -125,8 +126,12 @@ refusal; class B for a decoded JPEG.
   size and count. It also writes three history files with `.ids` (the port's own list, newest first), and Rust's
   `HistoryStore::list` must give the same ids in the same order. Exit 1 on a failure.
 - `--bench`: Rust selah's codec paths timed on the image `tests/selah.bcyr` builds, decoding the files it wrote to
-  `build/bench/`, and (M5) the history and capture-answer benches on the inputs the Cyrius bench builds
-  (`docs/benchmarks-rust-v-cyrius.md`).
+  `build/bench/`, (M5) the history and capture-answer benches on the inputs the Cyrius bench builds, and (M6) the MCP
+  server through its stdio, one request line out and its answer back, in the system temp directory as
+  `tests/mcp/mcp.bcyr` runs (`docs/benchmarks-rust-v-cyrius.md`).
+- `--mcp-serve <api_url>`: internal. The oracle runs itself with this to get Rust's MCP server
+  (`selah::mcp::run_server`) on its stdin and stdout, one process per session, in the session's directory with
+  `XDG_DATA_HOME` inside it.
 
 `src/t_ai.rs` and `src/t_debug.rs` write generated Cyrius tables (`src/ai_data.cyr`, `src/debug_data.cyr`) from
 Rust's own `char` functions; `--check` covers them.

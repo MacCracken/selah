@@ -21,6 +21,7 @@ mod m_fmtf;
 mod m_geometry;
 mod m_rfc3339;
 mod m_system;
+mod m_mcp;
 mod m_uuid;
 mod m_ai;
 mod t_ai;
@@ -136,6 +137,10 @@ fn walk(dir: &Path, base: &Path, acc: &mut Vec<String>) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--mcp-serve") {
+        m_mcp::serve(args.get(i + 1).map(String::as_str).unwrap_or("http://127.0.0.1:9"));
+        return;
+    }
     if args.iter().any(|a| a == "--bench") {
         b_codec::run(&repo_root());
         return;
@@ -174,6 +179,8 @@ fn main() {
     modules.push("annotate");
     m_system::emit(&mut out);
     modules.push("system");
+    // Not in modules.txt: the MCP rows need bote, so tests/mcp/parity_mcp.tcyr replays them.
+    m_mcp::emit(&mut out);
     let mut src_out = SrcOut::new();
     t_ai::emit(&mut src_out);
     t_debug::emit(&mut src_out);

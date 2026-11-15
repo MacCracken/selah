@@ -60,6 +60,16 @@ fn _sl_sb_digits_n(sb, v, width): i64 {
 # Appends the instant (unix seconds, nanoseconds 0..=1_999_999_999) as chrono's serde writes a DateTime<Utc>,
 # without quotes.
 fn _sl_rfc3339_fmt(sb, secs, nanos): i64 {
+    return _sl_rfc3339_fmt_x(sb, secs, nanos, 1);
+}
+
+# As _sl_rfc3339_fmt, as chrono's `to_rfc3339()` writes it: the offset as `+00:00`, not `Z` (the MCP payloads).
+fn _sl_rfc3339_fmt_offset(sb, secs, nanos): i64 {
+    return _sl_rfc3339_fmt_x(sb, secs, nanos, 0);
+}
+
+# The two forms: `zulu` 1 ends with `Z`, 0 with `+00:00`.
+fn _sl_rfc3339_fmt_x(sb, secs, nanos, zulu): i64 {
     var days = secs / 86400;
     var sod = secs % 86400;
     if (sod < 0) {
@@ -102,7 +112,11 @@ fn _sl_rfc3339_fmt(sb, secs, nanos): i64 {
             _sl_sb_digits_n(sb, ns, 9);
         }
     }
-    str_builder_putc(sb, 90);
+    if (zulu == 1) {
+        str_builder_putc(sb, 90);
+    } else {
+        str_builder_add_cstr(sb, "+00:00");
+    }
     return 0;
 }
 

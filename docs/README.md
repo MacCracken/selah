@@ -7,6 +7,6 @@
 - [ADRs](adr/README.md) — decisions
 - [Architecture notes](architecture/README.md) — non-obvious constraints
 - [Guides](guides/getting-started.md) — build, test, layout
-- [MCP Tools](mcp-tools.md) — agent tool definitions (Rust 0.30 behaviour until M6)
+- [MCP Tools](mcp-tools.md) — the five tools, running the server, and the differences from Rust 0.30
 
 The Rust crate's own docs (architecture overview, development guide) are kept in `rust-old/docs/`.

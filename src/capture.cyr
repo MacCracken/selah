@@ -7,7 +7,7 @@
 #   - `agent_id` is a field, Rust's constant "selah" by default, set to the id daimon registered (D2);
 #   - a WebP capture is refused (ADR 0002 #1: the port has no WebP codec);
 #   - the client takes a timeout, not a caller's reqwest client (#9);
-#   - save_to_file writes atomically, 0600 (#18).
+#   - save_to_file writes atomically, 0600, without an fsync (#18).
 # Regions are normalized, clipped to the non-negative quadrant and rounded outward to whole pixels, and a non-finite
 # or empty one is refused before any request is sent; so is a window target, which the daimon API has no selector
 # for (a full-screen fallback would expose every other window).
@@ -408,10 +408,10 @@ fn _sl_monitors_from_body(p, n, detail_out = 0): Result {
     return Ok(out);
 }
 
-# Writes data[0..n) to the file at `path` (Rust: CaptureClient::save_to_file): atomically and 0600 here, as the layer
-# file is (ADR 0002 #18). Ok(0) or Err(SL_ERR_IO).
+# Writes data[0..n) to the file at `path` (Rust: CaptureClient::save_to_file, a plain write): atomically and 0600
+# here, without an fsync (ADR 0002 #18). Ok(0) or Err(SL_ERR_IO).
 fn SlCaptureClient_save_to_file(data, n, path, detail_out = 0): Result {
-    var t, v = _sl_write_atomic(path, data, n, detail_out);
+    var t, v = _sl_write_atomic_nosync(path, data, n, detail_out);
     if (is_err_result(t) == 1) { return Err(v); }
     _sl_log_kv(SK_DEBUG, "saved capture", "path", path);
     return Ok(0);

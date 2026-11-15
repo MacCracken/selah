@@ -13,7 +13,8 @@
 - [x] **M4 Annotation** (2026-11-14): raster, annotate, the facade, and fsutil (brought forward from M5)
 - [x] **M5 System and clients** (2026-11-14): history, http, spawn (the clipboard), capture; daimon and hoosh clients
   retargeted (ADR 0002)
-- [ ] **M6 MCP profile**: the five tools on bote
+- [x] **M6 MCP profile** (2026-11-14): the five tools on bote 3.8.15, `dist/selah-mcp.cyr`, gated against Rust's
+  own stdio server
 - [ ] **M7 Release 1.0.0**: Rust-test ledger, full surface parity, benches against Rust, `dist/` bundles
 
 ### Waiting on other repos
@@ -25,6 +26,8 @@
 - [ ] sandhi: the response cap reserved up front (`sandhi/docs/development/issues/2026-11-14-buffered-client-reserves-the-whole-response-cap.md`)
 - [ ] bayan: JSON parse throughput, base64 with an allocator (`bayan/docs/development/issues/2026-11-14-*`)
 - [ ] cyrius: a spawn that feeds stdin (`cyrius/docs/development/issues/2026-11-14-process-has-no-spawn-that-feeds-stdin.md`)
+- [ ] cyrius: freelist reuse of blocks over 4 KiB (`cyrius/docs/development/issues/2026-11-11-freelist-maps-every-block-over-4k.md`)
+- [ ] bote: a setter for the stdio line limit (`bote/docs/development/issues/2026-11-14-stdio-line-limit-has-no-setter.md`)
 
 ### After 1.0.0
 

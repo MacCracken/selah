@@ -1,0 +1,755 @@
+# mcp.tcyr — rust-old/src/mcp.rs's tests, ported (port plan M6). The handlers are called directly through
+# _sl_mcp_run, as Rust's tests call tool_* (bypassing bote's schema check), and the dispatcher through bote's
+# codec_process_message. test_run_async_inside_current_thread_runtime has no counterpart: the port has no async
+# runtime to nest. Cyrius-only: the stdio transport end to end (bote's 128 KiB line, L23), the
+# hoosh engine through a mock, serverInfo, and chrono's strict RFC 3339 reading.
+# tests/mcp/test.cyml prepends bote for this directory.
+
+include "tests/selah_src.cyr"
+include "tests/support.cyr"
+include "tests/mock_http.cyr"
+include "src/mcp.cyr"
+
+var _t_dirs = 0;
+
+# A new temp directory (NUL-terminated).
+fn _t_dir(): i64 {
+    _t_dirs = _t_dirs + 1;
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "/tmp/selah_mcp_test_");
+    str_builder_add_int(sb, sys_getpid());
+    str_builder_putc(sb, 95);
+    str_builder_add_int(sb, _t_dirs);
+    var d = str_data(str_builder_build(sb));
+    sys_mkdir(d, 448);
+    return d;
+}
+
+fn _t_path(dir, name): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, dir);
+    str_builder_putc(sb, 47);
+    str_builder_add_cstr(sb, name);
+    return str_data(str_builder_build(sb));
+}
+
+# Rust's write_png: an opaque white w x h PNG at path.
+fn _t_write_png(path, w, h): i64 {
+    var px = fl_alloc(w * h * 4);
+    memset(px, 255, w * h * 4);
+    var n = 0;
+    var png = _sl_png_encode(px, w, h, &n);
+    file_write_all(path, png, n);
+    return 0;
+}
+
+# Runs a tool on JSON arguments (a NUL-terminated string). Returns (failed, text Str).
+fn _t_run(tool, args): (i64, i64) {
+    var f, t = _sl_mcp_run(tool, args);
+    return (f, t);
+}
+
+# Arguments JSON from pieces: {"image_path":"<p>"<rest>}.
+fn _t_args(p, rest): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"image_path\":");
+    _sl_json_str(sb, p, strlen(p));
+    str_builder_add_cstr(sb, rest);
+    str_builder_putc(sb, 125);
+    return str_data(str_builder_build(sb));
+}
+
+# The payload's member `key` (JSON text, a NUL-terminated string).
+fn _t_member(payload, key): i64 {
+    var v = _sl_json_parse(str_data(payload), str_len(payload));
+    return _sl_json_member(v, key);
+}
+
+fn _t_ctx(): i64 {
+    return selah_mcp_dispatcher("http://127.0.0.1:9", 0);
+}
+
+fn _t_registry_has_five_tools(): i64 {
+    test_group("test_registry_has_five_tools");
+    var defs = selah_mcp_tool_definitions();
+    assert(vec_len(defs) == 5, "five");
+    var names = "selah_capture selah_annotate selah_ocr selah_redact selah_history";
+    var i = 0;
+    var found = 0;
+    while (i < 5) {
+        if (_t_str_has(str_from(names), tool_def_name(vec_get(defs, i))) == 1) { found = found + 1; }
+        i = i + 1;
+    }
+    assert(found == 5, "each name");
+    return 0;
+}
+
+fn _t_dispatcher_tools_list(): i64 {
+    test_group("test_dispatcher_tools_list");
+    var d = selah_mcp_dispatcher("http://127.0.0.1:9", 0);
+    var r = codec_process_message("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}", d, 0);
+    var v = _sl_json_parse(r, strlen(r));
+    var tools = _sl_json_member(_sl_json_member(v, "result"), "tools");
+    assert(tools != 0 && bayan_json_v_arr_len(tools) == 5, "five tools listed");
+    return 0;
+}
+
+fn _t_read_only_tools_annotated(): i64 {
+    test_group("test_read_only_tools_annotated");
+    var defs = selah_mcp_tool_definitions();
+    var ocr = tool_def_annotations(vec_get(defs, 2));
+    var hist = tool_def_annotations(vec_get(defs, 4));
+    assert(ocr != 0 && ann_read_only_hint(ocr) == HINT_TRUE, "selah_ocr read-only");
+    assert(ann_open_world_hint(ocr) == HINT_TRUE, "selah_ocr open-world (the hoosh engine)");
+    assert(hist != 0 && ann_read_only_hint(hist) == HINT_TRUE, "selah_history read-only");
+    assert(tool_def_annotations(vec_get(defs, 1)) == 0, "selah_annotate has none");
+    return 0;
+}
+
+fn _t_dispatcher_initialize(): i64 {
+    test_group("test_dispatcher_initialize");
+    var d = selah_mcp_dispatcher("http://127.0.0.1:9", 0);
+    var r = codec_process_message("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}", d, 0);
+    var res = _sl_json_member(_sl_json_parse(r, strlen(r)), "result");
+    assert(_sl_json_member(res, "protocolVersion") != 0 && _sl_json_member(res, "serverInfo") != 0, "present");
+    var name = _sl_json_as_str(_sl_json_member(_sl_json_member(res, "serverInfo"), "name"));
+    assert(_t_str_is(name, "selah") == 1, "the server is selah (Rust's bote named itself)");
+    return 0;
+}
+
+fn _t_dispatcher_unknown_method(): i64 {
+    test_group("test_dispatcher_unknown_method");
+    var d = selah_mcp_dispatcher("http://127.0.0.1:9", 0);
+    var r = codec_process_message("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"nonexistent\"}", d, 0);
+    var err = _sl_json_member(_sl_json_parse(r, strlen(r)), "error");
+    assert(err != 0 && bayan_json_v_int(_sl_json_member(err, "code")) == -32601, "-32601");
+    return 0;
+}
+
+fn _t_dispatcher_tool_error_is_mcp_error_content(): i64 {
+    test_group("test_dispatcher_tool_error_is_mcp_error_content");
+    var d = selah_mcp_dispatcher("http://127.0.0.1:9", 0);
+    var qb = str_builder_new();
+    str_builder_add_cstr(qb, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":");
+    str_builder_add_cstr(qb, "{\"name\":\"selah_ocr\",\"arguments\":{\"image_path\":\"../etc/passwd\"}}}");
+    var r = codec_process_message(str_data(str_builder_build(qb)), d, 0);
+    var res = _sl_json_member(_sl_json_parse(r, strlen(r)), "result");
+    assert(bayan_json_v_bool(_sl_json_member(res, "isError")) != 0, "isError");
+    var text = _sl_json_as_str(_sl_json_member(bayan_json_v_arr_get(_sl_json_member(res, "content"), 0), "text"));
+    assert(_t_str_has(text, "path traversal") == 1, "the reason");
+    return 0;
+}
+
+fn _t_tool_ocr_missing_path(): i64 {
+    test_group("test_tool_ocr_missing_path");
+    _t_ctx();
+    var f, t = _t_run("selah_ocr", "{}");
+    assert(f == 1 && _t_str_has(t, "missing image_path") == 1, "missing image_path");
+    return 0;
+}
+
+fn _t_tool_ocr_local_and_unknown_engine(): i64 {
+    test_group("test_tool_ocr_local_and_unknown_engine");
+    _t_ctx();
+    var dir = _t_dir();
+    var img = _t_path(dir, "in.png");
+    _t_write_png(img, 2, 2);
+    var f, t = _t_run("selah_ocr", _t_args(img, ""));
+    assert(f == 0 && _t_str_is(_sl_json_as_str(_t_member(t, "engine")), "local") == 1, "local");
+    assert(bayan_json_v_bool(_t_member(t, "is_stub")) != 0, "stub");
+    var f2, t2 = _t_run("selah_ocr", _t_args(img, ",\"engine\":\"magic\""));
+    assert(f2 == 1 && _t_str_has(t2, "unknown OCR engine") == 1, "unknown engine");
+    assert(_t_str_is(t2, "unknown OCR engine \"magic\" (use local or hoosh)") == 1, "Rust's text");
+    return 0;
+}
+
+fn _t_tool_ocr_rejects_non_regular_file(): i64 {
+    test_group("test_tool_ocr_rejects_non_regular_file");
+    _t_ctx();
+    var dir = _t_dir();
+    var f, t = _t_run("selah_ocr", _t_args(dir, ""));
+    assert(f == 1 && _t_str_has(t, "not a regular file") == 1, "a directory");
+    return 0;
+}
+
+fn _t_tool_history_without_store(): i64 {
+    test_group("test_tool_history_without_store");
+    _t_ctx();
+    var f, t = _t_run("selah_history", "{\"limit\":5}");
+    assert(f == 1 && _t_str_has(t, "unavailable") == 1, "unavailable");
+    return 0;
+}
+
+fn _t_tool_history_lists_and_validates(): i64 {
+    test_group("test_tool_history_lists_and_validates");
+    var dir = _t_dir();
+    var store = SlHistoryStore_open(_t_path(dir, "history.jsonl"));
+    var dd = selah_mcp_dispatcher("http://127.0.0.1:9", store);
+    var i = 0;
+    while (i < 3) {
+        var id: u8[16];
+        _sl_uuid_v4(&id);
+        var ns = clock_epoch_ns();
+        var e = SlHistoryEntry_new(&id, "/tmp/x.png", 10, ns / 1000000000, ns % 1000000000, "full screen", 11, 10,
+          20, "png", 3);
+        SlHistoryStore_record(store, e);
+        i = i + 1;
+    }
+    var f, t = _t_run("selah_history", "{\"limit\":2}");
+    var shots = _t_member(t, "screenshots");
+    assert(f == 0 && bayan_json_v_arr_len(shots) == 2, "two");
+    var dims = _sl_json_as_str(_sl_json_member(bayan_json_v_arr_get(shots, 0), "dimensions"));
+    assert(_t_str_is(dims, "10x20") == 1, "10x20");
+    var f2, t2 = _t_run("selah_history", "{\"since\":\"yesterday\"}");
+    assert(f2 == 1 && _t_str_has(t2, "invalid since") == 1, "invalid since");
+    var f3, t3 = _t_run("selah_history", "{\"limit\":-1}");
+    assert(f3 == 1 && _t_str_has(t3, "non-negative") == 1, "non-negative");
+    var f4, t4 = _t_run("selah_history", "{\"since\":\"2000-01-01T00:00:00Z\"}");
+    assert(f4 == 0, "since 2000");
+    return 0;
+}
+
+fn _t_tool_annotate_missing_path(): i64 {
+    test_group("test_tool_annotate_missing_path");
+    _t_ctx();
+    var f, t = _t_run("selah_annotate", "{\"annotations\":[]}");
+    assert(f == 1, "refused");
+    return 0;
+}
+
+fn _t_tool_annotate_schema_shaped_input(): i64 {
+    test_group("test_tool_annotate_schema_shaped_input");
+    _t_ctx();
+    var dir = _t_dir();
+    var img = _t_path(dir, "shot.png");
+    _t_write_png(img, 8, 8);
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, ",\"annotations\":[{\"kind\":\"redaction\",\"position\":{\"x\":0,\"y\":0,\"width\":4,");
+    str_builder_add_cstr(sb, "\"height\":4}},{\"kind\":\"Rectangle\",\"position\":{\"x\":1,\"y\":1,\"width\":5,");
+    str_builder_add_cstr(sb, "\"height\":5},\"color\":{\"r\":0,\"g\":0,\"b\":255,\"a\":255}},{\"kind\":\"text\",");
+    str_builder_add_cstr(sb, "\"position\":{\"x\":0,\"y\":0,\"width\":8,\"height\":8},\"text\":\"hi\"}]");
+    var f, t = _t_run("selah_annotate", _t_args(img, str_data(str_builder_build(sb))));
+    assert(f == 0 && bayan_json_v_int(_t_member(t, "annotation_count")) == 3, "three");
+    assert(_t_str_is(_sl_json_as_str(_t_member(t, "path")), _t_path(dir, "shot_annotated.png")) == 1,
+      "default output beside the input");
+    var n = 0;
+    var bytes = file_read_whole_max(_t_path(dir, "shot_annotated.png"), 1048576, &n);
+    var it, iv = _sl_decode_image(bytes, n);
+    var im: *SlImage = _sl_as_image(iv);
+    assert(is_ok(it) == 1 && load32(im.pixels) == 4278190080, "pixel (0,0) is opaque black");
+    return 0;
+}
+
+fn _t_tool_annotate_output_format_from_extension(): i64 {
+    test_group("test_tool_annotate_output_format_from_extension");
+    _t_ctx();
+    var dir = _t_dir();
+    var img = _t_path(dir, "in.png");
+    _t_write_png(img, 4, 4);
+    var outp = _t_path(dir, "out.jpg");
+    var rb = str_builder_new();
+    str_builder_add_cstr(rb, ",\"annotations\":[],\"output\":");
+    _sl_json_str(rb, outp, strlen(outp));
+    var f, t = _t_run("selah_annotate", _t_args(img, str_data(str_builder_build(rb))));
+    assert(f == 0 && _t_str_is(_sl_json_as_str(_t_member(t, "format")), "jpg") == 1, "jpg");
+    var n = 0;
+    var bytes = file_read_whole_max(outp, 1048576, &n);
+    assert(n > 2 && load8(bytes) == 255 && load8(bytes + 1) == 216, "a JPEG");
+    return 0;
+}
+
+fn _t_tool_annotate_rejects_bad_annotations(): i64 {
+    test_group("test_tool_annotate_rejects_bad_annotations");
+    _t_ctx();
+    var dir = _t_dir();
+    var img = _t_path(dir, "in.png");
+    _t_write_png(img, 4, 4);
+    var f, t = _t_run("selah_annotate", _t_args(img,
+        ",\"annotations\":[{\"kind\":\"blob\",\"position\":{\"x\":0,\"y\":0,\"width\":1,\"height\":1}}]"));
+    assert(f == 1 && _t_str_has(t, "invalid annotation 0") == 1, "bad kind");
+    var f2, t2 = _t_run("selah_annotate", _t_args(img,
+        ",\"annotations\":[{\"kind\":\"arrow\",\"position\":{\"x\":1e39,\"y\":0,\"width\":1,\"height\":1}}]"));
+    assert(f2 == 1, "bad rect");
+    var f3, t3 = _t_run("selah_annotate", _t_args(img, ",\"annotations\":{}"));
+    assert(f3 == 1 && _t_str_has(t3, "array") == 1, "not an array");
+    return 0;
+}
+
+fn _t_tool_annotate_rejects_output_traversal(): i64 {
+    test_group("test_tool_annotate_rejects_output_traversal");
+    _t_ctx();
+    var dir = _t_dir();
+    var img = _t_path(dir, "in.png");
+    _t_write_png(img, 4, 4);
+    var f, t = _t_run("selah_annotate", _t_args(img, ",\"annotations\":[],\"output\":\"../../evil.png\""));
+    assert(f == 1 && _t_str_has(t, "path traversal") == 1, "traversal");
+    return 0;
+}
+
+fn _t_tool_redact_missing_path(): i64 {
+    test_group("test_tool_redact_missing_path");
+    _t_ctx();
+    var f, t = _t_run("selah_redact", "{}");
+    assert(f == 1, "refused");
+    return 0;
+}
+
+fn _t_tool_redact_rejects_output_traversal(): i64 {
+    test_group("test_tool_redact_rejects_output_traversal");
+    _t_ctx();
+    var dir = _t_dir();
+    var img = _t_path(dir, "in.png");
+    _t_write_png(img, 4, 4);
+    var f, t = _t_run("selah_redact", _t_args(img, ",\"output\":\"a/../../b.png\""));
+    assert(f == 1 && _t_str_has(t, "path traversal") == 1, "traversal");
+    return 0;
+}
+
+fn _t_tool_redact_metadata_matches_reported_and_stripped(): i64 {
+    test_group("test_tool_redact_metadata_matches_reported_and_stripped");
+    _t_ctx();
+    var dir = _t_dir();
+    var img = _t_path(dir, "leaky.png");
+    _t_write_png(img, 4, 4);
+    var n = 0;
+    var bytes = file_read_whole_max(img, 1048576, &n);
+    var sb = str_builder_new();
+    _sl_sb_bytes(sb, bytes, n);
+    str_builder_putc(sb, 0);
+    str_builder_add_cstr(sb, "contact admin@example.com");
+    str_builder_putc(sb, 0);
+    var leaky = str_builder_build(sb);
+    file_write_all(img, str_data(leaky), str_len(leaky));
+    var f, t = _t_run("selah_redact", _t_args(img, ""));
+    assert(f == 0 && _t_str_has(_sl_json_as_str(_t_member(t, "warning")), "stub") == 1, "the stub warning");
+    assert(bayan_json_v_arr_len(_t_member(t, "redactions")) == 0, "no redactions");
+    var meta = _t_member(t, "metadata_matches");
+    assert(bayan_json_v_arr_len(meta) == 1, "one metadata match");
+    var m0 = bayan_json_v_arr_get(meta, 0);
+    assert(_t_str_is(_sl_json_as_str(_sl_json_member(m0, "target_type")), "email") == 1, "email");
+    assert(_t_str_is(_sl_json_as_str(_sl_json_member(m0, "matched_text")), "ad*************om") == 1, "masked");
+    var wn = 0;
+    var written = file_read_whole_max(_t_path(dir, "leaky_redacted.png"), 1048576, &wn);
+    var leak = 0;
+    var k = 0;
+    while (k + 17 <= wn) {
+        if (memeq(written + k, "admin@example.com", 17) == 1) { leak = 1; }
+        k = k + 1;
+    }
+    assert(leak == 0, "embedded PII carried into the output");
+    var it, iv = _sl_decode_image(written, wn);
+    assert(is_ok(it) == 1, "the output decodes");
+    return 0;
+}
+
+fn _t_inputs_must_be_images(): i64 {
+    test_group("test_inputs_must_be_images");
+    _t_ctx();
+    var dir = _t_dir();
+    var keyfile = _t_path(dir, "id_ed25519");
+    var key = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk=\n";
+    file_write_all(keyfile, key, strlen(key));
+    var o = _t_path(dir, "o.png");
+    var ob = str_builder_new();
+    str_builder_add_cstr(ob, ",\"output\":");
+    _sl_json_str(ob, o, strlen(o));
+    var out_arg = str_data(str_builder_build(ob));
+    var ab = str_builder_new();
+    str_builder_add_cstr(ab, ",\"annotations\":[]");
+    str_builder_add_cstr(ab, out_arg);
+    var f1, t1 = _t_run("selah_ocr", _t_args(keyfile, ""));
+    var f2, t2 = _t_run("selah_redact", _t_args(keyfile, out_arg));
+    var f3, t3 = _t_run("selah_annotate", _t_args(keyfile, str_data(str_builder_build(ab))));
+    assert(f1 == 1 && _t_str_has(t1, "not a supported image") == 1 && _t_str_has(t1, "PRIVATE KEY") == 0, "ocr");
+    assert(f2 == 1 && _t_str_has(t2, "not a supported image") == 1 && _t_str_has(t2, "PRIVATE KEY") == 0, "redact");
+    assert(f3 == 1 && _t_str_has(t3, "not a supported image") == 1 && _t_str_has(t3, "PRIVATE KEY") == 0,
+      "annotate");
+    return 0;
+}
+
+# {"output":"<p>"} as JSON, after the given prefix.
+fn _t_out(prefix, p): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, prefix);
+    str_builder_add_cstr(sb, ",\"output\":");
+    _sl_json_str(sb, p, strlen(p));
+    return str_data(str_builder_build(sb));
+}
+
+fn _t_outputs_must_be_image_files(): i64 {
+    test_group("test_outputs_must_be_image_files");
+    _t_ctx();
+    var dir = _t_dir();
+    var img = _t_path(dir, "in.png");
+    _t_write_png(img, 4, 4);
+    var target = _t_path(dir, ".bashrc");
+    file_write_all(target, "export SAFE=1\n", 14);
+    var f, t = _t_run("selah_annotate", _t_args(img, _t_out(",\"annotations\":[]", target)));
+    assert(f == 1 && _t_str_has(t, "image extension") == 1, "an image extension");
+    var n = 0;
+    var kept = file_read_whole_max(target, 64, &n);
+    assert(n == 14 && memeq(kept, "export SAFE=1\n", 14) == 1, "untouched");
+    var dir_out = _t_path(dir, "d.png");
+    sys_mkdir(dir_out, 448);
+    var f2, t2 = _t_run("selah_redact", _t_args(img, _t_out("", dir_out)));
+    assert(f2 == 1 && _t_str_has(t2, "not a regular file") == 1, "a directory named like an image");
+    var existing = _t_path(dir, "prev.png");
+    _t_write_png(existing, 1, 1);
+    var f3, t3 = _t_run("selah_redact", _t_args(img, _t_out("", existing)));
+    assert(f3 == 0, "overwriting an existing image file is fine");
+    return 0;
+}
+
+fn _t_output_symlink_refused(): i64 {
+    test_group("test_output_symlink_refused");
+    _t_ctx();
+    var dir = _t_dir();
+    var img = _t_path(dir, "in.png");
+    _t_write_png(img, 4, 4);
+    var victim = _t_path(dir, "victim.txt");
+    file_write_all(victim, "keep me", 7);
+    var link = _t_path(dir, "out.png");
+    sys_symlink(victim, link);
+    var f, t = _t_run("selah_annotate", _t_args(img, _t_out(",\"annotations\":[]", link)));
+    assert(f == 1 && _t_str_has(t, "not a regular file") == 1, "refused");
+    var n = 0;
+    var kept = file_read_whole_max(victim, 64, &n);
+    assert(n == 7 && memeq(kept, "keep me", 7) == 1, "the victim kept");
+    return 0;
+}
+
+# _sl_mcp_output_path on JSON arguments and an input: (format, path Str).
+fn _t_output_path(args, input, suffix): (i64, i64) {
+    var v = _sl_json_parse(args, strlen(args));
+    var path = 0;
+    var msg = 0;
+    var f = _sl_mcp_output_path(v, str_from(input), suffix, &path, &msg);
+    return (f, path);
+}
+
+fn _t_default_output_without_extension_gets_png(): i64 {
+    test_group("test_default_output_without_extension_gets_png");
+    var f, p = _t_output_path("{}", "/data/shot", "annotated");
+    assert(f == SL_FMT_PNG && _t_str_is(p, "/data/shot_annotated.png") == 1, "png added");
+    var f2, p2 = _t_output_path("{}", "/data/a.webp", "redacted");
+    assert(f2 == SL_FMT_WEBP, "webp kept");
+    return 0;
+}
+
+fn _t_tool_redact_invalid_target(): i64 {
+    test_group("test_tool_redact_invalid_target");
+    _t_ctx();
+    var dir = _t_dir();
+    var img = _t_path(dir, "in.png");
+    _t_write_png(img, 4, 4);
+    var f, t = _t_run("selah_redact", _t_args(img, ",\"targets\":[\"ssn\"]"));
+    assert(f == 1 && _t_str_has(t, "invalid redaction target") == 1, "ssn");
+    assert(_t_str_has(t, "invalid redaction target \"ssn\" (use email, phone, credit_card, ip_address)") == 1,
+      "Rust's text, the target as JSON");
+    return 0;
+}
+
+fn _t_tool_capture_validates_before_network(): i64 {
+    test_group("test_tool_capture_validates_before_network");
+    _t_ctx();
+    var f1, t1 = _t_run("selah_capture", "{\"format\":\"tiff\"}");
+    assert(f1 == 1 && _t_str_has(t1, "unsupported format") == 1, "tiff");
+    var f2, t2 = _t_run("selah_capture", "{\"output\":\"../x.png\"}");
+    assert(f2 == 1 && _t_str_has(t2, "path traversal") == 1, "traversal");
+    var f3, t3 = _t_run("selah_capture", "{\"region\":{\"x\":0,\"y\":0,\"width\":0,\"height\":10}}");
+    assert(f3 == 1 && _t_str_has(t3, "invalid region") == 1, "empty region");
+    var f4, t4 = _t_run("selah_capture", "{\"region\":{\"x\":0}}");
+    assert(f4 == 1 && _t_str_has(t4, "invalid region") == 1, "half a region");
+    var f5, t5 = _t_run("selah_capture", "{\"output\":\"notes.txt\"}");
+    assert(f5 == 1 && _t_str_has(t5, "image extension") == 1, "notes.txt");
+    var f6, t6 = _t_run("selah_capture", "{\"output\":\"a.png\",\"format\":\"jpg\"}");
+    assert(f6 == 1 && _t_str_has(t6, "extension") == 1, "a mismatch");
+    return 0;
+}
+
+# A capture answer holding a w x h PNG.
+fn _t_png_answer(w, h): i64 {
+    var px = fl_calloc(w * h * 4);
+    var plen = 0;
+    var png = _sl_png_encode(px, w, h, &plen);
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"image_data\":\"");
+    str_builder_add_cstr(sb, bayan_base64_encode(png, plen));
+    str_builder_add_cstr(sb, "\",\"width\":");
+    str_builder_add_int(sb, w);
+    str_builder_add_cstr(sb, ",\"height\":");
+    str_builder_add_int(sb, h);
+    str_builder_add_cstr(sb, ",\"format\":\"png\"}");
+    return str_data(str_builder_build(sb));
+}
+
+fn _t_tool_capture_end_to_end_records_history(): i64 {
+    test_group("test_tool_capture_end_to_end_records_history");
+    var dir = _t_dir();
+    var m = _mock_serve(200, _t_png_answer(3, 2));
+    var store = SlHistoryStore_open(_t_path(dir, "history.jsonl"));
+    var dd = selah_mcp_dispatcher(_mock_url(m), store);
+    var outp = _t_path(dir, "cap.png");
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"output\":");
+    _sl_json_str(sb, outp, strlen(outp));
+    str_builder_add_cstr(sb, ",\"region\":{\"x\":1,\"y\":2,\"width\":3,\"height\":4}}");
+    var f, t = _t_run("selah_capture", str_data(str_builder_build(sb)));
+    _mock_join(m);
+    assert(f == 0 && bayan_json_v_int(_t_member(t, "width")) == 3, "width 3");
+    assert(file_exists(outp) == 1, "the file is written");
+    var path = _sl_json_as_str(_t_member(t, "path"));
+    assert(load8(str_data(path)) == 47, "an absolute path");
+    assert(_t_str_has(_mock_body(m), "\"region\":{\"x\":1,\"y\":2,\"width\":3,\"height\":4}") == 1, "the region sent");
+    var lt, lv = SlHistoryStore_list(store, 10);
+    assert(vec_len(lv) == 1, "recorded");
+    var e: *SlHistoryEntry = _sl_as_history(vec_get(lv, 0));
+    assert(_t_str_is(e.source, "region (3x4 at 1,2)") == 1, "the source");
+    return 0;
+}
+
+fn _t_validate_path_rejects_traversal(): i64 {
+    test_group("test_validate_path_rejects_traversal");
+    var m = 0;
+    assert(_sl_mcp_validate_path(str_from("../etc/passwd"), &m) == 0, "../etc/passwd");
+    assert(_sl_mcp_validate_path(str_from("foo/../../bar"), &m) == 0, "foo/../../bar");
+    assert(_sl_mcp_validate_path(str_from("screenshot.png"), &m) == 1, "screenshot.png");
+    assert(_sl_mcp_validate_path(str_from("/tmp/screenshot.png"), &m) == 1, "/tmp/screenshot.png");
+    assert(_sl_mcp_validate_path(str_from("subdir/file.png"), &m) == 1, "subdir/file.png");
+    return 0;
+}
+
+fn _t_validate_path_rejects_empty_and_nul(): i64 {
+    test_group("test_validate_path_rejects_empty_and_nul");
+    var m = 0;
+    assert(_sl_mcp_validate_path(str_from(""), &m) == 0, "empty");
+    var nul = str_new("a\x00b", 3);
+    assert(_sl_mcp_validate_path(nul, &m) == 0, "NUL");
+    return 0;
+}
+
+fn _t_output_path_default_is_sibling_of_input(): i64 {
+    test_group("test_output_path_default_is_sibling_of_input");
+    var f, p = _t_output_path("{}", "/data/shots/a.png", "redacted");
+    assert(_t_str_is(p, "/data/shots/a_redacted.png") == 1, "beside");
+    var f2, p2 = _t_output_path("{}", "a.png", "annotated");
+    assert(_t_str_is(p2, "a_annotated.png") == 1, "relative");
+    var f3, p3 = _t_output_path("{\"output\":\"x.jpg\"}", "a.png", "s");
+    assert(f3 == SL_FMT_JPEG && _t_str_is(p3, "x.jpg") == 1, "x.jpg");
+    var f4, p4 = _t_output_path("{\"output\":5}", "a.png", "s");
+    assert(f4 < 0, "a number");
+    return 0;
+}
+
+fn _t_mask(s): i64 {
+    return _sl_mask_pii(str_from(s));
+}
+
+fn _t_mask_pii(): i64 {
+    test_group("test_mask_pii");
+    assert(_t_str_is(_t_mask("user@example.com"), "us************om") == 1, "email");
+    assert(_t_str_is(_t_mask("ab"), "**") == 1, "ab");
+    assert(_t_str_is(_t_mask("abcde"), "ab*de") == 1, "abcde");
+    return 0;
+}
+
+fn _t_mask_pii_multibyte_does_not_panic(): i64 {
+    test_group("test_mask_pii_multibyte_does_not_panic");
+    assert(_t_str_is(_t_mask("aü@x.com"), "aü****om") == 1, "aü");
+    assert(_t_str_is(_t_mask("日本語メール"), "日本**ール") == 1, "CJK");
+    assert(_t_str_is(_t_mask("ééé"), "***") == 1, "ééé");
+    return 0;
+}
+
+fn _t_mask_pii_short(): i64 {
+    test_group("test_mask_pii_single_char / _empty / _four_chars / _five_chars");
+    assert(_t_str_is(_t_mask("x"), "*") == 1, "x");
+    assert(_t_str_is(_t_mask(""), "") == 1, "empty");
+    assert(_t_str_is(_t_mask("abcd"), "****") == 1, "abcd");
+    assert(_t_str_is(_t_mask("abcde"), "ab*de") == 1, "abcde");
+    return 0;
+}
+
+fn _t_validate_path_more(): i64 {
+    test_group("test_validate_path_absolute / _relative_subdir / _double_traversal / _current_dir");
+    var m = 0;
+    assert(_sl_mcp_validate_path(str_from("/home/user/screenshot.png"), &m) == 1, "absolute");
+    assert(_sl_mcp_validate_path(str_from("output/file.png"), &m) == 1, "subdir");
+    assert(_sl_mcp_validate_path(str_from("a/../../etc/shadow"), &m) == 0, "double traversal");
+    assert(_sl_mcp_validate_path(str_from("./screenshot.png"), &m) == 1, "current dir");
+    return 0;
+}
+
+fn _t_error_content_format(): i64 {
+    test_group("test_error_content_format");
+    var r = _sl_mcp_error_content(str_from("something went wrong"));
+    var v = _sl_json_parse(r, strlen(r));
+    assert(bayan_json_v_bool(_sl_json_member(v, "isError")) != 0, "isError");
+    var c = _sl_json_member(v, "content");
+    assert(bayan_json_v_arr_len(c) == 1, "one block");
+    var b = bayan_json_v_arr_get(c, 0);
+    assert(_t_str_is(_sl_json_as_str(_sl_json_member(b, "type")), "text") == 1, "text");
+    assert(_t_str_is(_sl_json_as_str(_sl_json_member(b, "text")), "something went wrong") == 1, "the message");
+    return 0;
+}
+
+# ── Cyrius-only ──────────────────────────────────────────────────────────────────────
+
+# chrono's parse_from_rfc3339 on a NUL-terminated string: its error kind, or 0 with the instant at out[0..2).
+fn _t_strict(s, out): i64 {
+    return _sl_rfc3339_strict(s, strlen(s), out, _sl_addr(out) + 8);
+}
+
+fn _t_rfc3339_strict(): i64 {
+    test_group("chrono's strict RFC 3339 (selah_history's since)");
+    var o: i64[2];
+    assert(_t_strict("2025-11-15T00:00:00Z", &o) == 0 && o[0] == 1763164800 && o[1] == 0, "Z");
+    assert(_t_strict("2025-11-15T02:00:00.5+02:00", &o) == 0 && o[0] == 1763164800 && o[1] == 500000000, "+02:00");
+    assert(_t_strict("2016-12-31T23:59:60Z", &o) == 0 && o[1] == 1000000000, "a leap second");
+    assert(_t_strict("yesterday", &o) == SL_CHRONO_TOO_SHORT, "premature end of input");
+    assert(_t_strict("2025-11-15T00:00:00", &o) == SL_CHRONO_TOO_SHORT, "no offset");
+    assert(_t_strict("2025-11-15T00:00:00Zx", &o) == SL_CHRONO_TOO_LONG, "trailing input");
+    assert(_t_strict("2025-02-29T00:00:00Z", &o) == SL_CHRONO_OUT_OF_RANGE, "no 29 February in 2025");
+    assert(_t_strict("2025-11-15X00:00:00Z", &o) == SL_CHRONO_INVALID, "a bad separator");
+    assert(_t_strict("2025-11-15T00:00:00+99:00", &o) == SL_CHRONO_OUT_OF_RANGE, "+99:00");
+    assert(_t_strict("2025-11-15T00:00:00+0200", &o) == SL_CHRONO_INVALID, "a colon is required");
+    return 0;
+}
+
+fn _t_hoosh_engine(): i64 {
+    test_group("selah_ocr engine hoosh, through the retargeted client");
+    var dir = _t_dir();
+    var img = _t_path(dir, "in.png");
+    _t_write_png(img, 2, 2);
+    _t_ctx();
+    var f0, t0 = _t_run("selah_ocr", _t_args(img, ",\"engine\":\"hoosh\""));
+    assert(f0 == 1 && _t_str_has(t0, "no model is set") == 1, "no model: refused before sending");
+    var ans = "{\"choices\":[{\"message\":{\"content\":\"{\\\"text\\\":\\\"hi\\\",\\\"confidence\\\":0.75}\"}}]}";
+    var m = _mock_serve(200, ans);
+    selah_mcp_set_hoosh_config(SlHooshConfig_new(_mock_url(m), "vision"));
+    var f, t = _t_run("selah_ocr", _t_args(img, ",\"engine\":\"hoosh\""));
+    _mock_join(m);
+    assert(f == 0 && _t_str_is(_sl_json_as_str(_t_member(t, "text")), "hi") == 1, "the model's text");
+    assert(_t_str_is(_sl_json_as_str(_t_member(t, "engine")), "hoosh") == 1, "engine hoosh");
+    assert(bayan_json_v_bool(_t_member(t, "is_stub")) == 0, "not a stub");
+    return 0;
+}
+
+# Writes data[0..n) to fd whole.
+fn _t_write_fd(fd, data, n): i64 {
+    var w = 0;
+    while (w < n) {
+        var r = sys_write(fd, data + w, n - w);
+        if (r <= 0) { return w; }
+        w = w + r;
+    }
+    return w;
+}
+
+# A selah_annotate request on one line with `count` annotations.
+fn _t_annotate_line(id, img, count): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"jsonrpc\":\"2.0\",\"id\":");
+    str_builder_add_int(sb, id);
+    str_builder_add_cstr(sb, ",\"method\":\"tools/call\",\"params\":{\"name\":\"selah_annotate\",\"arguments\":");
+    str_builder_add_cstr(sb, "{\"image_path\":");
+    _sl_json_str(sb, img, strlen(img));
+    str_builder_add_cstr(sb, ",\"annotations\":[");
+    var i = 0;
+    while (i < count) {
+        if (i > 0) { str_builder_putc(sb, 44); }
+        str_builder_add_cstr(sb, "{\"kind\":\"rectangle\",\"position\":{\"x\":1,\"y\":1,\"width\":2,\"height\":2}}");
+        i = i + 1;
+    }
+    str_builder_add_cstr(sb, "]}}}\n");
+    return str_builder_build(sb);
+}
+
+fn _t_stdio_end_to_end(): i64 {
+    test_group("the stdio transport, end to end (bote's 128 KiB line)");
+    var dir = _t_dir();
+    var img = _t_path(dir, "in.png");
+    _t_write_png(img, 4, 4);
+    var ip: u8[16];
+    var op: u8[16];
+    sys_pipe(&ip);
+    sys_pipe(&op);
+    var pid = sys_fork();
+    if (pid == 0) {
+        sys_close(load32(&ip + 4));
+        sys_close(load32(&op));
+        var d = selah_mcp_dispatcher("http://127.0.0.1:9", 0);
+        _stdio_serve(d, load32(&ip), load32(&op + 4));
+        sys_exit(0);
+    }
+    sys_close(load32(&ip));
+    sys_close(load32(&op + 4));
+    # 1,300 bare rectangles (87,261 bytes with this path) fit bote's 131,072-byte line; 2,000 (134,161) do not.
+    var small = _t_annotate_line(7, img, 1300);
+    var big = _t_annotate_line(8, img, 2000);
+    _t_write_fd(load32(&ip + 4), str_data(small), str_len(small));
+    _t_write_fd(load32(&ip + 4), str_data(big), str_len(big));
+    sys_close(load32(&ip + 4));
+    var buf = fl_alloc(65536);
+    var got = 0;
+    while (got < 65535) {
+        var r2 = sys_read(load32(&op), buf + got, 65535 - got);
+        if (r2 <= 0) { break; }
+        got = got + r2;
+    }
+    store8(buf + got, 0);
+    var st: u8[8];
+    sys_waitpid(pid, &st, 0);
+    var out = str_from(buf);
+    assert(str_len(small) < 131072 && str_len(big) > 131072, "the two sizes straddle the line");
+    assert(_t_str_has(out, "\\\"annotation_count\\\":1300") == 1, "the request under the line is answered");
+    assert(_t_str_has(out, "\\\"annotation_count\\\":2000") == 0, "the one over it is not run (UPSTREAM L23)");
+    return 0;
+}
+
+# Runs the suite; the exit code is the failure count, clamped.
+fn main(): i64 {
+    alloc_init();
+    _t_registry_has_five_tools();
+    _t_dispatcher_tools_list();
+    _t_read_only_tools_annotated();
+    _t_dispatcher_initialize();
+    _t_dispatcher_unknown_method();
+    _t_dispatcher_tool_error_is_mcp_error_content();
+    _t_tool_ocr_missing_path();
+    _t_tool_ocr_local_and_unknown_engine();
+    _t_tool_ocr_rejects_non_regular_file();
+    _t_tool_history_without_store();
+    _t_tool_history_lists_and_validates();
+    _t_tool_annotate_missing_path();
+    _t_tool_annotate_schema_shaped_input();
+    _t_tool_annotate_output_format_from_extension();
+    _t_tool_annotate_rejects_bad_annotations();
+    _t_tool_annotate_rejects_output_traversal();
+    _t_tool_redact_missing_path();
+    _t_tool_redact_rejects_output_traversal();
+    _t_tool_redact_metadata_matches_reported_and_stripped();
+    _t_inputs_must_be_images();
+    _t_outputs_must_be_image_files();
+    _t_output_symlink_refused();
+    _t_default_output_without_extension_gets_png();
+    _t_tool_redact_invalid_target();
+    _t_tool_capture_validates_before_network();
+    _t_tool_capture_end_to_end_records_history();
+    _t_validate_path_rejects_traversal();
+    _t_validate_path_rejects_empty_and_nul();
+    _t_output_path_default_is_sibling_of_input();
+    _t_mask_pii();
+    _t_mask_pii_multibyte_does_not_panic();
+    _t_mask_pii_short();
+    _t_validate_path_more();
+    _t_error_content_format();
+    _t_rfc3339_strict();
+    _t_hoosh_engine();
+    _t_stdio_end_to_end();
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

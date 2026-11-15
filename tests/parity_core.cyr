@@ -398,7 +398,7 @@ fn _pc_tok_nan(p, n): i64 {
 
 # Compare the port's rendered outputs (a Str) with the row's outputs field, token by token: equal text, or two NaN
 # float tokens. An expected `E:serde` compares the verdict only (ADR 0002 #14). Records the outcome.
-fn _pc_check(actual): i64 {
+fn _pc_check_out(actual): i64 {
     var ep = _pc_f[6];
     var en = _pc_f[7];
     var ap = str_data(actual);

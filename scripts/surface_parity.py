@@ -34,6 +34,7 @@ MODULES = {
     "http": {"enums": set(), "structs": set()},
     "capture": {"enums": set(), "structs": {"CaptureClient"}},
     "daimon": {"enums": set(), "structs": {"DaimonClient", "HooshClient"}},
+    "mcp": {"enums": set(), "structs": set()},
 }
 
 # A pending module's items that an earlier milestone ports: checked now, by the same rules. (M3 ported annotate.rs's
@@ -41,9 +42,7 @@ MODULES = {
 PARTIAL = {}
 
 # Rust files whose milestone has not come yet (port plan §3): counted, not checked (bar PARTIAL). M7 empties this.
-PENDING_MODULES = {
-    "mcp": "M6",
-}
+PENDING_MODULES = {}
 NOT_APPLICABLE_MODULES = {}
 
 # Rust item -> why it has no Cyrius name of the rule's shape.
